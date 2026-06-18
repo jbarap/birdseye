@@ -1,0 +1,137 @@
+// Package config loads bird's-eye configuration from a TOML file under the
+// platform config directory, applying built-in defaults for absent keys.
+package config
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/BurntSushi/toml"
+)
+
+// Config is the fully-resolved configuration (defaults merged with the user
+// file).
+type Config struct {
+	// Providers maps a provider type to whether it is enabled. A type absent
+	// from the map is enabled by default, so users only list what to disable.
+	Providers map[string]bool `toml:"providers"`
+	// Order is the display order of candidate types in the picker.
+	Order []string `toml:"order"`
+	// Labels maps a type to its display label; absent types fall back to the
+	// type name.
+	Labels map[string]string `toml:"labels"`
+
+	Tmuxp    Tmuxp    `toml:"tmuxp"`
+	Dir      Dir      `toml:"dir"`
+	Worktree Worktree `toml:"worktree"`
+	Agents   Agents   `toml:"agents"`
+}
+
+// Tmuxp configures the tmuxp templates provider.
+type Tmuxp struct {
+	// Dir overrides the tmuxp config directory used to discover templates.
+	// Empty means tmuxp's own default.
+	Dir string `toml:"dir"`
+}
+
+// Dir configures the directory/zoxide provider.
+type Dir struct {
+	// UseZoxide includes zoxide's known directories when zoxide is available.
+	UseZoxide bool `toml:"use_zoxide"`
+	// Roots are directories whose immediate children become candidates.
+	Roots []string `toml:"roots"`
+}
+
+// Worktree configures the git-worktree provider and command.
+type Worktree struct {
+	// Root is the directory under which managed repositories live, each as
+	// <root>/<repo>/main plus sibling worktrees.
+	Root string `toml:"root"`
+}
+
+// Agents configures the agent view.
+type Agents struct {
+	// StaleAfter is how long since a hook last wrote state before an agent's
+	// status is treated as unknown.
+	StaleAfter Duration `toml:"stale_after"`
+}
+
+// Duration is a time.Duration that decodes from a TOML string like "5m".
+type Duration time.Duration
+
+// UnmarshalText implements encoding.TextUnmarshaler for TOML decoding.
+func (d *Duration) UnmarshalText(text []byte) error {
+	v, err := time.ParseDuration(string(text))
+	if err != nil {
+		return err
+	}
+	*d = Duration(v)
+	return nil
+}
+
+// AsDuration returns the value as a time.Duration.
+func (d Duration) AsDuration() time.Duration { return time.Duration(d) }
+
+// Default returns the built-in configuration used when no file (or no key) is
+// present.
+func Default() Config {
+	return Config{
+		Providers: map[string]bool{},
+		Order:     []string{"tmux", "tmuxp", "dir", "worktree"},
+		Labels: map[string]string{
+			"tmux":     "session",
+			"tmuxp":    "template",
+			"dir":      "dir",
+			"worktree": "worktree",
+		},
+		Dir:    Dir{UseZoxide: true},
+		Agents: Agents{StaleAfter: Duration(5 * time.Minute)},
+	}
+}
+
+// Path returns the resolved config file path under the platform config dir.
+func Path() (string, error) {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "birds-eye", "config.toml"), nil
+}
+
+// Load reads the config from the default path, returning defaults when the file
+// is absent. It returns the path it used and a clear error on malformed input.
+func Load() (Config, string, error) {
+	path, err := Path()
+	if err != nil {
+		return Default(), "", err
+	}
+	cfg, err := LoadFrom(path)
+	return cfg, path, err
+}
+
+// LoadFrom reads the config from a specific path. A missing file yields
+// defaults; a malformed file yields an error naming the file.
+func LoadFrom(path string) (Config, error) {
+	cfg := Default()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return cfg, nil
+		}
+		return Default(), fmt.Errorf("reading config %s: %w", path, err)
+	}
+	if _, err := toml.Decode(string(data), &cfg); err != nil {
+		return Default(), fmt.Errorf("invalid config %s: %w", path, err)
+	}
+	return cfg, nil
+}
+
+// Label returns the display label for a type, falling back to the type itself.
+func (c Config) Label(typ string) string {
+	if l, ok := c.Labels[typ]; ok && l != "" {
+		return l
+	}
+	return typ
+}
