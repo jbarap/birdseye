@@ -28,11 +28,27 @@ func TestDisplayMarksKind(t *testing.T) {
 	cfg := config.Default()
 	attach := display(provider.Candidate{Label: "x", Type: "tmux", Kind: provider.KindAttach}, cfg)
 	create := display(provider.Candidate{Label: "y", Type: "dir", Kind: provider.KindCreate}, cfg)
-	if !strings.HasPrefix(attach, "→") {
-		t.Errorf("attach should start with arrow marker, got %q", attach)
+	if !strings.Contains(attach, "→") {
+		t.Errorf("attach should carry the arrow marker, got %q", attach)
 	}
-	if !strings.HasPrefix(create, "+") {
-		t.Errorf("create should start with + marker, got %q", create)
+	if !strings.Contains(create, "+") {
+		t.Errorf("create should carry the + marker, got %q", create)
+	}
+	// The label, the type's icon, and the type label all appear.
+	if !strings.Contains(attach, "x") || !strings.Contains(attach, "session") {
+		t.Errorf("attach should include label and type label, got %q", attach)
+	}
+	if icon := cfg.Icon("tmux"); icon != "" && !strings.Contains(attach, icon) {
+		t.Errorf("attach should include the tmux icon %q, got %q", icon, attach)
+	}
+}
+
+func TestDisplayOmitsIconWhenUnset(t *testing.T) {
+	cfg := config.Default()
+	cfg.Icons = map[string]string{} // no icons configured
+	got := display(provider.Candidate{Label: "x", Type: "tmux", Kind: provider.KindAttach}, cfg)
+	if !strings.Contains(got, "x") {
+		t.Fatalf("display should still render the label without an icon, got %q", got)
 	}
 }
 

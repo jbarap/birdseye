@@ -45,6 +45,10 @@ type Agent struct {
 	// TmuxSession and TmuxWindow locate the agent for jump-to-session.
 	TmuxSession string
 	TmuxWindow  string
+	// TmuxPane is the exact pane the agent runs in (e.g. "%5"). Unlike
+	// session:window it pins the right pane when a window is split, so the
+	// preview captures the agent's pane rather than whichever is active.
+	TmuxPane string
 	// Title is a short human label.
 	Title string
 	// Status is the agent's current state.

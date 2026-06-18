@@ -13,6 +13,7 @@ type record struct {
 	SessionID   string    `json:"session_id"`
 	TmuxSession string    `json:"tmux_session"`
 	TmuxWindow  string    `json:"tmux_window"`
+	TmuxPane    string    `json:"tmux_pane"`
 	Title       string    `json:"title"`
 	Status      Status    `json:"status"`
 	Updated     time.Time `json:"updated"`

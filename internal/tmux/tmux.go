@@ -95,6 +95,34 @@ func (c *Client) Connect(name string) error {
 	return err
 }
 
+// CapturePane returns the recent visible content of the target pane as plain
+// text. target is a tmux target such as "session" or "session:window"; the
+// active pane of that target is captured. When lines > 0, that many lines of
+// scrollback above the visible screen are included. A capture failure (no such
+// session, no server) is returned as an error for the caller to handle.
+func (c *Client) CapturePane(target string, lines int) (string, error) {
+	args := []string{"capture-pane", "-p", "-t", target}
+	if lines > 0 {
+		args = append(args, "-S", fmt.Sprintf("-%d", lines))
+	}
+	return c.run(args...)
+}
+
+// ConnectPane attaches/switches to session and focuses the given window and
+// pane so the user lands exactly where the agent runs. window and pane are
+// optional; focusing them is best-effort (a since-closed pane simply falls back
+// to the session's current selection). pane is a tmux pane id such as "%5".
+func (c *Client) ConnectPane(session, window, pane string) error {
+	// Focus the target before attach/switch so the client lands there.
+	if pane != "" {
+		_, _ = c.run("select-window", "-t", pane)
+		_, _ = c.run("select-pane", "-t", pane)
+	} else if window != "" {
+		_, _ = c.run("select-window", "-t", session+":"+window)
+	}
+	return c.Connect(session)
+}
+
 // ListSessions returns the names of all running sessions. When no server is
 // running it returns an empty slice without error.
 func (c *Client) ListSessions() ([]string, error) {

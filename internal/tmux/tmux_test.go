@@ -72,6 +72,37 @@ func TestConnectAttachOutsideTmux(t *testing.T) {
 	}
 }
 
+func TestConnectPaneFocusesWindowAndPane(t *testing.T) {
+	rec := newRecorder()
+	c := NewWithRunner(rec.run, true) // inside tmux -> switch-client
+	if err := c.ConnectPane("proj", "2", "%5"); err != nil {
+		t.Fatal(err)
+	}
+	if !rec.called("select-window -t %5") {
+		t.Fatalf("expected select-window by pane id, calls=%v", rec.calls)
+	}
+	if !rec.called("select-pane -t %5") {
+		t.Fatalf("expected select-pane by pane id, calls=%v", rec.calls)
+	}
+	if !rec.called("switch-client -t proj") {
+		t.Fatalf("expected switch-client to land on the session, calls=%v", rec.calls)
+	}
+}
+
+func TestConnectPaneFallsBackToWindow(t *testing.T) {
+	rec := newRecorder()
+	c := NewWithRunner(rec.run, false)
+	if err := c.ConnectPane("proj", "3", ""); err != nil {
+		t.Fatal(err)
+	}
+	if !rec.called("select-window -t proj:3") {
+		t.Fatalf("expected select-window by session:window when no pane, calls=%v", rec.calls)
+	}
+	if !rec.called("attach-session -t proj") {
+		t.Fatalf("expected attach outside tmux, calls=%v", rec.calls)
+	}
+}
+
 func TestConnectSwitchInsideTmux(t *testing.T) {
 	rec := newRecorder()
 	c := NewWithRunner(rec.run, true)
@@ -80,6 +111,37 @@ func TestConnectSwitchInsideTmux(t *testing.T) {
 	}
 	if !rec.called("switch-client -t proj") {
 		t.Fatalf("expected switch-client inside tmux, calls=%v", rec.calls)
+	}
+}
+
+func TestCapturePane(t *testing.T) {
+	rec := newRecorder()
+	rec.replies["capture-pane -p -t proj:1"] = "line one\nline two\n"
+	c := NewWithRunner(rec.run, false)
+
+	out, err := c.CapturePane("proj:1", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "line one\nline two\n" {
+		t.Fatalf("unexpected capture output: %q", out)
+	}
+
+	rec2 := newRecorder()
+	rec2.replies["capture-pane -p -t proj -S -100"] = "scrollback"
+	c2 := NewWithRunner(rec2.run, false)
+	if _, err := c2.CapturePane("proj", 100); err != nil {
+		t.Fatal(err)
+	}
+	if !rec2.called("capture-pane -p -t proj -S -100") {
+		t.Fatalf("expected scrollback range arg, calls=%v", rec2.calls)
+	}
+
+	rec3 := newRecorder()
+	rec3.errs["capture-pane -p -t gone"] = errors.New("no such session")
+	c3 := NewWithRunner(rec3.run, false)
+	if _, err := c3.CapturePane("gone", 0); err == nil {
+		t.Fatal("expected error to propagate when capture fails")
 	}
 }
 

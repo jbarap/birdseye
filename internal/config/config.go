@@ -22,6 +22,10 @@ type Config struct {
 	// Labels maps a type to its display label; absent types fall back to the
 	// type name.
 	Labels map[string]string `toml:"labels"`
+	// Icons maps a type to a glyph shown beside its candidates in the picker.
+	// Defaults are Nerd Font glyphs; override with your own text/emoji, or set a
+	// type to "" to hide its icon.
+	Icons map[string]string `toml:"icons"`
 
 	Tmuxp    Tmuxp    `toml:"tmuxp"`
 	Dir      Dir      `toml:"dir"`
@@ -56,6 +60,18 @@ type Agents struct {
 	// StaleAfter is how long since a hook last wrote state before an agent's
 	// status is treated as unknown.
 	StaleAfter Duration `toml:"stale_after"`
+	// ForgetDone is how long an ended (done) session is kept before its state
+	// file is deleted and it drops off the list. Zero disables pruning of done
+	// sessions.
+	ForgetDone Duration `toml:"forget_done"`
+	// ForgetStale is how long a non-terminal (working/idle/needs-attention)
+	// session with no fresh updates is kept before its state file is deleted,
+	// reclaiming crashed or abandoned sessions. Zero disables this pruning.
+	ForgetStale Duration `toml:"forget_stale"`
+	// Keys overrides the agents-view keybindings, mapping an action name (under
+	// [agents.keys]) to the keys that trigger it. Absent actions keep their
+	// built-in bindings; an action listed here replaces (not extends) its keys.
+	Keys map[string][]string `toml:"keys"`
 }
 
 // Duration is a time.Duration that decodes from a TOML string like "5m".
@@ -86,8 +102,18 @@ func Default() Config {
 			"dir":      "dir",
 			"worktree": "worktree",
 		},
-		Dir:    Dir{UseZoxide: true},
-		Agents: Agents{StaleAfter: Duration(5 * time.Minute)},
+		Icons: map[string]string{
+			"tmux":     "", // terminal
+			"tmuxp":    "", // files / template
+			"dir":      "", // folder
+			"worktree": "", // git branch
+		},
+		Dir: Dir{UseZoxide: true},
+		Agents: Agents{
+			StaleAfter:  Duration(5 * time.Minute),
+			ForgetDone:  Duration(24 * time.Hour),
+			ForgetStale: Duration(24 * time.Hour),
+		},
 	}
 }
 
@@ -134,4 +160,9 @@ func (c Config) Label(typ string) string {
 		return l
 	}
 	return typ
+}
+
+// Icon returns the configured glyph for a type, or empty when none is set.
+func (c Config) Icon(typ string) string {
+	return c.Icons[typ]
 }

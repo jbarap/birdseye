@@ -58,12 +58,48 @@ func Pick(cands []provider.Candidate, cfg config.Config) (*provider.Candidate, e
 	return &ordered[idx], nil
 }
 
-func display(c provider.Candidate, cfg config.Config) string {
-	marker := "→" // attach to existing
-	if c.Kind == provider.KindCreate {
-		marker = "+" // create new
+// ANSI 256-color codes, emitted raw so they survive the pipe to fzf (which
+// renders them under --ansi). lipgloss would strip them when stdout is not a
+// TTY, so we format escapes directly.
+const ansiReset = "\x1b[0m"
+
+func fg(code int, s string) string { return fmt.Sprintf("\x1b[38;5;%dm%s%s", code, s, ansiReset) }
+func bold(s string) string         { return "\x1b[1m" + s + ansiReset }
+func dim(s string) string          { return "\x1b[2m" + s + ansiReset }
+
+// typeColor is the accent color per candidate type; unlisted types use gray.
+var typeColor = map[string]int{
+	"tmux":     39,  // blue
+	"tmuxp":    213, // pink
+	"dir":      220, // gold
+	"worktree": 114, // green
+}
+
+func colorOf(typ string) int {
+	if c, ok := typeColor[typ]; ok {
+		return c
 	}
-	return fmt.Sprintf("%s %s  (%s)", marker, c.Label, cfg.Label(c.Type))
+	return 245 // gray
+}
+
+func display(c provider.Candidate, cfg config.Config) string {
+	// Kind marker: a green "+" to create, a blue "→" to attach to an existing one.
+	mark := fg(33, "→")
+	if c.Kind == provider.KindCreate {
+		mark = fg(40, "+")
+	}
+
+	var b strings.Builder
+	b.WriteString(mark)
+	b.WriteByte(' ')
+	if icon := cfg.Icon(c.Type); icon != "" {
+		b.WriteString(fg(colorOf(c.Type), icon))
+		b.WriteByte(' ')
+	}
+	b.WriteString(bold(c.Label))
+	b.WriteString("  ")
+	b.WriteString(dim("(" + cfg.Label(c.Type) + ")"))
+	return b.String()
 }
 
 // orderByType returns candidates grouped by the configured type order; types
@@ -92,11 +128,18 @@ func orderByType(cands []provider.Candidate, order []string) []provider.Candidat
 // when cancelled.
 func runFzf(input string) (int, error) {
 	cmd := exec.Command("fzf",
+		"--ansi",
 		"--delimiter", "\t",
 		"--with-nth", "2..",
-		"--prompt", "be> ",
+		"--prompt", "be ❯ ",
+		"--pointer", "▌",
 		"--no-multi",
 		"--height", "100%",
+		"--layout", "reverse",
+		"--info", "inline",
+		"--cycle",
+		"--border",
+		"--color", "hl:39,hl+:213,pointer:213,prompt:213,marker:213,border:240,info:240,gutter:-1",
 	)
 	cmd.Stdin = strings.NewReader(input)
 	cmd.Stderr = os.Stderr

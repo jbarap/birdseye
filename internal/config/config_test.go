@@ -60,6 +60,30 @@ stale_after = "30s"
 	}
 }
 
+func TestLoadParsesAgentsKeys(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	body := `
+[agents.keys]
+down = ["n", "down"]
+quit = ["q"]
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadFrom(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := cfg.Agents.Keys["down"]
+	if len(got) != 2 || got[0] != "n" || got[1] != "down" {
+		t.Fatalf("agents.keys.down not parsed: %v", cfg.Agents.Keys)
+	}
+	if len(cfg.Agents.Keys["quit"]) != 1 || cfg.Agents.Keys["quit"][0] != "q" {
+		t.Fatalf("agents.keys.quit not parsed: %v", cfg.Agents.Keys)
+	}
+}
+
 func TestLoadMalformedReportsFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")

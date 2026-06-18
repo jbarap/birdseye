@@ -10,6 +10,14 @@ agents.
 Built on tmux (a proven backend), driven by `fzf`, and extensible through a small
 provider interface.
 
+## Prior art / references
+
+bird's-eye draws on ideas/visuals/concepts from these projects:
+
+- [sesh](https://github.com/joshmedeski/sesh) — smart tmux session manager and picker.
+- [tmux-agent-status](https://github.com/samleeney/tmux-agent-status) — surfacing AI agent status in tmux.
+- [superset](https://github.com/superset-sh/superset) — a workspace over agent sessions.
+
 ## Features
 
 - **One fuzzy picker** (`be`) over running tmux sessions, `tmuxp` templates,
@@ -17,7 +25,8 @@ provider interface.
   what doesn't.
 - **`be agents`** — a tmux-popup-friendly view of your Claude Code sessions and
   their status (needs-attention / working / idle / done), so you know which need
-  you.
+  you. It **updates live** as sessions change, shows a **preview** of the selected
+  session's terminal, and navigates with **vim-native, configurable** keys.
 - **`be worktree`** — clone a repo into `<root>/<repo>/main` and spin up sibling
   worktrees, each surfaced as a session candidate.
 - **Modular providers** — add a new way to create sessions by implementing one
@@ -64,7 +73,12 @@ Add to `~/.tmux.conf` to pop the agents view from anywhere:
 bind-key g display-popup -E -w 80% -h 60% "be agents"
 ```
 
-`enter` in the view jumps to the selected agent's session; `q` dismisses it.
+The agents view refreshes in place as hooks report new state, so a popup left open
+stays current. When the popup is wide enough it shows a live preview of the selected
+session's terminal beside the list; on narrow popups the preview is hidden. Navigate
+with vim keys — `j`/`k` (or arrows) to move, `gg`/`G` for top/bottom, `ctrl+d`/`ctrl+u`
+for half-page — `enter` jumps to the selected agent's session, and `q` dismisses it.
+All of these keys are configurable (see `[agents.keys]` below).
 
 ## Configuration
 
@@ -82,6 +96,15 @@ tmuxp    = "template"
 dir      = "dir"
 worktree = "worktree"
 
+# Per-type icons shown in the picker. Defaults are Nerd Font glyphs; override
+# with your own text/emoji, or set a type to "" to hide its icon. (Requires a
+# Nerd Font for the defaults to render.)
+[icons]
+tmux     = ""
+tmuxp    = ""
+dir      = ""
+worktree = ""
+
 # Enable/disable providers by type (omit a type to leave it enabled).
 [providers]
 worktree = false
@@ -97,13 +120,30 @@ roots = ["~/projects", "~/work"]
 root = "~/code"                       # managed repos live here
 
 [agents]
-stale_after = "5m"                    # status older than this shows as "unknown"
+stale_after  = "5m"                   # status older than this shows as "unknown"
+forget_done  = "24h"                  # delete ended sessions this long after they finish
+forget_stale = "24h"                  # delete crashed/abandoned sessions after this (0 disables)
+
+# Rebind the agents-view keys. Each action lists the keys that trigger it;
+# omit an action to keep its default. A two-letter value of the same key (e.g.
+# "gg") is a chord — that key pressed twice. Defaults shown below.
+[agents.keys]
+up        = ["k", "up"]
+down      = ["j", "down"]
+top       = ["gg"]
+bottom    = ["G"]
+half_up   = ["ctrl+u"]
+half_down = ["ctrl+d"]
+select    = ["enter"]
+quit      = ["q", "esc", "ctrl+c"]
 ```
 
 ## Claude Code hook setup (for `be agents`)
 
-`be agents` reads status that Claude Code hooks write — there is no polling or
-pane-scraping. Install the hooks once:
+`be agents` derives status from state that Claude Code hooks write — status is never
+inferred from pane contents. (The view does poll that state to refresh live, and the
+preview pane reads terminal output for display only; neither affects an agent's
+status.) Install the hooks once:
 
 ```sh
 be hook claude install                     # merges into ~/.claude/settings.json
