@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
 	"github.com/jbarap/birds-eye/internal/config"
@@ -15,9 +16,22 @@ import (
 	"github.com/jbarap/birds-eye/internal/providers/dir"
 	"github.com/jbarap/birds-eye/internal/providers/tmuxp"
 	"github.com/jbarap/birds-eye/internal/providers/tmuxsess"
+	"github.com/jbarap/birds-eye/internal/theme"
 	"github.com/jbarap/birds-eye/internal/tmux"
 	"github.com/jbarap/birds-eye/internal/tools"
 	"github.com/jbarap/birds-eye/internal/worktree"
+)
+
+// Shared output styles. lipgloss auto-disables color when the target stream is
+// not a terminal, so these degrade to plain text under pipes/redirects. warn
+// uses a renderer bound to stderr; the rest target stdout (the default).
+var (
+	errRenderer = lipgloss.NewRenderer(os.Stderr)
+	warnPrefix  = errRenderer.NewStyle().Bold(true).Foreground(lipgloss.Color(theme.Red.Hex))
+
+	okMark    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(theme.Green.Hex))
+	infoStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(theme.Coral.Hex))
+	hintStyle = lipgloss.NewStyle().Faint(true)
 )
 
 // Execute builds and runs the root command. version is shown by `be --version`.
@@ -44,7 +58,7 @@ func Execute(version string) error {
 }
 
 func warn(format string, a ...any) {
-	fmt.Fprintf(os.Stderr, "be: "+format+"\n", a...)
+	fmt.Fprintf(os.Stderr, "%s %s\n", warnPrefix.Render("be:"), fmt.Sprintf(format, a...))
 }
 
 // loadConfig loads config or exits-style errors to the caller.
@@ -86,7 +100,8 @@ func runList() error {
 	case nil:
 		// proceed
 	case picker.ErrNoCandidates:
-		fmt.Println("No sessions to show yet. Add tmuxp templates, zoxide dirs, or configure providers.")
+		fmt.Println(infoStyle.Render("No sessions to show yet."))
+		fmt.Println(hintStyle.Render("Add tmuxp templates, zoxide dirs, or configure providers."))
 		return nil
 	case picker.ErrCancelled:
 		return nil

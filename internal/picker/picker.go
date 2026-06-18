@@ -14,6 +14,7 @@ import (
 
 	"github.com/jbarap/birds-eye/internal/config"
 	"github.com/jbarap/birds-eye/internal/provider"
+	"github.com/jbarap/birds-eye/internal/theme"
 )
 
 var (
@@ -41,15 +42,15 @@ func Pick(cands []provider.Candidate, cfg config.Config) (*provider.Candidate, e
 		return nil, ErrNotInteractive
 	}
 
-	t := newTheme()
+	tc := theme.Truecolor()
 	ordered := orderByType(cands, cfg.Order)
 	var input strings.Builder
 	for i, c := range ordered {
 		// "<index>\t<display>"; index is hidden from the view via --with-nth.
-		fmt.Fprintf(&input, "%d\t%s\n", i, display(c, cfg, t))
+		fmt.Fprintf(&input, "%d\t%s\n", i, display(c, cfg, tc))
 	}
 
-	idx, err := runFzf(input.String(), t)
+	idx, err := runFzf(input.String(), tc)
 	if err != nil {
 		return nil, err
 	}
@@ -59,99 +60,42 @@ func Pick(cands []provider.Candidate, cfg config.Config) (*provider.Candidate, e
 	return &ordered[idx], nil
 }
 
-// Color escapes are emitted raw so they survive the pipe to fzf (which renders
-// them under --ansi). lipgloss would strip them when stdout is not a TTY, so we
-// format escapes directly.
+// Bold/dim attribute escapes are emitted raw so they survive the pipe to fzf
+// (which renders them under --ansi); lipgloss would strip them when stdout is
+// not a TTY. Color comes from the shared theme package.
 const ansiReset = "\x1b[0m"
 
 func bold(s string) string { return "\x1b[1m" + s + ansiReset }
 func dim(s string) string  { return "\x1b[2m" + s + ansiReset }
 
-// color carries both representations of an accent so the picker can render
-// 24-bit when the terminal supports it and degrade to the nearest xterm-256
-// palette entry otherwise.
-type color struct {
-	hex  string // "#rrggbb", used on truecolor terminals
-	c256 int    // xterm-256 palette index, used as the fallback
-}
-
-var (
-	cTmux     = color{"#4ea8ff", 39}  // blue
-	cTmuxp    = color{"#ff7a6b", 209} // coral
-	cDir      = color{"#f5c542", 220} // gold
-	cWorktree = color{"#4ec98a", 114} // green
-	cAttach   = color{"#38bdf8", 33}  // cyan-blue marker
-	cCreate   = color{"#3fcf5f", 40}  // green marker
-	cGray     = color{"#8a8a8a", 245} // dim/unlisted
-	cBorder   = color{"#3a3a3a", 240} // border/info chrome
-)
-
-func colorOf(typ string) color {
+// colorOf is the accent color per candidate type; unlisted types use gray.
+func colorOf(typ string) theme.Color {
 	switch typ {
 	case "tmux":
-		return cTmux
+		return theme.Blue
 	case "tmuxp":
-		return cTmuxp
+		return theme.Coral
 	case "dir":
-		return cDir
+		return theme.Gold
 	case "worktree":
-		return cWorktree
+		return theme.Green
 	default:
-		return cGray
+		return theme.Gray
 	}
 }
 
-// theme decides, once per run, whether to emit 24-bit or 256-color escapes.
-type theme struct{ truecolor bool }
-
-// newTheme detects 24-bit support via COLORTERM, the convention shared by most
-// CLI tools (bat, delta, fzf docs). tmux that forwards RGB sets it to
-// "truecolor"; terminals without it fall back to the 256-color palette.
-func newTheme() theme {
-	switch os.Getenv("COLORTERM") {
-	case "truecolor", "24bit":
-		return theme{truecolor: true}
-	}
-	return theme{truecolor: false}
-}
-
-// fg wraps s in a foreground-color escape, 24-bit or 256 per the theme.
-func (t theme) fg(c color, s string) string {
-	if t.truecolor {
-		r, g, b := hexRGB(c.hex)
-		return fmt.Sprintf("\x1b[38;2;%d;%d;%dm%s%s", r, g, b, s, ansiReset)
-	}
-	return fmt.Sprintf("\x1b[38;5;%dm%s%s", c.c256, s, ansiReset)
-}
-
-// spec renders a color as an fzf --color token value: a hex literal on
-// truecolor terminals (fzf accepts "#rrggbb"), else the 256 palette index.
-func (t theme) spec(c color) string {
-	if t.truecolor {
-		return c.hex
-	}
-	return strconv.Itoa(c.c256)
-}
-
-// hexRGB parses "#rrggbb" into its components. A malformed value yields 0,0,0,
-// which is harmless (renders black) but never happens for our literals.
-func hexRGB(h string) (r, g, b int) {
-	v, _ := strconv.ParseUint(strings.TrimPrefix(h, "#"), 16, 32)
-	return int(v>>16) & 0xff, int(v>>8) & 0xff, int(v) & 0xff
-}
-
-func display(c provider.Candidate, cfg config.Config, t theme) string {
+func display(c provider.Candidate, cfg config.Config, tc bool) string {
 	// Kind marker: a green "+" to create, a blue "→" to attach to an existing one.
-	mark := t.fg(cAttach, "→")
+	mark := theme.Attach.FG("→", tc)
 	if c.Kind == provider.KindCreate {
-		mark = t.fg(cCreate, "+")
+		mark = theme.Create.FG("+", tc)
 	}
 
 	var b strings.Builder
 	b.WriteString(mark)
 	b.WriteByte(' ')
 	if icon := cfg.Icon(c.Type); icon != "" {
-		b.WriteString(t.fg(colorOf(c.Type), icon))
+		b.WriteString(colorOf(c.Type).FG(icon, tc))
 		b.WriteByte(' ')
 	}
 	b.WriteString(bold(c.Label))
@@ -182,25 +126,25 @@ func orderByType(cands []provider.Candidate, order []string) []provider.Candidat
 	return out
 }
 
-// fzfColorSpec builds fzf's --color argument from the theme, so fzf's own
-// chrome (match highlight, pointer, prompt, border) matches the candidate
+// fzfColorSpec builds fzf's --color argument from the shared palette, so fzf's
+// own chrome (match highlight, pointer, prompt, border) matches the candidate
 // accents and uses 24-bit or 256 to suit the terminal.
-func fzfColorSpec(t theme) string {
+func fzfColorSpec(tc bool) string {
 	return strings.Join([]string{
-		"hl:" + t.spec(cTmux),
-		"hl+:" + t.spec(cTmuxp),
-		"pointer:" + t.spec(cTmuxp),
-		"prompt:" + t.spec(cTmuxp),
-		"marker:" + t.spec(cTmuxp),
-		"border:" + t.spec(cBorder),
-		"info:" + t.spec(cBorder),
+		"hl:" + theme.Blue.Spec(tc),
+		"hl+:" + theme.Coral.Spec(tc),
+		"pointer:" + theme.Coral.Spec(tc),
+		"prompt:" + theme.Coral.Spec(tc),
+		"marker:" + theme.Coral.Spec(tc),
+		"border:" + theme.Border.Spec(tc),
+		"info:" + theme.Border.Spec(tc),
 		"gutter:-1",
 	}, ",")
 }
 
 // runFzf pipes input to fzf and returns the selected line's index field, or -1
 // when cancelled.
-func runFzf(input string, t theme) (int, error) {
+func runFzf(input string, tc bool) (int, error) {
 	cmd := exec.Command("fzf",
 		"--ansi",
 		"--delimiter", "\t",
@@ -213,7 +157,7 @@ func runFzf(input string, t theme) (int, error) {
 		"--info", "inline",
 		"--cycle",
 		"--border",
-		"--color", fzfColorSpec(t),
+		"--color", fzfColorSpec(tc),
 	)
 	cmd.Stdin = strings.NewReader(input)
 	cmd.Stderr = os.Stderr

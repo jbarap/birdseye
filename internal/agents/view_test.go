@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 type fakeSource struct {
@@ -262,6 +263,29 @@ func TestPreviewLinesStripsTrailingBlanks(t *testing.T) {
 	// Truly blank capture yields nothing (caller shows a placeholder).
 	if got := previewLines("\n\n\n", 6, 50); len(got) != 0 {
 		t.Fatalf("blank pane should yield no lines, got %q", got)
+	}
+}
+
+func TestViewFitsTerminalHeightWithTallPreview(t *testing.T) {
+	// A preview far taller than the popup must not push the total view past
+	// m.height; otherwise the alt-screen scrolls and the agent list (top) is
+	// pushed out of view. Lines are long on purpose: if they wrap inside the
+	// preview frame they inflate its height past the terminal.
+	long := strings.Repeat("the quick brown fox jumps over the lazy dog ", 6)
+	var sb strings.Builder
+	for i := 0; i < 200; i++ {
+		sb.WriteString(long)
+		sb.WriteByte('\n')
+	}
+	prev := &fakePreviewer{out: map[string]string{"a": sb.String(), "b": sb.String()}}
+
+	for _, dim := range []struct{ w, h int }{{120, 24}, {160, 30}, {100, 40}} {
+		m := mustModel(t, agentsN(2), prev, DefaultKeymap())
+		m.width, m.height = dim.w, dim.h
+		if h := lipgloss.Height(m.View()); h > m.height {
+			t.Fatalf("at %dx%d: view height %d exceeds terminal height %d (would scroll list out of view)",
+				dim.w, dim.h, h, m.height)
+		}
 	}
 }
 

@@ -50,11 +50,11 @@ func newWorktreeCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			verb := "Cloned"
 			if existed {
-				fmt.Printf("Already cloned: %s\n", mainDir)
-			} else {
-				fmt.Printf("Cloned to: %s\n", mainDir)
+				verb = "Already cloned"
 			}
+			fmt.Printf("%s %s  %s\n", okMark.Render("✓"), verb, hintStyle.Render(mainDir))
 			return nil
 		},
 	}
@@ -76,7 +76,7 @@ func newWorktreeCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Printf("Created worktree: %s\n", dir)
+			fmt.Printf("%s Created worktree  %s\n", okMark.Render("✓"), hintStyle.Render(dir))
 			return nil
 		},
 	}

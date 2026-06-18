@@ -6,6 +6,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/jbarap/birds-eye/internal/theme"
 )
 
 // refreshInterval is how often the open view re-reads agent state and the
@@ -22,11 +24,15 @@ const (
 	minPreviewCols  = 24
 )
 
+// lipColor adapts a shared-palette color to lipgloss, handing it the hex value;
+// lipgloss performs its own profile-based downgrade (truecolor → 256 → 16).
+func lipColor(c theme.Color) lipgloss.Color { return lipgloss.Color(c.Hex) }
+
 var statusStyle = map[Status]lipgloss.Style{
-	StatusNeedsAttention: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("9")), // bright red
-	StatusWorking:        lipgloss.NewStyle().Foreground(lipgloss.Color("11")),           // yellow
-	StatusIdle:           lipgloss.NewStyle().Foreground(lipgloss.Color("12")),           // blue
-	StatusDone:           lipgloss.NewStyle().Foreground(lipgloss.Color("8")),            // gray
+	StatusNeedsAttention: lipgloss.NewStyle().Bold(true).Foreground(lipColor(theme.Red)),
+	StatusWorking:        lipgloss.NewStyle().Foreground(lipColor(theme.Gold)),
+	StatusIdle:           lipgloss.NewStyle().Foreground(lipColor(theme.Blue)),
+	StatusDone:           lipgloss.NewStyle().Foreground(lipColor(theme.Gray)),
 	StatusUnknown:        lipgloss.NewStyle().Faint(true),
 }
 
@@ -41,10 +47,10 @@ var statusBadge = map[Status]string{
 }
 
 var (
-	titleStyle       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("13")).Padding(0, 1)
-	frameStyle       = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("8")).Padding(0, 1)
+	titleStyle       = lipgloss.NewStyle().Bold(true).Foreground(lipColor(theme.Coral)).Padding(0, 1)
+	frameStyle       = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipColor(theme.Border)).Padding(0, 1)
 	previewTitle     = lipgloss.NewStyle().Faint(true).Padding(0, 1)
-	cursorStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("13"))
+	cursorStyle      = lipgloss.NewStyle().Foreground(lipColor(theme.Coral))
 	selectedStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15"))
 	locStyle         = lipgloss.NewStyle().Faint(true)
 	helpStyle        = lipgloss.NewStyle().Faint(true).MarginTop(1)
@@ -338,26 +344,35 @@ func (m model) showPreview() bool {
 	return m.width >= previewMinWidth
 }
 
-// renderPreview renders the preview pane, sized to fill the width beside list
-// and to match its height.
+// renderPreview renders the preview pane beside the list. It fills the leftover
+// width and is sized to the available terminal height (not the often-short
+// list) so it shows as much of the session's output as the popup allows.
 func (m model) renderPreview(list string) string {
 	w := m.width - lipgloss.Width(list) - 2 /*gap*/ - 4 /*border+padding*/
 	if w < minPreviewCols {
 		w = minPreviewCols
 	}
-	h := max(lipgloss.Height(list)-2, 1) // inside the frame's border
 
-	avail := h - 1 // reserve a line for the "preview" title
-	if avail < 1 {
-		avail = 1
+	// Inner content height: fill the terminal but leave room for everything
+	// stacked around it, so the whole view never exceeds m.height (which would
+	// scroll the list out of view). Budget: title (1) + this frame's border (2)
+	// + help text and its top margin (2) = 5.
+	inner := m.height - 5
+	if inner < 1 {
+		inner = 1
 	}
+
+	avail := max(inner-1, 1) // reserve a line for the "preview" title
 
 	lines := previewLines(m.preview, avail, w)
 	if len(lines) == 0 {
 		lines = []string{placeholderStyle.Render("(no preview available)")}
 	}
 	body := previewTitle.Render("preview") + "\n" + strings.Join(lines, "\n")
-	return frameStyle.Width(w).Height(h).Render(body)
+	// w is the text width; lipgloss Width includes the frame's horizontal
+	// padding, so set Width(w+2) to keep the text area exactly w. Otherwise
+	// each w-wide line wraps, inflating the frame height past the terminal.
+	return frameStyle.Width(w + 2).Height(inner).Render(body)
 }
 
 // previewLines turns captured pane text into at most h display lines of width w.

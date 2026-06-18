@@ -43,7 +43,9 @@ func runAgents() error {
 	var prev agents.Previewer = agents.NoopPreviewer{}
 	client, clientErr := tmux.New()
 	if clientErr == nil {
-		prev = agents.NewTmuxPreviewer(client, 0)
+		// Capture scrollback so the (now taller) preview pane has enough recent
+		// history to fill its height rather than padding with blanks.
+		prev = agents.NewTmuxPreviewer(client, 200)
 	}
 
 	chosen, err := agents.Run(src, prev, keys)
