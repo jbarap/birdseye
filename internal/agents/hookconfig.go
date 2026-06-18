@@ -79,13 +79,13 @@ func UninstallHooks(path string) (changed bool, err error) {
 	return saveIfChanged(path, settings, before)
 }
 
-// ourGroup builds a hook group invoking `be hook <event>`.
+// ourGroup builds a hook group invoking `be hook claude record <event>`.
 func ourGroup(command, event string) map[string]any {
 	return map[string]any{
 		"hooks": []any{
 			map[string]any{
 				"type":    "command",
-				"command": command + " hook " + event,
+				"command": command + " hook claude record " + event,
 			},
 		},
 	}

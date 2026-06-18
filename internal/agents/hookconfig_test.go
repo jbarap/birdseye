@@ -84,7 +84,7 @@ func TestInstallPreservesExistingConfigAndHooks(t *testing.T) {
 			if cmd == "/usr/bin/notify-send done" {
 				sawUser = true
 			}
-			if cmd == "be hook Stop" {
+			if cmd == "be hook claude record Stop" {
 				sawOurs = true
 			}
 		}
@@ -131,7 +131,7 @@ func TestInstallRefreshesChangedCommandPath(t *testing.T) {
 		for _, e := range asArray(asObject(g)["hooks"]) {
 			if isOurCommand(commandOf(e)) {
 				count++
-				if commandOf(e) != "/new/be hook Stop" {
+				if commandOf(e) != "/new/be hook claude record Stop" {
 					t.Errorf("expected refreshed command, got %q", commandOf(e))
 				}
 			}

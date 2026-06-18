@@ -9,38 +9,29 @@ import (
 	"github.com/jbarap/birds-eye/internal/agents"
 )
 
-// newHookCmd is the machine-facing recorder invoked by Claude Code hooks.
+// newHookCmd is the parent for agent status hooks. Each agent type is a
+// subcommand (currently `claude`), leaving room to add others later.
 func newHookCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "hook <event>",
-		Short: "Record agent status from a Claude Code hook (reads hook JSON on stdin)",
-		Long: "Intended to be invoked from Claude Code hooks. It reads the hook payload on\n" +
-			"stdin and records the session's status so `be agents` can display it.\n" +
-			"Known events: SessionStart, UserPromptSubmit, PreToolUse, PostToolUse,\n" +
-			"Notification, Stop, SubagentStop, SessionEnd.\n\n" +
-			"To install these hooks into your Claude config, use `be hooks install`.",
-		Args:         cobra.ExactArgs(1),
-		SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			// Never fail the agent's hook chain: best-effort record, swallow
-			// errors so a hook misconfiguration cannot block Claude Code.
-			_ = agents.HandleHook(args[0], os.Stdin)
-			return nil
-		},
+	cmd := &cobra.Command{
+		Use:   "hook",
+		Short: "Manage and feed the agent status hooks behind `be agents`",
 	}
+	cmd.AddCommand(newClaudeHookCmd())
+	return cmd
 }
 
-// newHooksCmd is the user-facing manager that safely installs/uninstalls the
-// hooks in the Claude Code settings file.
-func newHooksCmd() *cobra.Command {
-	var settingsPath string
-
-	cmd := &cobra.Command{
-		Use:   "hooks",
-		Short: "Install or remove the Claude Code hooks that feed `be agents`",
+// newClaudeHookCmd groups the Claude Code hook commands: install, uninstall,
+// and the machine-facing record verb invoked by the installed hooks.
+func newClaudeHookCmd() *cobra.Command {
+	claude := &cobra.Command{
+		Use:   "claude",
+		Short: "Claude Code hooks that report session status to `be agents`",
 	}
-	cmd.PersistentFlags().StringVar(&settingsPath, "settings", "",
-		"path to Claude settings.json (defaults to ~/.claude/settings.json)")
+
+	var (
+		settingsPath string
+		command      string
+	)
 
 	resolvePath := func() (string, error) {
 		if settingsPath != "" {
@@ -49,10 +40,9 @@ func newHooksCmd() *cobra.Command {
 		return agents.DefaultSettingsPath()
 	}
 
-	var command string
 	install := &cobra.Command{
 		Use:   "install",
-		Short: "Add bird's-eye hooks to your Claude settings, preserving existing config",
+		Short: "Add the Claude Code hooks to your settings, preserving existing config",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path, err := resolvePath()
 			if err != nil {
@@ -76,12 +66,14 @@ func newHooksCmd() *cobra.Command {
 			return nil
 		},
 	}
+	install.Flags().StringVar(&settingsPath, "settings", "",
+		"path to Claude settings.json (defaults to ~/.claude/settings.json)")
 	install.Flags().StringVar(&command, "command", "",
 		"hook command to install (defaults to the absolute path of this be binary)")
 
 	uninstall := &cobra.Command{
 		Use:   "uninstall",
-		Short: "Remove only bird's-eye hooks from your Claude settings",
+		Short: "Remove only bird's-eye's hooks from your Claude settings",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path, err := resolvePath()
 			if err != nil {
@@ -99,9 +91,29 @@ func newHooksCmd() *cobra.Command {
 			return nil
 		},
 	}
+	uninstall.Flags().StringVar(&settingsPath, "settings", "",
+		"path to Claude settings.json (defaults to ~/.claude/settings.json)")
 
-	cmd.AddCommand(install, uninstall)
-	return cmd
+	record := &cobra.Command{
+		Use:   "record <event>",
+		Short: "Record status from a Claude Code hook (reads hook JSON on stdin)",
+		Long: "Invoked by the installed Claude Code hooks. It reads the hook payload on\n" +
+			"stdin and records the session's status so `be agents` can display it.\n" +
+			"Known events: SessionStart, UserPromptSubmit, PreToolUse, PostToolUse,\n" +
+			"Notification, Stop, SubagentStop, SessionEnd.\n\n" +
+			"You normally do not run this by hand; use `be hook claude install`.",
+		Args:         cobra.ExactArgs(1),
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Never fail the agent's hook chain: best-effort record, swallow
+			// errors so a hook misconfiguration cannot block Claude Code.
+			_ = agents.HandleHook(args[0], os.Stdin)
+			return nil
+		},
+	}
+
+	claude.AddCommand(install, uninstall, record)
+	return claude
 }
 
 // resolveSelfCommand returns the absolute path of the running be binary so the

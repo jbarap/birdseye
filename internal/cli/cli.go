@@ -39,7 +39,6 @@ func Execute(version string) error {
 		newAgentsCmd(),
 		newWorktreeCmd(),
 		newHookCmd(),
-		newHooksCmd(),
 	)
 	return root.Execute()
 }

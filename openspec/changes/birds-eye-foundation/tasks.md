@@ -63,5 +63,5 @@
 
 - [x] 10.1 Set the module path to `github.com/jbarap/birds-eye` (correct GitHub username)
 - [x] 10.2 Use a `justfile` (just) for build/test/install/check recipes instead of a Makefile
-- [x] 10.3 Add `be hooks install` / `be hooks uninstall` that safely merge/remove hooks in the Claude settings file: preserve unrelated config and hooks, back up before writing, idempotent, refuse malformed JSON; `--settings` for a custom path and `--command` override (defaults to the absolute be path)
+- [x] 10.3 Add a single `be hook` command namespaced per agent type (`be hook claude install` / `uninstall` / `record <event>`, extensible to other agents) that safely merges/removes hooks in the Claude settings file: preserve unrelated config and hooks, back up before writing, idempotent, refuse malformed JSON; `--settings` for a custom path and `--command` override (defaults to the absolute be path)
 - [x] 10.4 Harden tmuxp load: detect the session actually created (snapshot sessions around the load) and connect to it when the template's session_name differs from the file name

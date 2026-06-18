@@ -1,5 +1,7 @@
 # bird's-eye (`be`)
 
+SHAMELESSLY VIBE CODED.
+
 A lightweight, hackable bird's-eye view over your tmux sessions — and the AI
 agents running inside them. `be` blends *existing* sessions with *ways to create
 new ones* into one fuzzy picker, and gives you an at-a-glance triage view of your
@@ -104,9 +106,9 @@ stale_after = "5m"                    # status older than this shows as "unknown
 pane-scraping. Install the hooks once:
 
 ```sh
-be hooks install                       # merges into ~/.claude/settings.json
-be hooks install --settings <path>     # for a non-standard settings location
-be hooks uninstall                     # removes only bird's-eye's hooks
+be hook claude install                     # merges into ~/.claude/settings.json
+be hook claude install --settings <path>   # for a non-standard settings location
+be hook claude uninstall                   # removes only bird's-eye's hooks
 ```
 
 Install is **safe**: it preserves every other key and any unrelated hooks you
@@ -116,21 +118,23 @@ bird's-eye added. By default the installed hook calls the absolute path of the
 `be` binary you ran (robust against PATH differences in Claude's hook
 environment); override with `--command`.
 
-This wires up these events in your Claude settings:
+Each agent type is its own subcommand (`be hook claude …`), so support for other
+agents can be added later without changing this interface. The install wires up
+these events in your Claude settings:
 
 ```json
 {
   "hooks": {
-    "SessionStart":     [{ "hooks": [{ "type": "command", "command": "be hook SessionStart" }] }],
-    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "be hook UserPromptSubmit" }] }],
-    "Notification":     [{ "hooks": [{ "type": "command", "command": "be hook Notification" }] }],
-    "Stop":             [{ "hooks": [{ "type": "command", "command": "be hook Stop" }] }],
-    "SessionEnd":       [{ "hooks": [{ "type": "command", "command": "be hook SessionEnd" }] }]
+    "SessionStart":     [{ "hooks": [{ "type": "command", "command": "be hook claude record SessionStart" }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "be hook claude record UserPromptSubmit" }] }],
+    "Notification":     [{ "hooks": [{ "type": "command", "command": "be hook claude record Notification" }] }],
+    "Stop":             [{ "hooks": [{ "type": "command", "command": "be hook claude record Stop" }] }],
+    "SessionEnd":       [{ "hooks": [{ "type": "command", "command": "be hook claude record SessionEnd" }] }]
   }
 }
 ```
 
-`be hook <event>` (invoked by those hooks) reads the hook payload on stdin and records state under
+`be hook claude record <event>` (invoked by those hooks) reads the hook payload on stdin and records state under
 `$XDG_STATE_HOME/birds-eye/agents/` (one file per session). The default
 event→status mapping:
 
