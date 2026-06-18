@@ -100,10 +100,10 @@ worktree = "worktree"
 # with your own text/emoji, or set a type to "" to hide its icon. (Requires a
 # Nerd Font for the defaults to render.)
 [icons]
-tmux     = ""
-tmuxp    = ""
-dir      = ""
-worktree = ""
+tmux     = ""
+tmuxp    = "󰏭"
+dir      = ""
+worktree = "󰘬"
 
 # Enable/disable providers by type (omit a type to leave it enabled).
 [providers]

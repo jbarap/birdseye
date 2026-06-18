@@ -103,10 +103,10 @@ func Default() Config {
 			"worktree": "worktree",
 		},
 		Icons: map[string]string{
-			"tmux":     "", // terminal
-			"tmuxp":    "", // files / template
-			"dir":      "", // folder
-			"worktree": "", // git branch
+			"tmux":     "", // oct-terminal
+			"tmuxp":    "󰏭", // md-pencil_box_outline
+			"dir":      "", // cod-folder
+			"worktree": "󰘬", // md-source_branch
 		},
 		Dir: Dir{UseZoxide: true},
 		Agents: Agents{
