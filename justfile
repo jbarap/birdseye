@@ -15,6 +15,14 @@ build:
 install:
     CGO_ENABLED=0 go install -trimpath -ldflags "{{ldflags}}" {{pkg}}
 
+# Remove the installed be binary from GOBIN (errors if not installed).
+uninstall:
+    #!/usr/bin/env sh
+    set -eu
+    gobin="$(go env GOBIN)"
+    [ -n "$gobin" ] || gobin="$(go env GOPATH)/bin"
+    rm "$gobin/{{binary}}"
+
 # Run all tests.
 test:
     go test ./...
