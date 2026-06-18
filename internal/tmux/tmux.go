@@ -18,10 +18,16 @@ var ErrNotInstalled = errors.New("tmux is required but was not found on PATH")
 // returned error includes tmux's stderr for diagnosis.
 type Runner func(args ...string) (string, error)
 
+// Attacher runs a foreground tmux invocation that must own the terminal
+// (attach-session). Unlike Runner it does not capture output: tmux takes over
+// the process's real stdin/stdout/stderr, which it requires to attach.
+type Attacher func(args ...string) error
+
 // Client drives tmux. Construct it with New (production) or NewWithRunner
 // (tests).
 type Client struct {
 	run    Runner
+	attach Attacher
 	inTmux bool
 }
 
@@ -31,13 +37,18 @@ func New() (*Client, error) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		return nil, ErrNotInstalled
 	}
-	return &Client{run: execRunner, inTmux: os.Getenv("TMUX") != ""}, nil
+	return &Client{run: execRunner, attach: execAttach, inTmux: os.Getenv("TMUX") != ""}, nil
 }
 
 // NewWithRunner returns a Client driven by a custom runner. inTmux selects
-// attach vs switch behavior. Intended for tests.
+// attach vs switch behavior. The attach path is routed through the same runner
+// so tests can observe it. Intended for tests.
 func NewWithRunner(run Runner, inTmux bool) *Client {
-	return &Client{run: run, inTmux: inTmux}
+	return &Client{
+		run:    run,
+		attach: func(args ...string) error { _, err := run(args...); return err },
+		inTmux: inTmux,
+	}
 }
 
 func execRunner(args ...string) (string, error) {
@@ -53,6 +64,21 @@ func execRunner(args ...string) (string, error) {
 		return "", fmt.Errorf("tmux %s: %s", strings.Join(args, " "), msg)
 	}
 	return out.String(), nil
+}
+
+// execAttach runs tmux in the foreground with the current terminal inherited so
+// it can attach. Capturing stdout/stdin (as execRunner does) makes tmux report
+// "open terminal failed: not a terminal", so attach must keep the real TTY.
+func execAttach(args ...string) error {
+	bin, err := exec.LookPath("tmux")
+	if err != nil {
+		return ErrNotInstalled
+	}
+	cmd := exec.Command(bin, args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 // HasSession reports whether a session with the given name exists.
@@ -91,8 +117,9 @@ func (c *Client) Connect(name string) error {
 		_, err := c.run("switch-client", "-t", name)
 		return err
 	}
-	_, err := c.run("attach-session", "-t", name)
-	return err
+	// Outside tmux we must hand the terminal to tmux; a captured run would fail
+	// with "open terminal failed: not a terminal".
+	return c.attach("attach-session", "-t", name)
 }
 
 // CapturePane returns the recent visible content of the target pane as plain
