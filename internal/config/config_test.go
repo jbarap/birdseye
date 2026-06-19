@@ -4,16 +4,12 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 )
 
 func TestLoadMissingFileReturnsDefaults(t *testing.T) {
 	cfg, err := LoadFrom(filepath.Join(t.TempDir(), "nope.toml"))
 	if err != nil {
 		t.Fatalf("missing file should not error: %v", err)
-	}
-	if cfg.Agents.StaleAfter.AsDuration() != 5*time.Minute {
-		t.Fatalf("expected default stale_after, got %v", cfg.Agents.StaleAfter.AsDuration())
 	}
 	if !cfg.Dir.UseZoxide {
 		t.Fatal("expected zoxide on by default")
@@ -33,6 +29,7 @@ tmuxp = false
 use_zoxide = false
 roots = ["/home/u/code"]
 
+# Retired keys from older configs must be ignored, not rejected.
 [agents]
 stale_after = "30s"
 `
@@ -41,7 +38,7 @@ stale_after = "30s"
 	}
 	cfg, err := LoadFrom(path)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("a retired agents key should be ignored, not error: %v", err)
 	}
 	if len(cfg.Order) != 2 || cfg.Order[0] != "dir" {
 		t.Fatalf("order not applied: %v", cfg.Order)
@@ -54,9 +51,6 @@ stale_after = "30s"
 	}
 	if len(cfg.Dir.Roots) != 1 || cfg.Dir.Roots[0] != "/home/u/code" {
 		t.Fatalf("roots not applied: %v", cfg.Dir.Roots)
-	}
-	if cfg.Agents.StaleAfter.AsDuration() != 30*time.Second {
-		t.Fatalf("stale_after not applied: %v", cfg.Agents.StaleAfter.AsDuration())
 	}
 }
 

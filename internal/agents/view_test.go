@@ -3,6 +3,7 @@ package agents
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -56,6 +57,8 @@ func key(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyCtrlD}
 	case "ctrl+u":
 		return tea.KeyMsg{Type: tea.KeyCtrlU}
+	case "tab":
+		return tea.KeyMsg{Type: tea.KeyTab}
 	default:
 		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 	}
@@ -159,22 +162,24 @@ func TestRebindReplacesDefaultKey(t *testing.T) {
 }
 
 func TestRefreshPreservesSelectionAcrossResort(t *testing.T) {
-	src := &fakeSource{list: agentsN(3)} // a,b,c
+	src := &fakeSource{list: agentsN(3)} // sessions a,b,c all working → grouped order a,b,c
 	m, err := newModel(src, nil, DefaultKeymap())
 	if err != nil {
 		t.Fatal(err)
 	}
+	if m.agents[1].SessionID != "b" {
+		t.Fatalf("precondition: expected b at index 1, got %s", m.agents[1].SessionID)
+	}
 	m.cursor = 1 // on "b"
 
-	// Re-sort so b lands at index 2.
-	src.list = []Agent{
-		{SessionID: "c", Title: "c", Status: StatusWorking},
-		{SessionID: "a", Title: "a", Status: StatusWorking},
-		{SessionID: "b", Title: "b", Status: StatusWorking},
-	}
+	// b's session now needs attention, so its group floats to the top and b moves
+	// to index 0. Selection must follow b by identity, not cling to index 1.
+	updated := agentsN(3)
+	updated[1].Status = StatusNeedsAttention
+	src.list = updated
 	m = send(m, tickMsg(time.Now()))
-	if m.cursor != 2 || m.agents[m.cursor].SessionID != "b" {
-		t.Fatalf("selection should follow agent b to index 2, got %d (%s)", m.cursor, m.agents[m.cursor].SessionID)
+	if m.cursor != 0 || m.agents[m.cursor].SessionID != "b" {
+		t.Fatalf("selection should follow agent b to index 0, got %d (%s)", m.cursor, m.agents[m.cursor].SessionID)
 	}
 }
 
@@ -293,5 +298,271 @@ func TestViewEmptyState(t *testing.T) {
 	m := mustModel(t, nil, nil, DefaultKeymap())
 	if !strings.Contains(m.View(), "No agents") {
 		t.Fatalf("empty view should show an informative empty state")
+	}
+}
+
+// ag builds an agent with a unique session id so dedup is irrelevant to grouping tests.
+func ag(session, window, title string, st Status) Agent {
+	return Agent{
+		SessionID:   session + "/" + window + "/" + title,
+		TmuxSession: session,
+		TmuxWindow:  window,
+		Title:       title,
+		Status:      st,
+	}
+}
+
+// shape renders the grouped items into compact tags for assertion: S:<session>,
+// W:<window>(<count>), A:<title> (nested under a window header), A:<title>@<window>
+// (collapsed single-agent window, window shown inline).
+func shape(ordered []Agent, items []renderItem) []string {
+	var got []string
+	for _, it := range items {
+		switch it.kind {
+		case kindSession:
+			got = append(got, "S:"+it.label)
+		case kindWindow:
+			got = append(got, fmt.Sprintf("W:%s(%d)", it.label, it.count))
+		case kindAgent:
+			tag := "A:" + ordered[it.agentIdx].Title
+			switch {
+			case it.nested:
+				tag += "*"
+			case it.window != "":
+				tag += "@" + it.window
+			}
+			got = append(got, tag)
+		}
+	}
+	return got
+}
+
+func TestGroupAgentsHierarchyCollapseAndOrder(t *testing.T) {
+	in := []Agent{
+		ag("api-server", "1", "write tests", StatusWorking),
+		ag("api-server", "1", "refactor auth", StatusNeedsAttention),
+		ag("api-server", "2", "migrate db", StatusIdle),
+		ag("web", "0", "ship landing", StatusDone),
+	}
+	ordered, items := groupAgents(in)
+
+	want := []string{
+		"S:api-server",     // needs-attn session floats above web (all-done)
+		"W:win 1(2)",       // window with 2 agents gets a header (index fallback)
+		"A:refactor auth*", // needs-attn ordered first within the window
+		"A:write tests*",
+		"A:migrate db@win 2", // single-agent window collapses inline, even though
+		"S:web",              // its session (api-server) spans multiple windows
+		"A:ship landing@win 0",
+	}
+	if got := shape(ordered, items); !reflect.DeepEqual(got, want) {
+		t.Fatalf("grouped shape mismatch:\n got %v\nwant %v", got, want)
+	}
+}
+
+func TestGroupAgentsUsesWindowName(t *testing.T) {
+	withName := func(session, window, name, title string, st Status) Agent {
+		a := ag(session, window, title, st)
+		a.TmuxWindowName = name
+		return a
+	}
+	in := []Agent{
+		withName("api", "1", "editor", "a1", StatusWorking),
+		withName("api", "1", "editor", "a2", StatusWorking),
+		withName("api", "2", "server", "a3", StatusIdle),
+	}
+	ordered, items := groupAgents(in)
+	want := []string{
+		"S:api",
+		"W:editor(2)", // multi-agent window shows its tmux name, not "win 1"
+		"A:a1*",
+		"A:a2*",
+		"A:a3@server", // collapsed single-agent window shows its name inline
+	}
+	if got := shape(ordered, items); !reflect.DeepEqual(got, want) {
+		t.Fatalf("window-name shape mismatch:\n got %v\nwant %v", got, want)
+	}
+}
+
+func TestGroupAgentsUngroupedBucket(t *testing.T) {
+	in := []Agent{
+		ag("api", "0", "real one", StatusDone),
+		{SessionID: "loose-id", Title: "loose", Status: StatusWorking}, // no tmux session
+	}
+	ordered, items := groupAgents(in)
+
+	// The ungrouped bucket (working, more urgent) floats above the done session.
+	want := []string{
+		"S:ungrouped",
+		"A:loose", // no tmux window → no inline label
+		"S:api",
+		"A:real one@win 0",
+	}
+	if got := shape(ordered, items); !reflect.DeepEqual(got, want) {
+		t.Fatalf("ungrouped shape mismatch:\n got %v\nwant %v", got, want)
+	}
+}
+
+func TestFoldCollapsesAndUnfolds(t *testing.T) {
+	in := []Agent{
+		ag("arewa", "1", "refactor auth", StatusNeedsAttention),
+		ag("arewa", "1", "write tests", StatusWorking),
+		ag("web", "0", "ship landing", StatusDone),
+	}
+	m, err := newModel(&fakeSource{list: in}, nil, DefaultKeymap())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.nav) != 3 {
+		t.Fatalf("unfolded: want 3 navigable rows (the agents), got %d", len(m.nav))
+	}
+
+	// Cursor starts on arewa's first agent; tab folds that section.
+	m = send(m, key("tab"))
+	if len(m.nav) != 2 {
+		t.Fatalf("after fold: want 2 navigable rows (arewa header + web agent), got %d", len(m.nav))
+	}
+	it, _ := m.currentItem()
+	if it.kind != kindSession || it.sessionKey != "arewa" {
+		t.Fatalf("cursor should rest on the folded arewa header, got %+v", it)
+	}
+	v := m.View()
+	if strings.Contains(v, "refactor auth") || strings.Contains(v, "write tests") {
+		t.Fatalf("a folded section must hide its agents:\n%s", v)
+	}
+	if !strings.Contains(v, "▸ arewa") {
+		t.Fatalf("folded header should show the collapsed glyph and label:\n%s", v)
+	}
+
+	// Tab again unfolds; the cursor drops onto the section's first agent.
+	m = send(m, key("tab"))
+	if len(m.nav) != 3 {
+		t.Fatalf("after unfold: want 3 navigable rows, got %d", len(m.nav))
+	}
+	a, ok := m.currentAgent()
+	if !ok || a.Title != "refactor auth" {
+		t.Fatalf("unfold should land on the first agent, got %+v ok=%v", a, ok)
+	}
+}
+
+func TestFoldStateSurvivesRefresh(t *testing.T) {
+	src := &fakeSource{list: []Agent{
+		ag("arewa", "1", "a1", StatusWorking),
+		ag("arewa", "1", "a2", StatusWorking),
+		ag("web", "0", "w1", StatusWorking),
+	}}
+	m, err := newModel(src, nil, DefaultKeymap())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m = send(m, key("tab")) // fold arewa (cursor starts on an arewa agent)
+	if !m.folded["arewa"] {
+		t.Fatal("arewa should be folded after tab")
+	}
+
+	m = send(m, tickMsg(time.Now()))
+	if !m.folded["arewa"] {
+		t.Fatal("fold state should survive a live refresh")
+	}
+	it, _ := m.currentItem()
+	if it.kind != kindSession || it.sessionKey != "arewa" {
+		t.Fatalf("selection should stay on the folded arewa header across refresh, got %+v", it)
+	}
+}
+
+func TestDisplayTitleStripsSessionPrefix(t *testing.T) {
+	cases := []struct {
+		title, session, want string
+	}{
+		{"arewa:birds_eye", "arewa", "birds_eye"}, // session prefix dropped
+		{"standalone", "arewa", "standalone"},     // no prefix: unchanged
+		{"arewa", "arewa", "arewa"},               // would-be-empty: keep original
+		{"x:y", "", "x:y"},                        // ungrouped: unchanged
+	}
+	for _, c := range cases {
+		if got := displayTitle(c.title, c.session); got != c.want {
+			t.Errorf("displayTitle(%q, %q) = %q, want %q", c.title, c.session, got, c.want)
+		}
+	}
+}
+
+func TestSectionJumpMotions(t *testing.T) {
+	// Three sessions; arewa has two agents in one window, the others one each.
+	in := []Agent{
+		ag("arewa", "1", "a1", StatusWorking),
+		ag("arewa", "1", "a2", StatusWorking),
+		ag("beta", "0", "b1", StatusWorking),
+		ag("gamma", "0", "g1", StatusWorking),
+	}
+	m, err := newModel(&fakeSource{list: in}, nil, DefaultKeymap())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// nav: [a1, a2, b1, g1]; section starts at 0 (arewa), 2 (beta), 3 (gamma).
+	if starts := m.sectionStarts(); !reflect.DeepEqual(starts, []int{0, 2, 3}) {
+		t.Fatalf("section starts = %v, want [0 2 3]", starts)
+	}
+
+	// } from inside arewa jumps to the start of beta.
+	m = send(m, key("}"))
+	if m.cursor != 2 {
+		t.Fatalf("} should jump to next section (beta) at nav 2, got %d", m.cursor)
+	}
+	// } again → gamma.
+	m = send(m, key("}"))
+	if m.cursor != 3 {
+		t.Fatalf("} should jump to gamma at nav 3, got %d", m.cursor)
+	}
+	// } at the last section clamps to the last row.
+	m = send(m, key("}"))
+	if m.cursor != 3 {
+		t.Fatalf("} at last section should stay at last row 3, got %d", m.cursor)
+	}
+
+	// Move into the middle of arewa, then { goes to that section's top first.
+	m = send(m, key("g")) // arm gg
+	m = send(m, key("g")) // back to top (a1)
+	m = send(m, key("j")) // a2 (still arewa, nav 1)
+	m = send(m, key("{"))
+	if m.cursor != 0 {
+		t.Fatalf("{ from mid-section should go to section top (nav 0), got %d", m.cursor)
+	}
+	// { again at the top of the first section stays at 0.
+	m = send(m, key("{"))
+	if m.cursor != 0 {
+		t.Fatalf("{ at first section top should stay at 0, got %d", m.cursor)
+	}
+	// From gamma, { steps back to beta's top.
+	m = send(m, key("G")) // gamma (nav 3)
+	m = send(m, key("{"))
+	if m.cursor != 2 {
+		t.Fatalf("{ from gamma should go to beta top (nav 2), got %d", m.cursor)
+	}
+}
+
+func TestNavigationCrossesGroupsLeavesOnly(t *testing.T) {
+	in := []Agent{
+		ag("api", "1", "a1", StatusWorking),
+		ag("api", "1", "a2", StatusWorking),
+		ag("web", "0", "w1", StatusWorking),
+	}
+	m, err := newModel(&fakeSource{list: in}, nil, DefaultKeymap())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.agents) != 3 {
+		t.Fatalf("expected 3 selectable leaves, got %d", len(m.agents))
+	}
+
+	// G lands on the last agent leaf, never a header; one j past it stays put.
+	m = send(m, key("G"))
+	if m.cursor != 2 || m.agents[m.cursor].Title != "w1" {
+		t.Fatalf("G should land on last agent w1, got cursor %d", m.cursor)
+	}
+
+	// The view brackets the leaves with session and window headers.
+	v := m.View()
+	if !strings.Contains(v, "api") || !strings.Contains(v, "win 1") || !strings.Contains(v, "web") {
+		t.Fatalf("view should show session and window headers:\n%s", v)
 	}
 }

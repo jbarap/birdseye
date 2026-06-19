@@ -1,6 +1,9 @@
 package agents
 
 import (
+	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -47,28 +50,34 @@ var statusBadge = map[Status]string{
 }
 
 var (
-	titleStyle       = lipgloss.NewStyle().Bold(true).Foreground(lipColor(theme.Coral)).Padding(0, 1)
-	frameStyle       = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipColor(theme.Border)).Padding(0, 1)
-	previewTitle     = lipgloss.NewStyle().Faint(true).Padding(0, 1)
-	cursorStyle      = lipgloss.NewStyle().Foreground(lipColor(theme.Coral))
-	selectedStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15"))
-	locStyle         = lipgloss.NewStyle().Faint(true)
-	helpStyle        = lipgloss.NewStyle().Faint(true).MarginTop(1)
-	placeholderStyle = lipgloss.NewStyle().Faint(true).Italic(true)
+	titleStyle         = lipgloss.NewStyle().Bold(true).Foreground(lipColor(theme.Coral)).Padding(0, 1)
+	frameStyle         = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipColor(theme.Border)).Padding(0, 1)
+	previewTitle       = lipgloss.NewStyle().Faint(true).Padding(0, 1)
+	cursorStyle        = lipgloss.NewStyle().Foreground(lipColor(theme.Coral))
+	selectedStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15"))
+	locStyle           = lipgloss.NewStyle().Faint(true)
+	helpStyle          = lipgloss.NewStyle().Faint(true).MarginTop(1)
+	placeholderStyle   = lipgloss.NewStyle().Faint(true).Italic(true)
+	sessionHeaderStyle = lipgloss.NewStyle().Bold(true).Foreground(lipColor(theme.Blue))
+	windowHeaderStyle  = lipgloss.NewStyle().Foreground(lipColor(theme.Gray))
+	guideStyle         = lipgloss.NewStyle().Foreground(lipColor(theme.Border))
 )
 
 // helpOrder is the order actions appear in the help line.
-var helpOrder = []Action{ActionDown, ActionUp, ActionTop, ActionBottom, ActionSelect, ActionQuit}
+var helpOrder = []Action{ActionDown, ActionUp, ActionTop, ActionBottom, ActionPrevSection, ActionNextSection, ActionFold, ActionSelect, ActionQuit}
 
 var actionLabel = map[Action]string{
-	ActionUp:       "up",
-	ActionDown:     "down",
-	ActionTop:      "top",
-	ActionBottom:   "bottom",
-	ActionHalfUp:   "half-up",
-	ActionHalfDown: "half-down",
-	ActionSelect:   "jump",
-	ActionQuit:     "quit",
+	ActionUp:          "up",
+	ActionDown:        "down",
+	ActionTop:         "top",
+	ActionBottom:      "bottom",
+	ActionHalfUp:      "half-up",
+	ActionHalfDown:    "half-down",
+	ActionPrevSection: "prev",
+	ActionNextSection: "next session",
+	ActionSelect:      "jump",
+	ActionFold:        "fold",
+	ActionQuit:        "quit",
 }
 
 // tickMsg drives the periodic live refresh.
@@ -81,8 +90,11 @@ type model struct {
 	keys Keymap
 	res  *resolver
 
-	agents  []Agent
-	cursor  int
+	agents  []Agent         // agent leaves in render order
+	items   []renderItem    // full tree: headers + agent rows interleaved
+	folded  map[string]bool // session keys whose section is collapsed
+	nav     []int           // item indices the cursor can land on, given fold state
+	cursor  int             // index into nav (an agent, or a folded session header)
 	chosen  *Agent
 	pending rune // armed first rune of a chord (0 = none)
 
@@ -97,14 +109,61 @@ func newModel(src Source, prev Previewer, keys Keymap) (model, error) {
 	if err != nil {
 		return model{}, err
 	}
-	m := model{src: src, prev: prev, keys: keys, res: res}
+	m := model{src: src, prev: prev, keys: keys, res: res, folded: map[string]bool{}}
 	list, err := src.Agents()
 	if err != nil {
 		return model{}, err
 	}
-	m.agents = list
+	m.setAgents(list)
 	m.refreshPreview()
 	return m, nil
+}
+
+// setAgents arranges the source's agents into the session→window render order,
+// caches the interleaved items, drops fold state for sessions that are gone, and
+// recomputes the navigable rows.
+func (m *model) setAgents(list []Agent) {
+	m.agents, m.items = groupAgents(list)
+	m.pruneFolded()
+	m.recomputeNav()
+}
+
+// pruneFolded keeps fold state only for sessions still present, so the map does
+// not grow without bound as sessions come and go.
+func (m *model) pruneFolded() {
+	if len(m.folded) == 0 {
+		return
+	}
+	present := map[string]bool{}
+	for _, it := range m.items {
+		if it.kind == kindSession {
+			present[it.sessionKey] = true
+		}
+	}
+	for key := range m.folded {
+		if !present[key] {
+			delete(m.folded, key)
+		}
+	}
+}
+
+// recomputeNav rebuilds the list of item indices the cursor may land on: every
+// agent of an unfolded session, plus the header of each folded session (its single
+// navigable stand-in). Window headers are never navigable.
+func (m *model) recomputeNav() {
+	m.nav = m.nav[:0]
+	for i, it := range m.items {
+		switch it.kind {
+		case kindSession:
+			if m.folded[it.sessionKey] {
+				m.nav = append(m.nav, i)
+			}
+		case kindAgent:
+			if !m.folded[it.sessionKey] {
+				m.nav = append(m.nav, i)
+			}
+		}
+	}
 }
 
 // Run renders the agents view and blocks until the user selects an agent or
@@ -151,23 +210,43 @@ func (m *model) reload() {
 		return
 	}
 	m.err = nil
-	var selID string
-	if m.cursor >= 0 && m.cursor < len(m.agents) {
-		selID = m.agents[m.cursor].SessionID
-	}
-	m.agents = list
-	m.cursor = relocate(list, selID, m.cursor)
+	selKey := m.currentRowKey()
+	m.setAgents(list)
+	m.cursor = relocate(m, selKey, m.cursor)
 	m.refreshPreview()
 }
 
-// relocate finds selID in the new list, else clamps the old index into bounds.
-func relocate(list []Agent, selID string, old int) int {
-	if len(list) == 0 {
+// rowKey identifies a navigable row by what it represents — an agent (by session
+// id) or a folded session header (by session key) — so selection can follow that
+// row across a refresh even as ordering or fold state shifts.
+func (m model) rowKey(itemIdx int) string {
+	it := m.items[itemIdx]
+	switch it.kind {
+	case kindAgent:
+		return "a:" + m.agents[it.agentIdx].SessionID
+	case kindSession:
+		return "s:" + it.sessionKey
+	}
+	return ""
+}
+
+// currentRowKey is the rowKey of the row under the cursor, or "" when none.
+func (m model) currentRowKey() string {
+	if m.cursor < 0 || m.cursor >= len(m.nav) {
+		return ""
+	}
+	return m.rowKey(m.nav[m.cursor])
+}
+
+// relocate finds the row matching selKey in the rebuilt nav, else clamps the old
+// cursor into bounds.
+func relocate(m *model, selKey string, old int) int {
+	if len(m.nav) == 0 {
 		return 0
 	}
-	if selID != "" {
-		for i, a := range list {
-			if a.SessionID == selID {
+	if selKey != "" {
+		for i, itemIdx := range m.nav {
+			if m.rowKey(itemIdx) == selKey {
 				return i
 			}
 		}
@@ -175,19 +254,59 @@ func relocate(list []Agent, selID string, old int) int {
 	if old < 0 {
 		return 0
 	}
-	if old >= len(list) {
-		return len(list) - 1
+	if old >= len(m.nav) {
+		return len(m.nav) - 1
 	}
 	return old
 }
 
+// currentItem returns the item under the cursor.
+func (m model) currentItem() (renderItem, bool) {
+	if m.cursor < 0 || m.cursor >= len(m.nav) {
+		return renderItem{}, false
+	}
+	return m.items[m.nav[m.cursor]], true
+}
+
+// currentAgent returns the agent the cursor points at: the selected agent leaf, or
+// the most-urgent agent of a folded session whose header is selected. The second
+// case lets the preview and jump still target something useful while folded.
+func (m model) currentAgent() (Agent, bool) {
+	it, ok := m.currentItem()
+	if !ok {
+		return Agent{}, false
+	}
+	switch it.kind {
+	case kindAgent:
+		return m.agents[it.agentIdx], true
+	case kindSession:
+		return m.firstAgentOfSession(it.sessionKey)
+	}
+	return Agent{}, false
+}
+
+// firstAgentOfSession returns the first agent (in render order) of a session.
+func (m model) firstAgentOfSession(key string) (Agent, bool) {
+	for _, it := range m.items {
+		if it.kind == kindAgent && it.sessionKey == key {
+			return m.agents[it.agentIdx], true
+		}
+	}
+	return Agent{}, false
+}
+
 // refreshPreview captures the selected agent's preview, caching the result.
 func (m *model) refreshPreview() {
-	if m.prev == nil || len(m.agents) == 0 || m.cursor < 0 || m.cursor >= len(m.agents) {
+	if m.prev == nil {
 		m.preview = ""
 		return
 	}
-	out, err := m.prev.Preview(m.agents[m.cursor])
+	a, ok := m.currentAgent()
+	if !ok {
+		m.preview = ""
+		return
+	}
+	out, err := m.prev.Preview(a)
 	if err != nil {
 		m.preview = ""
 		return
@@ -227,7 +346,7 @@ func (m model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m model) applyAction(a Action) (tea.Model, tea.Cmd) {
 	old := m.cursor
-	last := len(m.agents) - 1
+	last := len(m.nav) - 1
 	switch a {
 	case ActionUp:
 		if m.cursor > 0 {
@@ -247,9 +366,14 @@ func (m model) applyAction(a Action) (tea.Model, tea.Cmd) {
 		m.cursor = clamp(m.cursor-m.halfPage(), 0, max(last, 0))
 	case ActionHalfDown:
 		m.cursor = clamp(m.cursor+m.halfPage(), 0, max(last, 0))
+	case ActionPrevSection:
+		m.cursor = m.prevSection()
+	case ActionNextSection:
+		m.cursor = m.nextSection()
+	case ActionFold:
+		return m.toggleFold()
 	case ActionSelect:
-		if len(m.agents) > 0 {
-			a := m.agents[m.cursor]
+		if a, ok := m.currentAgent(); ok {
 			m.chosen = &a
 		}
 		return m, tea.Quit
@@ -260,6 +384,97 @@ func (m model) applyAction(a Action) (tea.Model, tea.Cmd) {
 		m.refreshPreview()
 	}
 	return m, nil
+}
+
+// toggleFold collapses or expands the section under the cursor. Folding a section
+// from one of its agents leaves the cursor on the now-collapsed session header;
+// unfolding from that header drops the cursor onto the section's first agent.
+func (m model) toggleFold() (tea.Model, tea.Cmd) {
+	it, ok := m.currentItem()
+	if !ok {
+		return m, nil
+	}
+	key := it.sessionKey
+	m.folded[key] = !m.folded[key]
+	m.recomputeNav()
+	m.cursor = m.navIndexForSession(key)
+	m.refreshPreview()
+	return m, nil
+}
+
+// navIndexForSession returns the cursor position of a session's navigable row: its
+// header when folded, otherwise its first agent.
+func (m model) navIndexForSession(key string) int {
+	for i, itemIdx := range m.nav {
+		it := m.items[itemIdx]
+		if it.sessionKey == key && (it.kind == kindSession || it.kind == kindAgent) {
+			return i
+		}
+	}
+	return clamp(m.cursor, 0, max(len(m.nav)-1, 0))
+}
+
+// sectionStarts returns the nav indices at which each session section begins.
+// Sections are contiguous runs of navigable rows sharing a session key.
+func (m model) sectionStarts() []int {
+	var starts []int
+	prev := ""
+	for i, itemIdx := range m.nav {
+		key := m.items[itemIdx].sessionKey
+		if i == 0 || key != prev {
+			starts = append(starts, i)
+		}
+		prev = key
+	}
+	return starts
+}
+
+// sectionStart is the nav index where the cursor's current section begins.
+func (m model) sectionStart() int {
+	cur := 0
+	for _, s := range m.sectionStarts() {
+		if s <= m.cursor {
+			cur = s
+		} else {
+			break
+		}
+	}
+	return cur
+}
+
+// nextSection moves to the first row of the following section, or the last row
+// when already in the final section (mirroring vim's `}` at end of buffer).
+func (m model) nextSection() int {
+	if len(m.nav) == 0 {
+		return 0
+	}
+	cur := m.sectionStart()
+	for _, s := range m.sectionStarts() {
+		if s > cur {
+			return s
+		}
+	}
+	return len(m.nav) - 1
+}
+
+// prevSection moves to the top of the current section, or — when already there —
+// to the top of the previous section (mirroring vim's `{`).
+func (m model) prevSection() int {
+	if len(m.nav) == 0 {
+		return 0
+	}
+	cur := m.sectionStart()
+	if m.cursor > cur {
+		return cur
+	}
+	prev := 0
+	for _, s := range m.sectionStarts() {
+		if s >= cur {
+			break
+		}
+		prev = s
+	}
+	return prev
 }
 
 // halfPage is half the visible list height, at least 1.
@@ -302,36 +517,259 @@ func (m model) emptyView() string {
 	return b.String()
 }
 
+// renderKind distinguishes the line types in the grouped list.
+type renderKind int
+
+const (
+	kindSession renderKind = iota // top-level tmux session header
+	kindWindow                    // window header, shown only for windows with >1 agent
+	kindAgent                     // a selectable agent leaf
+)
+
+// renderItem is one line of the grouped list. Session and window items are headers
+// (not selectable); an agent item points at an entry in the ordered agents slice.
+// nested marks an agent drawn under a window header (deeper indent); a non-nested
+// agent is a collapsed single-agent window and carries its window label inline.
+type renderItem struct {
+	kind       renderKind
+	label      string // session name, "ungrouped", or window name
+	sessionKey string // owning tmux session (its own key for a session header)
+	window     string // inline window label for a collapsed (non-nested) agent
+	count      int    // agents in the window (window header) or session (session header)
+	nested     bool   // agent drawn beneath a window header
+	agentIdx   int    // index into model.agents, for kindAgent
+}
+
+// sessionGroup and windowGroup hold the partition built by groupAgents.
+type windowGroup struct {
+	name   string // window index, used for ordering and as a fallback label
+	title  string // window's tmux name, shown when present
+	agents []Agent
+}
+
+// windowLabel is how a window is shown: its tmux name when set, else "win <index>".
+// With neither (an agent outside tmux) it is empty, so no window label is shown.
+func windowLabel(index, name string) string {
+	if name != "" {
+		return name
+	}
+	if index != "" {
+		return "win " + index
+	}
+	return ""
+}
+
+type sessionGroup struct {
+	key     string // tmux session, "" for the ungrouped bucket
+	windows []*windowGroup
+	winIdx  map[string]*windowGroup
+}
+
+// groupAgents arranges agents into a session→window tree and returns them in render
+// order alongside the interleaved header/agent items the view draws. Sessions and
+// windows are ordered by their most-urgent member (lowest status rank), then by
+// name; agents within a window by status rank then title. A window holding a single
+// agent collapses — its agent renders inline (carrying the window label) with no
+// window header. Agents lacking a tmux session collect under an "ungrouped" heading.
+func groupAgents(in []Agent) ([]Agent, []renderItem) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+
+	var sessions []*sessionGroup
+	sessIdx := map[string]*sessionGroup{}
+	for _, a := range in {
+		sg := sessIdx[a.TmuxSession]
+		if sg == nil {
+			sg = &sessionGroup{key: a.TmuxSession, winIdx: map[string]*windowGroup{}}
+			sessIdx[a.TmuxSession] = sg
+			sessions = append(sessions, sg)
+		}
+		wg := sg.winIdx[a.TmuxWindow]
+		if wg == nil {
+			wg = &windowGroup{name: a.TmuxWindow, title: a.TmuxWindowName}
+			sg.winIdx[a.TmuxWindow] = wg
+			sg.windows = append(sg.windows, wg)
+		}
+		wg.agents = append(wg.agents, a)
+	}
+
+	for _, sg := range sessions {
+		for _, wg := range sg.windows {
+			sort.SliceStable(wg.agents, func(i, j int) bool { return agentLess(wg.agents[i], wg.agents[j]) })
+		}
+		sort.SliceStable(sg.windows, func(i, j int) bool {
+			if ri, rj := groupRank(sg.windows[i].agents), groupRank(sg.windows[j].agents); ri != rj {
+				return ri < rj
+			}
+			return windowLess(sg.windows[i].name, sg.windows[j].name)
+		})
+	}
+	sort.SliceStable(sessions, func(i, j int) bool {
+		if ri, rj := sessionRank(sessions[i]), sessionRank(sessions[j]); ri != rj {
+			return ri < rj
+		}
+		return sessions[i].key < sessions[j].key
+	})
+
+	ordered := make([]Agent, 0, len(in))
+	items := make([]renderItem, 0, len(in))
+	for _, sg := range sessions {
+		label := sg.key
+		if label == "" {
+			label = "ungrouped"
+		}
+		items = append(items, renderItem{kind: kindSession, label: label, sessionKey: sg.key, count: sessionCount(sg)})
+		for _, wg := range sg.windows {
+			label := windowLabel(wg.name, wg.title)
+			if len(wg.agents) == 1 {
+				ordered = append(ordered, wg.agents[0])
+				items = append(items, renderItem{kind: kindAgent, sessionKey: sg.key, window: label, agentIdx: len(ordered) - 1})
+				continue
+			}
+			items = append(items, renderItem{kind: kindWindow, label: label, sessionKey: sg.key, count: len(wg.agents)})
+			for _, a := range wg.agents {
+				ordered = append(ordered, a)
+				items = append(items, renderItem{kind: kindAgent, sessionKey: sg.key, nested: true, agentIdx: len(ordered) - 1})
+			}
+		}
+	}
+	return ordered, items
+}
+
+// agentLess orders agents within a window: most-urgent status first, then title.
+func agentLess(a, b Agent) bool {
+	if a.Status.rank() != b.Status.rank() {
+		return a.Status.rank() < b.Status.rank()
+	}
+	return a.Title < b.Title
+}
+
+// groupRank is the urgency of a set of agents: the lowest (most-urgent) status rank.
+func groupRank(agents []Agent) int {
+	r := int(^uint(0) >> 1) // max int
+	for _, a := range agents {
+		if rk := a.Status.rank(); rk < r {
+			r = rk
+		}
+	}
+	return r
+}
+
+// sessionCount totals the agents across a session's windows.
+func sessionCount(sg *sessionGroup) int {
+	n := 0
+	for _, wg := range sg.windows {
+		n += len(wg.agents)
+	}
+	return n
+}
+
+// sessionRank is a session's urgency: the lowest status rank across its windows.
+func sessionRank(sg *sessionGroup) int {
+	r := int(^uint(0) >> 1)
+	for _, wg := range sg.windows {
+		if rk := groupRank(wg.agents); rk < r {
+			r = rk
+		}
+	}
+	return r
+}
+
+// windowLess orders window names numerically when both are tmux window indices,
+// falling back to lexical order otherwise.
+func windowLess(a, b string) bool {
+	ai, aerr := strconv.Atoi(a)
+	bi, berr := strconv.Atoi(b)
+	if aerr == nil && berr == nil {
+		return ai < bi
+	}
+	return a < b
+}
+
+// renderRows walks the tree, skipping rows hidden under a folded section, and draws
+// each visible item with depth-based indent guides and the cursor marker.
 func (m model) renderRows() string {
-	rows := make([]string, len(m.agents))
-	for i, a := range m.agents {
-		rows[i] = m.renderRow(i, a)
+	selItem := -1
+	if m.cursor >= 0 && m.cursor < len(m.nav) {
+		selItem = m.nav[m.cursor]
+	}
+	var rows []string
+	for i, it := range m.items {
+		if it.kind != kindSession && m.folded[it.sessionKey] {
+			continue // hidden beneath a folded session
+		}
+		selected := i == selItem
+		marker := "  "
+		if selected {
+			marker = cursorStyle.Render("▌ ")
+		}
+		rows = append(rows, marker+m.guides(itemDepth(it))+m.itemContent(it, selected))
 	}
 	return strings.Join(rows, "\n")
 }
 
-func (m model) renderRow(i int, a Agent) string {
-	selected := i == m.cursor
-
-	marker := "  "
-	if selected {
-		marker = cursorStyle.Render("▌ ")
+// itemDepth is the indentation level of an item: sessions at 0, windows and
+// collapsed single-agent rows at 1, agents under a window header at 2.
+func itemDepth(it renderItem) int {
+	switch it.kind {
+	case kindWindow:
+		return 1
+	case kindAgent:
+		if it.nested {
+			return 2
+		}
+		return 1
+	default:
+		return 0
 	}
+}
 
-	badge := statusStyle[a.Status].Render(padRight(statusBadge[a.Status], badgeWidth))
-
-	loc := a.TmuxSession
-	if a.TmuxWindow != "" {
-		loc += ":" + a.TmuxWindow
+// guides renders n levels of faint vertical indent guides.
+func (m model) guides(n int) string {
+	if n <= 0 {
+		return ""
 	}
-	loc = padRight(truncate(loc, locColWidth), locColWidth)
+	return guideStyle.Render(strings.Repeat("│ ", n))
+}
 
-	title := padRight(truncate(a.Title, titleColWidth), titleColWidth)
-	if selected {
-		title = selectedStyle.Render(title)
+// itemContent renders the text of one row (without marker or indent guides).
+func (m model) itemContent(it renderItem, selected bool) string {
+	switch it.kind {
+	case kindSession:
+		if m.folded[it.sessionKey] {
+			return sessionHeaderStyle.Render(fmt.Sprintf("▸ %s  (%d)", it.label, it.count))
+		}
+		return sessionHeaderStyle.Render("▾ " + it.label)
+	case kindWindow:
+		return windowHeaderStyle.Render(it.label)
+	case kindAgent:
+		a := m.agents[it.agentIdx]
+		badge := statusStyle[a.Status].Render(padRight(statusBadge[a.Status], badgeWidth))
+		title := padRight(truncate(displayTitle(a.Title, it.sessionKey), titleColWidth), titleColWidth)
+		if selected {
+			title = selectedStyle.Render(title)
+		}
+		row := badge + " " + title
+		if !it.nested && it.window != "" {
+			row += " " + locStyle.Render(truncate(it.window, locColWidth))
+		}
+		return row
 	}
+	return ""
+}
 
-	return marker + badge + " " + title + " " + locStyle.Render(loc)
+// displayTitle drops a leading "<session>:" from an agent title, since the session
+// is already shown by its header — "arewa:birds_eye" under session "arewa" becomes
+// "birds_eye". Titles without that prefix (or ungrouped agents) are unchanged.
+func displayTitle(title, sessionKey string) string {
+	if sessionKey == "" {
+		return title
+	}
+	if rest := strings.TrimPrefix(title, sessionKey+":"); rest != title && rest != "" {
+		return rest
+	}
+	return title
 }
 
 func (m model) showPreview() bool {
@@ -429,6 +867,8 @@ func prettyKey(k string) string {
 		return "↓"
 	case "enter":
 		return "⏎"
+	case "tab":
+		return "⇥"
 	default:
 		return k
 	}

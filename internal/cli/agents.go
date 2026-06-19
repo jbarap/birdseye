@@ -28,18 +28,14 @@ func runAgents() error {
 	if err != nil {
 		return err
 	}
-	src, err := agents.NewClaudeSource(
-		cfg.Agents.StaleAfter.AsDuration(),
-		cfg.Agents.ForgetDone.AsDuration(),
-		cfg.Agents.ForgetStale.AsDuration(),
-	)
+	src, err := agents.NewClaudeSource()
 	if err != nil {
 		return err
 	}
 
-	// A tmux client (when available) backs both the live preview and the
-	// jump-to-session. When tmux is absent the preview is disabled and the view
-	// still works for triage.
+	// A tmux client (when available) backs the live preview and jump-to-session.
+	// When tmux is absent the preview is disabled and the view still works for
+	// triage; agent cleanup is independent of tmux (it uses process liveness).
 	var prev agents.Previewer = agents.NoopPreviewer{}
 	client, clientErr := tmux.New()
 	if clientErr == nil {

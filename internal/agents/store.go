@@ -10,13 +10,15 @@ import (
 
 // record is the on-disk per-session state a hook writes and the source reads.
 type record struct {
-	SessionID   string    `json:"session_id"`
-	TmuxSession string    `json:"tmux_session"`
-	TmuxWindow  string    `json:"tmux_window"`
-	TmuxPane    string    `json:"tmux_pane"`
-	Title       string    `json:"title"`
-	Status      Status    `json:"status"`
-	Updated     time.Time `json:"updated"`
+	SessionID      string    `json:"session_id"`
+	PID            int       `json:"pid"`
+	TmuxSession    string    `json:"tmux_session"`
+	TmuxWindow     string    `json:"tmux_window"`
+	TmuxWindowName string    `json:"tmux_window_name"`
+	TmuxPane       string    `json:"tmux_pane"`
+	Title          string    `json:"title"`
+	Status         Status    `json:"status"`
+	Updated        time.Time `json:"updated"`
 }
 
 // StateDir returns the directory where agent state files live, following the

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -55,40 +54,15 @@ type Worktree struct {
 	Root string `toml:"root"`
 }
 
-// Agents configures the agent view.
+// Agents configures the agent view. Agent state is now reclaimed by process
+// liveness (an entry exists only while its Claude process runs), so there are no
+// retention/stale knobs here.
 type Agents struct {
-	// StaleAfter is how long since a hook last wrote state before an agent's
-	// status is treated as unknown.
-	StaleAfter Duration `toml:"stale_after"`
-	// ForgetDone is how long an ended (done) session is kept before its state
-	// file is deleted and it drops off the list. Zero disables pruning of done
-	// sessions.
-	ForgetDone Duration `toml:"forget_done"`
-	// ForgetStale is how long a non-terminal (working/idle/needs-attention)
-	// session with no fresh updates is kept before its state file is deleted,
-	// reclaiming crashed or abandoned sessions. Zero disables this pruning.
-	ForgetStale Duration `toml:"forget_stale"`
 	// Keys overrides the agents-view keybindings, mapping an action name (under
 	// [agents.keys]) to the keys that trigger it. Absent actions keep their
 	// built-in bindings; an action listed here replaces (not extends) its keys.
 	Keys map[string][]string `toml:"keys"`
 }
-
-// Duration is a time.Duration that decodes from a TOML string like "5m".
-type Duration time.Duration
-
-// UnmarshalText implements encoding.TextUnmarshaler for TOML decoding.
-func (d *Duration) UnmarshalText(text []byte) error {
-	v, err := time.ParseDuration(string(text))
-	if err != nil {
-		return err
-	}
-	*d = Duration(v)
-	return nil
-}
-
-// AsDuration returns the value as a time.Duration.
-func (d Duration) AsDuration() time.Duration { return time.Duration(d) }
 
 // Default returns the built-in configuration used when no file (or no key) is
 // present.
@@ -109,11 +83,6 @@ func Default() Config {
 			"worktree": "󰘬", // md-source_branch
 		},
 		Dir: Dir{UseZoxide: true},
-		Agents: Agents{
-			StaleAfter:  Duration(5 * time.Minute),
-			ForgetDone:  Duration(24 * time.Hour),
-			ForgetStale: Duration(24 * time.Hour),
-		},
 	}
 }
 

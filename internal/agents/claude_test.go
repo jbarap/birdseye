@@ -2,6 +2,7 @@ package agents
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -24,49 +25,100 @@ func TestStatusForEvent(t *testing.T) {
 	}
 }
 
-func TestAgentsMarksStaleAsUnknown(t *testing.T) {
+// alwaysAlive is a liveness stub that keeps every record (treats all pids live).
+func alwaysAlive(int) bool { return true }
+
+func TestProcessAlive(t *testing.T) {
+	if !processAlive(os.Getpid()) {
+		t.Fatal("the current process should report alive")
+	}
+	if processAlive(0) || processAlive(-1) {
+		t.Fatal("a non-positive pid is never alive")
+	}
+	// A reaped child's pid is no longer running.
+	cmd := exec.Command("true")
+	if err := cmd.Run(); err != nil {
+		t.Skipf("cannot run 'true' to obtain a dead pid: %v", err)
+	}
+	if processAlive(cmd.Process.Pid) {
+		t.Errorf("reaped pid %d should not be alive", cmd.Process.Pid)
+	}
+}
+
+func TestWalkToClaudeFindsSessionProcess(t *testing.T) {
+	// Synthetic tree: be(10) -> sh(11, ephemeral) -> claude(12) -> zsh(13) -> tmux(14).
+	// The hook starts the walk at its parent (the shell) and must land on claude.
+	tree := map[int]struct {
+		ppid int
+		comm string
+	}{
+		11: {12, "sh"},
+		12: {13, "/usr/local/bin/claude"}, // full path: basename still matches
+		13: {14, "zsh"},
+		14: {1, "tmux: server"},
+	}
+	parent := func(pid int) (int, string) { return tree[pid].ppid, tree[pid].comm }
+
+	got, ok := walkToClaude(11, parent)
+	if !ok || got != 12 {
+		t.Fatalf("walk should find claude pid 12, got pid=%d ok=%v", got, ok)
+	}
+
+	// No Claude in the chain: report not-found so the caller can fall back.
+	plain := map[int]struct {
+		ppid int
+		comm string
+	}{11: {13, "sh"}, 13: {1, "zsh"}}
+	if _, ok := walkToClaude(11, func(p int) (int, string) { return plain[p].ppid, plain[p].comm }); ok {
+		t.Fatal("walk should not find a claude ancestor when none exists")
+	}
+}
+
+func TestAgentsReclaimsDeadProcesses(t *testing.T) {
 	dir := t.TempDir()
-	fresh := record{SessionID: "a", Title: "fresh", Status: StatusWorking, Updated: time.Now()}
-	stale := record{SessionID: "b", Title: "stale", Status: StatusWorking, Updated: time.Now().Add(-time.Hour)}
-	done := record{SessionID: "c", Title: "done", Status: StatusDone, Updated: time.Now().Add(-time.Hour)}
-	for _, r := range []record{fresh, stale, done} {
+	now := time.Now()
+	for _, r := range []record{
+		{SessionID: "live", PID: 100, TmuxSession: "s", TmuxPane: "%1", Title: "live", Status: StatusWorking, Updated: now},
+		// Pane still open (a leftover shell), but the Claude process is gone.
+		{SessionID: "dead", PID: 200, TmuxSession: "s", TmuxPane: "%2", Title: "dead", Status: StatusIdle, Updated: now},
+		// Legacy record with no pid: cannot be confirmed live, so reclaimed.
+		{SessionID: "legacy", PID: 0, Title: "legacy", Status: StatusDone, Updated: now},
+	} {
 		if err := writeRecord(dir, r); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	s := &ClaudeSource{dir: dir, staleAfter: 5 * time.Minute, now: time.Now}
+	s := &ClaudeSource{dir: dir, alive: func(pid int) bool { return pid == 100 }}
 	got, err := s.Agents()
 	if err != nil {
 		t.Fatal(err)
 	}
-	byTitle := map[string]Status{}
-	for _, a := range got {
-		byTitle[a.Title] = a.Status
+	if len(got) != 1 || got[0].SessionID != "live" {
+		t.Fatalf("only the live-process agent should remain, got %+v", got)
 	}
-	if byTitle["fresh"] != StatusWorking {
-		t.Errorf("fresh should stay working, got %q", byTitle["fresh"])
+	for _, id := range []string{"dead", "legacy"} {
+		if _, err := os.Stat(filepath.Join(dir, sanitize(id)+".json")); !os.IsNotExist(err) {
+			t.Fatalf("%s state file should be deleted, stat err=%v", id, err)
+		}
 	}
-	if byTitle["stale"] != StatusUnknown {
-		t.Errorf("stale should become unknown, got %q", byTitle["stale"])
-	}
-	if byTitle["done"] != StatusDone {
-		t.Errorf("done should stay done despite age, got %q", byTitle["done"])
+	if _, err := os.Stat(filepath.Join(dir, sanitize("live")+".json")); err != nil {
+		t.Fatalf("live record must remain: %v", err)
 	}
 }
 
 func TestAgentsSortsNeedsAttentionFirst(t *testing.T) {
 	dir := t.TempDir()
 	for _, r := range []record{
-		{SessionID: "1", Title: "idle-one", Status: StatusIdle, Updated: time.Now()},
-		{SessionID: "2", Title: "attn-one", Status: StatusNeedsAttention, Updated: time.Now()},
-		{SessionID: "3", Title: "work-one", Status: StatusWorking, Updated: time.Now()},
+		{SessionID: "1", PID: 1, Title: "idle-one", Status: StatusIdle, Updated: time.Now()},
+		{SessionID: "2", PID: 1, Title: "attn-one", Status: StatusNeedsAttention, Updated: time.Now()},
+		{SessionID: "3", PID: 1, Title: "work-one", Status: StatusWorking, Updated: time.Now()},
 	} {
 		if err := writeRecord(dir, r); err != nil {
 			t.Fatal(err)
 		}
 	}
-	s := &ClaudeSource{dir: dir, staleAfter: time.Hour, now: time.Now}
+	s := &ClaudeSource{dir: dir, alive: alwaysAlive}
 	got, _ := s.Agents()
 	if len(got) == 0 || got[0].Status != StatusNeedsAttention {
 		t.Fatalf("needs-attention should sort first, got %+v", got)
@@ -90,7 +142,7 @@ func TestAgentsDedupsSharedLocation(t *testing.T) {
 		}
 	}
 
-	s := &ClaudeSource{dir: dir, staleAfter: 0, now: time.Now}
+	s := &ClaudeSource{dir: dir, alive: alwaysAlive}
 	got, err := s.Agents()
 	if err != nil {
 		t.Fatal(err)
@@ -110,56 +162,6 @@ func TestAgentsDedupsSharedLocation(t *testing.T) {
 	}
 }
 
-func TestAgentsPrunesExpiredRecords(t *testing.T) {
-	dir := t.TempDir()
-	now := time.Now()
-	recs := map[string]record{
-		"keep-done":   {SessionID: "keep-done", Title: "kd", Status: StatusDone, Updated: now.Add(-time.Hour)},
-		"old-done":    {SessionID: "old-done", Title: "od", Status: StatusDone, Updated: now.Add(-48 * time.Hour)},
-		"crashed":     {SessionID: "crashed", Title: "cr", Status: StatusWorking, Updated: now.Add(-48 * time.Hour)},
-		"fresh-stale": {SessionID: "fresh-stale", Title: "fs", Status: StatusWorking, Updated: now.Add(-time.Hour)},
-	}
-	for _, r := range recs {
-		if err := writeRecord(dir, r); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	s := &ClaudeSource{
-		dir:         dir,
-		staleAfter:  5 * time.Minute,
-		forgetDone:  24 * time.Hour,
-		forgetStale: 24 * time.Hour,
-		now:         func() time.Time { return now },
-	}
-	got, err := s.Agents()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	live := map[string]bool{}
-	for _, a := range got {
-		live[a.SessionID] = true
-	}
-	if !live["keep-done"] || !live["fresh-stale"] {
-		t.Fatalf("recent records should remain, got %v", live)
-	}
-	if live["old-done"] || live["crashed"] {
-		t.Fatalf("aged-out records should be gone from the list, got %v", live)
-	}
-	// The state files must actually be deleted, not just hidden.
-	for _, id := range []string{"old-done", "crashed"} {
-		if _, err := os.Stat(filepath.Join(dir, sanitize(id)+".json")); !os.IsNotExist(err) {
-			t.Fatalf("expected %s state file to be pruned, stat err=%v", id, err)
-		}
-	}
-	for _, id := range []string{"keep-done", "fresh-stale"} {
-		if _, err := os.Stat(filepath.Join(dir, sanitize(id)+".json")); err != nil {
-			t.Fatalf("expected %s state file to remain: %v", id, err)
-		}
-	}
-}
-
 func TestHandleHookWritesState(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", dir)
@@ -170,7 +172,7 @@ func TestHandleHookWritesState(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s, err := NewClaudeSource(time.Hour, 0, 0)
+	s, err := NewClaudeSource()
 	if err != nil {
 		t.Fatal(err)
 	}

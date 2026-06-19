@@ -43,8 +43,11 @@ type Agent struct {
 	// SessionID is the agent's own identifier (e.g. Claude session id).
 	SessionID string
 	// TmuxSession and TmuxWindow locate the agent for jump-to-session.
-	TmuxSession string
-	TmuxWindow  string
+	// TmuxWindow is the window index (stable for targeting); TmuxWindowName is
+	// the window's human title (e.g. "nvim"), used for display only.
+	TmuxSession    string
+	TmuxWindow     string
+	TmuxWindowName string
 	// TmuxPane is the exact pane the agent runs in (e.g. "%5"). Unlike
 	// session:window it pins the right pane when a window is split, so the
 	// preview captures the agent's pane rather than whichever is active.

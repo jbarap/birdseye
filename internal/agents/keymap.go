@@ -10,20 +10,24 @@ import (
 type Action string
 
 const (
-	ActionUp       Action = "up"
-	ActionDown     Action = "down"
-	ActionTop      Action = "top"
-	ActionBottom   Action = "bottom"
-	ActionHalfUp   Action = "half_up"
-	ActionHalfDown Action = "half_down"
-	ActionSelect   Action = "select"
-	ActionQuit     Action = "quit"
+	ActionUp          Action = "up"
+	ActionDown        Action = "down"
+	ActionTop         Action = "top"
+	ActionBottom      Action = "bottom"
+	ActionHalfUp      Action = "half_up"
+	ActionHalfDown    Action = "half_down"
+	ActionPrevSection Action = "prev_section"
+	ActionNextSection Action = "next_section"
+	ActionSelect      Action = "select"
+	ActionFold        Action = "fold"
+	ActionQuit        Action = "quit"
 )
 
 // AllActions lists every valid action.
 var AllActions = []Action{
 	ActionUp, ActionDown, ActionTop, ActionBottom,
-	ActionHalfUp, ActionHalfDown, ActionSelect, ActionQuit,
+	ActionHalfUp, ActionHalfDown, ActionPrevSection, ActionNextSection,
+	ActionSelect, ActionFold, ActionQuit,
 }
 
 // Keymap maps each action to the keys that trigger it. Keys are Bubble Tea
@@ -35,14 +39,17 @@ type Keymap map[Action][]string
 // historic behavior so that absent configuration changes nothing.
 func DefaultKeymap() Keymap {
 	return Keymap{
-		ActionUp:       {"k", "up"},
-		ActionDown:     {"j", "down"},
-		ActionTop:      {"gg"},
-		ActionBottom:   {"G"},
-		ActionHalfUp:   {"ctrl+u"},
-		ActionHalfDown: {"ctrl+d"},
-		ActionSelect:   {"enter"},
-		ActionQuit:     {"q", "esc", "ctrl+c"},
+		ActionUp:          {"k", "up"},
+		ActionDown:        {"j", "down"},
+		ActionTop:         {"gg"},
+		ActionBottom:      {"G"},
+		ActionHalfUp:      {"ctrl+u"},
+		ActionHalfDown:    {"ctrl+d"},
+		ActionPrevSection: {"{"},
+		ActionNextSection: {"}"},
+		ActionSelect:      {"enter"},
+		ActionFold:        {"tab"},
+		ActionQuit:        {"q", "esc", "ctrl+c"},
 	}
 }
 
