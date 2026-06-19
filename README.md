@@ -17,6 +17,8 @@ bird's-eye draws on ideas/visuals/concepts from these projects:
 - [sesh](https://github.com/joshmedeski/sesh) — smart tmux session manager and picker.
 - [tmux-agent-status](https://github.com/samleeney/tmux-agent-status) — surfacing AI agent status in tmux.
 - [superset](https://github.com/superset-sh/superset) — a workspace over agent sessions.
+- [tsm](https://github.com/adibhanna/tsm) — terminal session manager; its minimal, titled panels
+  shaped bird's-eye's panel chrome.
 
 ## Features
 

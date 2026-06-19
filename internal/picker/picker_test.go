@@ -58,14 +58,25 @@ func TestFzfColorSpecSwitchesFormat(t *testing.T) {
 	if !strings.Contains(tc, "hl:#4ea8ff") || !strings.Contains(tc, "hl+:#c792ea") {
 		t.Errorf("truecolor spec should use hex accents, got %q", tc)
 	}
-	for _, role := range []string{"pointer:#c792ea", "prompt:#c792ea", "marker:#c792ea"} {
+	for _, role := range []string{"pointer:#c792ea", "prompt:#c792ea", "marker:#c792ea", "label:#c792ea"} {
 		if !strings.Contains(tc, role) {
 			t.Errorf("selection chrome should use the shared accent: missing %q in %q", role, tc)
 		}
 	}
 	p := fzfColorSpec(false)
-	if !strings.Contains(p, "hl:39") || !strings.Contains(p, "hl+:176") {
+	if !strings.Contains(p, "hl:39") || !strings.Contains(p, "hl+:176") || !strings.Contains(p, "label:176") {
 		t.Errorf("256 spec should use palette indices, got %q", p)
+	}
+}
+
+func TestFzfArgsBorderLabelGate(t *testing.T) {
+	with := strings.Join(fzfArgs(true, false, true), " ")
+	if !strings.Contains(with, "--border-label") || !strings.Contains(with, "sessions") {
+		t.Errorf("border-label args should be present when fzf supports them, got %q", with)
+	}
+	without := strings.Join(fzfArgs(true, false, false), " ")
+	if strings.Contains(without, "--border-label") {
+		t.Errorf("border-label args should be absent when fzf lacks support, got %q", without)
 	}
 }
 

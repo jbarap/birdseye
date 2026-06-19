@@ -48,6 +48,24 @@ palettes are context-scoped. Only the `Accent` is cross-cutting.
 - **Emphasis:** where a full row can be highlighted (agents view), the selected row also gets a
   `RowHL` background spanning its width, so the eye can ride from the left edge to the content.
 
+## Panels
+
+Bounded content lives in a **panel**: a minimal rounded border in `theme.Border` with the panel's
+title embedded in its **top border**, left-aligned near the corner and rendered in `theme.Accent`.
+The title names what the panel holds — it is content-descriptive (`sessions`, `agents`, `preview`),
+not branding. The tool's identity comes from the consistent chrome (accent, glyph, panels), not a
+textual brand: the picker prompt is a bare chevron (`❯`). There is no separate floating title line
+above a panel, and no faint inline title inside it.
+
+The convention is one look with two implementations, because the picker is fzf-driven and fzf owns
+its own screen region:
+
+- **lipgloss surfaces** (agents list and preview) reconstruct the frame's top border with the title
+  spliced in, reusing the same rounded-border runes the frame already draws.
+- **the picker** asks fzf to draw it: `--border-label` (positioned near the top-left) plus the
+  `label` `--color` key set to the accent. Where an older fzf lacks the feature, the panel degrades
+  to a plain bordered box — title omitted, never an error.
+
 ## Status vocabulary (agents)
 
 Each status is a glyph **plus** a short word in a fixed gutter, color-coded — never color alone:

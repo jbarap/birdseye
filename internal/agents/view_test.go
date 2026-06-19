@@ -301,6 +301,29 @@ func TestViewEmptyState(t *testing.T) {
 	}
 }
 
+func TestPanelTitle(t *testing.T) {
+	accent := lipgloss.Color("#c792ea")
+	box := frameStyle.Render("a wide row of content\na second row of content")
+	out := panelTitle(box, "agents", accent)
+
+	lines := strings.Split(out, "\n")
+	if !strings.Contains(lines[0], "agents") {
+		t.Fatalf("title should ride on the top border line, got %q", lines[0])
+	}
+	if !strings.Contains(out, "a wide row of content") || !strings.Contains(out, "a second row of content") {
+		t.Fatalf("panel should preserve the body, got %q", out)
+	}
+	if w, bw := lipgloss.Width(out), lipgloss.Width(box); w != bw {
+		t.Fatalf("titled panel width %d should match the frame width %d", w, bw)
+	}
+
+	// A panel too narrow for any title keeps its plain top border unchanged.
+	tiny := frameStyle.Render("")
+	if got := panelTitle(tiny, "agents", accent); got != tiny {
+		t.Fatalf("too-narrow panel should keep its plain border unchanged, got %q", got)
+	}
+}
+
 // ag builds an agent with a unique session id so dedup is irrelevant to grouping tests.
 func ag(session, window, title string, st Status) Agent {
 	return Agent{

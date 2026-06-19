@@ -137,6 +137,7 @@ func fzfColorSpec(tc bool) string {
 		"pointer:" + theme.Accent.Spec(tc),
 		"prompt:" + theme.Accent.Spec(tc),
 		"marker:" + theme.Accent.Spec(tc),
+		"label:" + theme.Accent.Spec(tc),
 		"border:" + theme.Border.Spec(tc),
 		"info:" + theme.Border.Spec(tc),
 		"gutter:-1",
@@ -153,6 +154,18 @@ func fzfGutterCharSupported() bool {
 		return false
 	}
 	return fzfVersionAtLeast(string(out), 0, 72)
+}
+
+// fzfBorderLabelSupported reports whether the installed fzf accepts the embedded
+// border-title flags (--border-label / --border-label-pos and the `label` --color
+// key), added in 0.35. Older fzf rejects them, so the title degrades to a plain
+// bordered panel. A failed probe is treated as unsupported.
+func fzfBorderLabelSupported() bool {
+	out, err := exec.Command("fzf", "--version").Output()
+	if err != nil {
+		return false
+	}
+	return fzfVersionAtLeast(string(out), 0, 35)
 }
 
 // fzfVersionAtLeast parses fzf --version output (e.g. "0.72.0 (sha)") and reports
@@ -177,14 +190,16 @@ func fzfVersionAtLeast(version string, maj, min int) bool {
 	return gotMin >= min
 }
 
-// runFzf pipes input to fzf and returns the selected line's index field, or -1
-// when cancelled.
-func runFzf(input string, tc bool) (int, error) {
+// fzfArgs builds fzf's argument list. The capability booleans gate flags that only
+// newer fzf understands, so the picker degrades cleanly on older versions: borderLabel
+// embeds the `sessions` title in the panel border (the tool-wide titled-panel look),
+// and gutterChar blanks fzf's per-row gutter bar.
+func fzfArgs(tc, gutterChar, borderLabel bool) []string {
 	args := []string{
 		"--ansi",
 		"--delimiter", "\t",
 		"--with-nth", "2..",
-		"--prompt", "be ❯ ",
+		"--prompt", "❯ ",
 		"--pointer", theme.CursorGlyph,
 		"--no-multi",
 		"--height", "100%",
@@ -193,14 +208,26 @@ func runFzf(input string, tc bool) (int, error) {
 		"--border",
 		"--color", fzfColorSpec(tc),
 	}
+	// The title rides in the panel's top border, near the top-left corner (pos 2),
+	// matching the agents view's titled panels; the prompt is a bare chevron.
+	if borderLabel {
+		args = append(args, "--border-label", " sessions ", "--border-label-pos", "2")
+	}
 	// fzf >=0.72 draws a left-column gutter bar (default "▌") on every row; our
 	// --color only sets its color, so it renders in the terminal's default
 	// foreground (white). Blank it with a space so there is no per-entry line (the
 	// pointer still marks the current row). The flag is unknown to older fzf — which
 	// also does not draw the bar — so only pass it when the version supports it.
-	if fzfGutterCharSupported() {
+	if gutterChar {
 		args = append(args, "--gutter", " ")
 	}
+	return args
+}
+
+// runFzf pipes input to fzf and returns the selected line's index field, or -1
+// when cancelled.
+func runFzf(input string, tc bool) (int, error) {
+	args := fzfArgs(tc, fzfGutterCharSupported(), fzfBorderLabelSupported())
 	cmd := exec.Command("fzf", args...)
 	cmd.Stdin = strings.NewReader(input)
 	cmd.Stderr = os.Stderr

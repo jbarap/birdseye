@@ -249,11 +249,17 @@ failing.
 
 ### Requirement: Refined visual presentation
 
-The agents view SHALL present its content with a refined, readable layout — at minimum a titled
-frame, statuses that are visually distinguishable per status, columns whose data points sit at
-fixed horizontal positions, and a clear indication of the selected row. The view SHALL group agents
-by tmux **session**: each session that holds at least one agent SHALL get a session header rendered
-as a full-width section bar, left-aligned to the start of the list and visually distinct from the
+The agents view SHALL present its content with a refined, readable layout built from **titled
+panels**: a minimal rounded panel border in the shared border color with the panel's title embedded
+in its **top border**, left-aligned and rendered in the tool-wide accent color. The list of agents
+SHALL render inside such a panel titled `agents`, and when the preview is shown it SHALL render
+inside such a panel titled `preview`; the view SHALL NOT show a separate floating title line above
+the list, and the preview's title SHALL be the embedded border title rather than a faint inline
+label that blends into the captured output. Within the list panel the view SHALL present statuses
+that are visually distinguishable per status, columns whose data points sit at fixed horizontal
+positions, and a clear indication of the selected row. The view SHALL group agents by tmux
+**session**: each session that holds at least one agent SHALL get a session header rendered as a
+full-width section bar, left-aligned to the start of the list and visually distinct from the
 selected-row indication, so sessions read as clear breaks that bracket their agents. Beneath a
 session there SHALL be exactly one row shape per agent: there SHALL be no window-header level and no
 per-window inline-collapse special case. Each agent row SHALL present, at fixed columns: a **cursor
@@ -263,7 +269,7 @@ regardless of grouping, so statuses remain distinguishable without relying on co
 **window** shown as a label (its tmux window name, falling back to `win <index>`); and the agent's
 **name**. Variable-length values SHALL be truncated so later columns stay aligned. The selected row
 SHALL be marked both by the cursor indicator and by a full-row highlight that is visually distinct
-from the session bar. The view title and the cursor indicator SHALL share a single accent color
+from the session bar. The panel titles and the cursor indicator SHALL share a single accent color
 that the user MAY configure; a malformed configured accent SHALL be reported as an error rather than
 silently ignored. An agent's name SHALL NOT repeat its enclosing session: when the title is
 prefixed with its own tmux session name, that prefix SHALL be omitted in the row. Agents with no
@@ -271,11 +277,18 @@ tmux session SHALL be grouped together under a stable ungrouped heading. The pre
 degrade gracefully on narrow terminals and color-limited terminals, and SHALL NOT depend on a fixed
 terminal size.
 
-#### Scenario: Readable framed layout
+#### Scenario: Titled list panel
 
 - **WHEN** the agents view renders with agents present
-- **THEN** it shows a titled frame, agent rows whose data points sit at fixed columns, a per-status
-  indicator, and a clearly marked selected row
+- **THEN** the list renders inside a bordered panel whose title is embedded in the panel's top
+  border (not on a separate floating line above the frame), with agent rows whose data points sit at
+  fixed columns, a per-status indicator, and a clearly marked selected row
+
+#### Scenario: Preview title embedded in its panel border
+
+- **WHEN** the preview panel is shown beside the list
+- **THEN** the preview's title is embedded in that panel's top border rather than rendered as a
+  faint inline label above the captured output, so the title does not blend into the preview content
 
 #### Scenario: Fixed-column agent row
 
@@ -313,11 +326,11 @@ terminal size.
 - **THEN** that row shows the cursor indicator in its leftmost column and a full-row highlight, while
   all other rows show neither
 
-#### Scenario: Title and cursor share a configurable accent
+#### Scenario: Panel titles and cursor share a configurable accent
 
 - **WHEN** the user configures the agents-view accent color
-- **THEN** the title and the cursor indicator both render in that color, and a malformed accent value
-  is rejected with a clear error instead of being silently ignored
+- **THEN** the embedded panel titles and the cursor indicator both render in that color, and a
+  malformed accent value is rejected with a clear error instead of being silently ignored
 
 #### Scenario: Ungrouped agents
 

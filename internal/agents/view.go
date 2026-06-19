@@ -64,7 +64,6 @@ var statusWord = map[Status]string{
 
 var (
 	frameStyle       = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipColor(theme.Border)).Padding(0, 1)
-	previewTitle     = lipgloss.NewStyle().Faint(true).Padding(0, 1)
 	helpStyle        = lipgloss.NewStyle().Faint(true).MarginTop(1)
 	placeholderStyle = lipgloss.NewStyle().Faint(true).Italic(true)
 
@@ -74,15 +73,42 @@ var (
 	rowHL           = lipColor(theme.RowHL)
 )
 
-// titleStyle and cursorGlyphStyle render the view title and the cursor indicator in
-// the accent color. Both take the model's accent so the two always match and stay
+// cursorGlyphStyle renders the cursor indicator in the accent color; it takes the
+// model's accent so the cursor and the panel titles always match and stay
 // user-configurable.
-func titleStyle(accent lipgloss.Color) lipgloss.Style {
-	return lipgloss.NewStyle().Bold(true).Foreground(accent).Padding(0, 1)
-}
-
 func cursorGlyphStyle(accent lipgloss.Color) lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(accent)
+}
+
+// panelTitle rewrites a frame's top border so the title sits embedded in it,
+// left-aligned and accent-colored — the tool-wide titled-panel look (see DESIGN.md).
+// It takes an already-rendered frameStyle box, measures its outer width, and rebuilds
+// only the first line from the rounded-border runes (so it tracks whatever frameStyle
+// draws). An over-long title is truncated; a panel too narrow for any title keeps its
+// plain top border.
+func panelTitle(box, title string, accent lipgloss.Color) string {
+	lines := strings.Split(box, "\n")
+	if len(lines) == 0 {
+		return box
+	}
+	inner := lipgloss.Width(box) - 2 // cells between the two corners
+	const lead = 1                   // dashes before the title
+	maxTitle := inner - lead - 2 - 1 // leave the two pad spaces and ≥1 trailing dash
+	if maxTitle < 1 {
+		return box
+	}
+	label := " " + truncate(title, maxTitle) + " "
+	trail := inner - lead - lipgloss.Width(label)
+	if trail < 1 {
+		trail = 1
+	}
+	rb := lipgloss.RoundedBorder()
+	bc := lipgloss.NewStyle().Foreground(lipColor(theme.Border))
+	tc := lipgloss.NewStyle().Foreground(accent).Bold(true)
+	lines[0] = bc.Render(rb.TopLeft+strings.Repeat(rb.Top, lead)) +
+		tc.Render(label) +
+		bc.Render(strings.Repeat(rb.Top, trail)+rb.TopRight)
+	return strings.Join(lines, "\n")
 }
 
 // ResolveAccent turns a configured accent (a #rrggbb hex, or "" for the built-in
@@ -544,15 +570,14 @@ func (m model) View() string {
 		return m.emptyView()
 	}
 
-	title := titleStyle(m.accent).Render("bird's-eye · agents")
-	list := frameStyle.Render(m.renderRows())
+	list := panelTitle(frameStyle.Render(m.renderRows()), "agents", m.accent)
 
 	body := list
 	if m.showPreview() {
 		body = lipgloss.JoinHorizontal(lipgloss.Top, list, "  ", m.renderPreview(list))
 	}
 
-	parts := []string{title, body}
+	parts := []string{body}
 	if m.height == 0 || m.height >= 6 {
 		parts = append(parts, m.renderHelp())
 	}
@@ -560,14 +585,10 @@ func (m model) View() string {
 }
 
 func (m model) emptyView() string {
-	var b strings.Builder
-	b.WriteString(titleStyle(m.accent).Render("bird's-eye · agents"))
-	b.WriteString("\n\n")
-	b.WriteString(placeholderStyle.Render("No agents tracked yet.\n" +
-		"Wire up Claude Code hooks (see README) so sessions report status here."))
-	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("q quit"))
-	return b.String()
+	body := placeholderStyle.Render("No agents tracked yet.\n" +
+		"Wire up Claude Code hooks (see README) so sessions report status here.")
+	panel := panelTitle(frameStyle.Render(body), "agents", m.accent)
+	return panel + "\n" + helpStyle.Render("q quit")
 }
 
 // renderKind distinguishes the line types in the grouped list.
@@ -783,24 +804,23 @@ func (m model) renderPreview(list string) string {
 
 	// Inner content height: fill the terminal but leave room for everything
 	// stacked around it, so the whole view never exceeds m.height (which would
-	// scroll the list out of view). Budget: title (1) + this frame's border (2)
-	// + help text and its top margin (2) = 5.
-	inner := m.height - 5
+	// scroll the list out of view). Budget: this frame's border (2) + help text
+	// and its top margin (2) = 4. The title now lives in the border, not a body
+	// line, so it costs no inner row.
+	inner := m.height - 4
 	if inner < 1 {
 		inner = 1
 	}
 
-	avail := max(inner-1, 1) // reserve a line for the "preview" title
-
-	lines := previewLines(m.preview, avail, w)
+	lines := previewLines(m.preview, inner, w)
 	if len(lines) == 0 {
 		lines = []string{placeholderStyle.Render("(no preview available)")}
 	}
-	body := previewTitle.Render("preview") + "\n" + strings.Join(lines, "\n")
 	// w is the text width; lipgloss Width includes the frame's horizontal
 	// padding, so set Width(w+2) to keep the text area exactly w. Otherwise
 	// each w-wide line wraps, inflating the frame height past the terminal.
-	return frameStyle.Width(w + 2).Height(inner).Render(body)
+	box := frameStyle.Width(w + 2).Height(inner).Render(strings.Join(lines, "\n"))
+	return panelTitle(box, "preview", m.accent)
 }
 
 // previewLines turns captured pane text into at most h display lines of width w.
