@@ -126,39 +126,82 @@ func orderByType(cands []provider.Candidate, order []string) []provider.Candidat
 	return out
 }
 
-// fzfColorSpec builds fzf's --color argument from the shared palette, so fzf's
-// own chrome (match highlight, pointer, prompt, border) matches the candidate
-// accents and uses 24-bit or 256 to suit the terminal.
+// fzfColorSpec builds fzf's --color argument from the shared palette. The selection
+// chrome (match highlight, pointer, prompt, marker) uses the tool-wide accent so fzf
+// presents "the selected thing" the same way the agents view does; type colors are
+// carried by the candidate rows themselves. Uses 24-bit or 256 to suit the terminal.
 func fzfColorSpec(tc bool) string {
 	return strings.Join([]string{
 		"hl:" + theme.Blue.Spec(tc),
-		"hl+:" + theme.Coral.Spec(tc),
-		"pointer:" + theme.Coral.Spec(tc),
-		"prompt:" + theme.Coral.Spec(tc),
-		"marker:" + theme.Coral.Spec(tc),
+		"hl+:" + theme.Accent.Spec(tc),
+		"pointer:" + theme.Accent.Spec(tc),
+		"prompt:" + theme.Accent.Spec(tc),
+		"marker:" + theme.Accent.Spec(tc),
 		"border:" + theme.Border.Spec(tc),
 		"info:" + theme.Border.Spec(tc),
 		"gutter:-1",
 	}, ",")
 }
 
+// fzfGutterCharSupported reports whether the installed fzf accepts the --gutter
+// character flag, which was added in 0.72 alongside the default gutter bar. Older
+// fzf rejects unknown flags (and draws no bar), so the flag is only needed and safe
+// from 0.72 on. A failed probe is treated as unsupported.
+func fzfGutterCharSupported() bool {
+	out, err := exec.Command("fzf", "--version").Output()
+	if err != nil {
+		return false
+	}
+	return fzfVersionAtLeast(string(out), 0, 72)
+}
+
+// fzfVersionAtLeast parses fzf --version output (e.g. "0.72.0 (sha)") and reports
+// whether it is at least maj.min. Unparseable input reports false.
+func fzfVersionAtLeast(version string, maj, min int) bool {
+	fields := strings.Fields(version)
+	if len(fields) == 0 {
+		return false
+	}
+	parts := strings.SplitN(fields[0], ".", 3)
+	if len(parts) < 2 {
+		return false
+	}
+	gotMaj, err1 := strconv.Atoi(parts[0])
+	gotMin, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	if gotMaj != maj {
+		return gotMaj > maj
+	}
+	return gotMin >= min
+}
+
 // runFzf pipes input to fzf and returns the selected line's index field, or -1
 // when cancelled.
 func runFzf(input string, tc bool) (int, error) {
-	cmd := exec.Command("fzf",
+	args := []string{
 		"--ansi",
 		"--delimiter", "\t",
 		"--with-nth", "2..",
 		"--prompt", "be ❯ ",
-		"--pointer", "▌",
+		"--pointer", theme.CursorGlyph,
 		"--no-multi",
 		"--height", "100%",
 		"--layout", "reverse",
 		"--info", "inline",
-		"--cycle",
 		"--border",
 		"--color", fzfColorSpec(tc),
-	)
+	}
+	// fzf >=0.72 draws a left-column gutter bar (default "▌") on every row; our
+	// --color only sets its color, so it renders in the terminal's default
+	// foreground (white). Blank it with a space so there is no per-entry line (the
+	// pointer still marks the current row). The flag is unknown to older fzf — which
+	// also does not draw the bar — so only pass it when the version supports it.
+	if fzfGutterCharSupported() {
+		args = append(args, "--gutter", " ")
+	}
+	cmd := exec.Command("fzf", args...)
 	cmd.Stdin = strings.NewReader(input)
 	cmd.Stderr = os.Stderr
 	out, err := cmd.Output()

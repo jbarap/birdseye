@@ -3,7 +3,6 @@ package agents
 import (
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -17,15 +16,21 @@ import (
 // selected agent's preview.
 const refreshInterval = time.Second
 
-// Layout constants. Column widths keep rows aligned; the preview is only shown
-// when the terminal is at least previewMinWidth columns wide.
+// Layout constants. Column widths keep every row's data points at fixed positions;
+// the preview is only shown when the terminal is at least previewMinWidth wide.
 const (
-	badgeWidth      = 14
-	titleColWidth   = 22
-	locColWidth     = 16
+	cursorColWidth  = 2  // leftmost gutter: cursor glyph on the selected row, else blank
+	statusColWidth  = 9  // " G word  " — status glyph + 4-char word, pinned across rows
+	agentIndent     = 6  // an agent's columns sit this far right of the session bar's label
+	windowColWidth  = 11 // gray window-label column
+	nameColWidth    = 22 // white agent-name column
 	previewMinWidth = 92
 	minPreviewCols  = 24
 )
+
+// rowContentWidth is a row's width after the cursor column. Session bars and the
+// selected-row highlight span exactly this, so their backgrounds line up.
+const rowContentWidth = statusColWidth + agentIndent + windowColWidth + nameColWidth
 
 // lipColor adapts a shared-palette color to lipgloss, handing it the hex value;
 // lipgloss performs its own profile-based downgrade (truecolor → 256 → 16).
@@ -39,29 +44,73 @@ var statusStyle = map[Status]lipgloss.Style{
 	StatusUnknown:        lipgloss.NewStyle().Faint(true),
 }
 
-// statusBadge pairs each status with a glyph + label so statuses stay
-// distinguishable on terminals without color.
-var statusBadge = map[Status]string{
-	StatusNeedsAttention: "● needs-attn",
-	StatusWorking:        "◐ working",
-	StatusIdle:           "○ idle",
-	StatusDone:           "✓ done",
-	StatusUnknown:        "· unknown",
+// statusGlyph and statusWord render a status in the gutter as a glyph plus a 4-char
+// word, so statuses stay distinguishable on terminals without color.
+var statusGlyph = map[Status]string{
+	StatusNeedsAttention: "●",
+	StatusWorking:        "◐",
+	StatusIdle:           "○",
+	StatusDone:           "✓",
+	StatusUnknown:        "·",
+}
+
+var statusWord = map[Status]string{
+	StatusNeedsAttention: "attn",
+	StatusWorking:        "work",
+	StatusIdle:           "idle",
+	StatusDone:           "done",
+	StatusUnknown:        "unkn",
 }
 
 var (
-	titleStyle         = lipgloss.NewStyle().Bold(true).Foreground(lipColor(theme.Coral)).Padding(0, 1)
-	frameStyle         = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipColor(theme.Border)).Padding(0, 1)
-	previewTitle       = lipgloss.NewStyle().Faint(true).Padding(0, 1)
-	cursorStyle        = lipgloss.NewStyle().Foreground(lipColor(theme.Coral))
-	selectedStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15"))
-	locStyle           = lipgloss.NewStyle().Faint(true)
-	helpStyle          = lipgloss.NewStyle().Faint(true).MarginTop(1)
-	placeholderStyle   = lipgloss.NewStyle().Faint(true).Italic(true)
-	sessionHeaderStyle = lipgloss.NewStyle().Bold(true).Foreground(lipColor(theme.Blue))
-	windowHeaderStyle  = lipgloss.NewStyle().Foreground(lipColor(theme.Gray))
-	guideStyle         = lipgloss.NewStyle().Foreground(lipColor(theme.Border))
+	frameStyle       = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipColor(theme.Border)).Padding(0, 1)
+	previewTitle     = lipgloss.NewStyle().Faint(true).Padding(0, 1)
+	helpStyle        = lipgloss.NewStyle().Faint(true).MarginTop(1)
+	placeholderStyle = lipgloss.NewStyle().Faint(true).Italic(true)
+
+	sessionBarStyle = lipgloss.NewStyle().Bold(true).Foreground(lipColor(theme.SessionFg)).Background(lipColor(theme.SessionBg))
+	windowColStyle  = lipgloss.NewStyle().Foreground(lipColor(theme.Gray))
+	nameColStyle    = lipgloss.NewStyle().Foreground(lipColor(theme.Text))
+	rowHL           = lipColor(theme.RowHL)
 )
+
+// titleStyle and cursorGlyphStyle render the view title and the cursor indicator in
+// the accent color. Both take the model's accent so the two always match and stay
+// user-configurable.
+func titleStyle(accent lipgloss.Color) lipgloss.Style {
+	return lipgloss.NewStyle().Bold(true).Foreground(accent).Padding(0, 1)
+}
+
+func cursorGlyphStyle(accent lipgloss.Color) lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(accent)
+}
+
+// ResolveAccent turns a configured accent (a #rrggbb hex, or "" for the built-in
+// default) into the color used for the title and cursor. A malformed value is an
+// error, mirroring how an invalid keymap is reported rather than silently ignored.
+func ResolveAccent(hex string) (lipgloss.Color, error) {
+	if hex == "" {
+		return lipColor(theme.Accent), nil
+	}
+	if !validHex(hex) {
+		return "", fmt.Errorf("invalid agents.accent %q: want a #rrggbb hex color", hex)
+	}
+	return lipgloss.Color(hex), nil
+}
+
+// validHex reports whether s is a #rrggbb color literal.
+func validHex(s string) bool {
+	if len(s) != 7 || s[0] != '#' {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		c := s[i]
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+			return false
+		}
+	}
+	return true
+}
 
 // helpOrder is the order actions appear in the help line.
 var helpOrder = []Action{ActionDown, ActionUp, ActionTop, ActionBottom, ActionPrevSection, ActionNextSection, ActionFold, ActionSelect, ActionQuit}
@@ -99,7 +148,8 @@ type model struct {
 	pending rune // armed first rune of a chord (0 = none)
 
 	width, height int
-	preview       string // cached preview for the selected agent
+	preview       string         // cached preview for the selected agent
+	accent        lipgloss.Color // title + cursor color (configurable)
 	err           error
 }
 
@@ -109,7 +159,7 @@ func newModel(src Source, prev Previewer, keys Keymap) (model, error) {
 	if err != nil {
 		return model{}, err
 	}
-	m := model{src: src, prev: prev, keys: keys, res: res, folded: map[string]bool{}}
+	m := model{src: src, prev: prev, keys: keys, res: res, folded: map[string]bool{}, accent: lipColor(theme.Accent)}
 	list, err := src.Agents()
 	if err != nil {
 		return model{}, err
@@ -168,10 +218,13 @@ func (m *model) recomputeNav() {
 
 // Run renders the agents view and blocks until the user selects an agent or
 // quits. It returns the chosen agent (nil when quit without selecting).
-func Run(src Source, prev Previewer, keys Keymap) (*Agent, error) {
+func Run(src Source, prev Previewer, keys Keymap, accent lipgloss.Color) (*Agent, error) {
 	m, err := newModel(src, prev, keys)
 	if err != nil {
 		return nil, err
+	}
+	if accent != "" {
+		m.accent = accent
 	}
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	out, err := p.Run()
@@ -491,7 +544,7 @@ func (m model) View() string {
 		return m.emptyView()
 	}
 
-	title := titleStyle.Render("bird's-eye · agents")
+	title := titleStyle(m.accent).Render("bird's-eye · agents")
 	list := frameStyle.Render(m.renderRows())
 
 	body := list
@@ -508,7 +561,7 @@ func (m model) View() string {
 
 func (m model) emptyView() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("bird's-eye · agents"))
+	b.WriteString(titleStyle(m.accent).Render("bird's-eye · agents"))
 	b.WriteString("\n\n")
 	b.WriteString(placeholderStyle.Render("No agents tracked yet.\n" +
 		"Wire up Claude Code hooks (see README) so sessions report status here."))
@@ -521,34 +574,24 @@ func (m model) emptyView() string {
 type renderKind int
 
 const (
-	kindSession renderKind = iota // top-level tmux session header
-	kindWindow                    // window header, shown only for windows with >1 agent
-	kindAgent                     // a selectable agent leaf
+	kindSession renderKind = iota // tmux session header, drawn as a full-width section bar
+	kindAgent                     // a selectable agent row
 )
 
-// renderItem is one line of the grouped list. Session and window items are headers
-// (not selectable); an agent item points at an entry in the ordered agents slice.
-// nested marks an agent drawn under a window header (deeper indent); a non-nested
-// agent is a collapsed single-agent window and carries its window label inline.
+// renderItem is one line of the grouped list. A session item is a header (not
+// selectable); an agent item points at an entry in the ordered agents slice and
+// carries its window label for the gray window column.
 type renderItem struct {
 	kind       renderKind
-	label      string // session name, "ungrouped", or window name
+	label      string // session name or "ungrouped" (session header)
 	sessionKey string // owning tmux session (its own key for a session header)
-	window     string // inline window label for a collapsed (non-nested) agent
-	count      int    // agents in the window (window header) or session (session header)
-	nested     bool   // agent drawn beneath a window header
+	window     string // the agent's window label (gray column)
+	count      int    // agents in the session, for the folded header's count
 	agentIdx   int    // index into model.agents, for kindAgent
 }
 
-// sessionGroup and windowGroup hold the partition built by groupAgents.
-type windowGroup struct {
-	name   string // window index, used for ordering and as a fallback label
-	title  string // window's tmux name, shown when present
-	agents []Agent
-}
-
-// windowLabel is how a window is shown: its tmux name when set, else "win <index>".
-// With neither (an agent outside tmux) it is empty, so no window label is shown.
+// windowLabel is how an agent's window is shown in the gray column: its tmux window
+// name when set, else "win <index>". With neither (an agent outside tmux) it is empty.
 func windowLabel(index, name string) string {
 	if name != "" {
 		return name
@@ -559,18 +602,18 @@ func windowLabel(index, name string) string {
 	return ""
 }
 
+// sessionGroup is one tmux session's agents ("" key is the ungrouped bucket).
 type sessionGroup struct {
-	key     string // tmux session, "" for the ungrouped bucket
-	windows []*windowGroup
-	winIdx  map[string]*windowGroup
+	key    string
+	agents []Agent
 }
 
-// groupAgents arranges agents into a session→window tree and returns them in render
-// order alongside the interleaved header/agent items the view draws. Sessions and
-// windows are ordered by their most-urgent member (lowest status rank), then by
-// name; agents within a window by status rank then title. A window holding a single
-// agent collapses — its agent renders inline (carrying the window label) with no
-// window header. Agents lacking a tmux session collect under an "ungrouped" heading.
+// groupAgents arranges agents into a flat session→agent list and returns them in
+// render order alongside the interleaved header/agent items the view draws. Sessions
+// are ordered by their most-urgent member (lowest status rank), then by name; agents
+// within a session by status rank then title. Windows are not a grouping level, so
+// agents that share a window are not forced adjacent — each agent simply carries its
+// window as a label. Agents lacking a tmux session collect under an "ungrouped" heading.
 func groupAgents(in []Agent) ([]Agent, []renderItem) {
 	if len(in) == 0 {
 		return nil, nil
@@ -581,63 +624,45 @@ func groupAgents(in []Agent) ([]Agent, []renderItem) {
 	for _, a := range in {
 		sg := sessIdx[a.TmuxSession]
 		if sg == nil {
-			sg = &sessionGroup{key: a.TmuxSession, winIdx: map[string]*windowGroup{}}
+			sg = &sessionGroup{key: a.TmuxSession}
 			sessIdx[a.TmuxSession] = sg
 			sessions = append(sessions, sg)
 		}
-		wg := sg.winIdx[a.TmuxWindow]
-		if wg == nil {
-			wg = &windowGroup{name: a.TmuxWindow, title: a.TmuxWindowName}
-			sg.winIdx[a.TmuxWindow] = wg
-			sg.windows = append(sg.windows, wg)
-		}
-		wg.agents = append(wg.agents, a)
+		sg.agents = append(sg.agents, a)
 	}
 
 	for _, sg := range sessions {
-		for _, wg := range sg.windows {
-			sort.SliceStable(wg.agents, func(i, j int) bool { return agentLess(wg.agents[i], wg.agents[j]) })
-		}
-		sort.SliceStable(sg.windows, func(i, j int) bool {
-			if ri, rj := groupRank(sg.windows[i].agents), groupRank(sg.windows[j].agents); ri != rj {
-				return ri < rj
-			}
-			return windowLess(sg.windows[i].name, sg.windows[j].name)
-		})
+		sort.SliceStable(sg.agents, func(i, j int) bool { return agentLess(sg.agents[i], sg.agents[j]) })
 	}
 	sort.SliceStable(sessions, func(i, j int) bool {
-		if ri, rj := sessionRank(sessions[i]), sessionRank(sessions[j]); ri != rj {
+		if ri, rj := groupRank(sessions[i].agents), groupRank(sessions[j].agents); ri != rj {
 			return ri < rj
 		}
 		return sessions[i].key < sessions[j].key
 	})
 
 	ordered := make([]Agent, 0, len(in))
-	items := make([]renderItem, 0, len(in))
+	items := make([]renderItem, 0, len(in)+len(sessions))
 	for _, sg := range sessions {
 		label := sg.key
 		if label == "" {
 			label = "ungrouped"
 		}
-		items = append(items, renderItem{kind: kindSession, label: label, sessionKey: sg.key, count: sessionCount(sg)})
-		for _, wg := range sg.windows {
-			label := windowLabel(wg.name, wg.title)
-			if len(wg.agents) == 1 {
-				ordered = append(ordered, wg.agents[0])
-				items = append(items, renderItem{kind: kindAgent, sessionKey: sg.key, window: label, agentIdx: len(ordered) - 1})
-				continue
-			}
-			items = append(items, renderItem{kind: kindWindow, label: label, sessionKey: sg.key, count: len(wg.agents)})
-			for _, a := range wg.agents {
-				ordered = append(ordered, a)
-				items = append(items, renderItem{kind: kindAgent, sessionKey: sg.key, nested: true, agentIdx: len(ordered) - 1})
-			}
+		items = append(items, renderItem{kind: kindSession, label: label, sessionKey: sg.key, count: len(sg.agents)})
+		for _, a := range sg.agents {
+			ordered = append(ordered, a)
+			items = append(items, renderItem{
+				kind:       kindAgent,
+				sessionKey: sg.key,
+				window:     windowLabel(a.TmuxWindow, a.TmuxWindowName),
+				agentIdx:   len(ordered) - 1,
+			})
 		}
 	}
 	return ordered, items
 }
 
-// agentLess orders agents within a window: most-urgent status first, then title.
+// agentLess orders agents within a session: most-urgent status first, then title.
 func agentLess(a, b Agent) bool {
 	if a.Status.rank() != b.Status.rank() {
 		return a.Status.rank() < b.Status.rank()
@@ -656,39 +681,8 @@ func groupRank(agents []Agent) int {
 	return r
 }
 
-// sessionCount totals the agents across a session's windows.
-func sessionCount(sg *sessionGroup) int {
-	n := 0
-	for _, wg := range sg.windows {
-		n += len(wg.agents)
-	}
-	return n
-}
-
-// sessionRank is a session's urgency: the lowest status rank across its windows.
-func sessionRank(sg *sessionGroup) int {
-	r := int(^uint(0) >> 1)
-	for _, wg := range sg.windows {
-		if rk := groupRank(wg.agents); rk < r {
-			r = rk
-		}
-	}
-	return r
-}
-
-// windowLess orders window names numerically when both are tmux window indices,
-// falling back to lexical order otherwise.
-func windowLess(a, b string) bool {
-	ai, aerr := strconv.Atoi(a)
-	bi, berr := strconv.Atoi(b)
-	if aerr == nil && berr == nil {
-		return ai < bi
-	}
-	return a < b
-}
-
-// renderRows walks the tree, skipping rows hidden under a folded section, and draws
-// each visible item with depth-based indent guides and the cursor marker.
+// renderRows draws each visible item: a leftmost cursor column, then the session bar
+// or the fixed-column agent row. Agents under a folded session are skipped.
 func (m model) renderRows() string {
 	selItem := -1
 	if m.cursor >= 0 && m.cursor < len(m.nav) {
@@ -696,67 +690,63 @@ func (m model) renderRows() string {
 	}
 	var rows []string
 	for i, it := range m.items {
-		if it.kind != kindSession && m.folded[it.sessionKey] {
+		if it.kind == kindAgent && m.folded[it.sessionKey] {
 			continue // hidden beneath a folded session
 		}
 		selected := i == selItem
-		marker := "  "
-		if selected {
-			marker = cursorStyle.Render("▌ ")
-		}
-		rows = append(rows, marker+m.guides(itemDepth(it))+m.itemContent(it, selected))
+		rows = append(rows, m.cursorCol(selected)+m.rowBody(it, selected))
 	}
 	return strings.Join(rows, "\n")
 }
 
-// itemDepth is the indentation level of an item: sessions at 0, windows and
-// collapsed single-agent rows at 1, agents under a window header at 2.
-func itemDepth(it renderItem) int {
-	switch it.kind {
-	case kindWindow:
-		return 1
-	case kindAgent:
-		if it.nested {
-			return 2
-		}
-		return 1
-	default:
-		return 0
+// cursorCol is the leftmost column: the cursor glyph on the selected row, else blank.
+// It applies to whatever row the cursor is on, including a folded session header.
+func (m model) cursorCol(selected bool) string {
+	if selected {
+		return cursorGlyphStyle(m.accent).Render(theme.CursorGlyph + " ")
 	}
+	return strings.Repeat(" ", cursorColWidth)
 }
 
-// guides renders n levels of faint vertical indent guides.
-func (m model) guides(n int) string {
-	if n <= 0 {
-		return ""
-	}
-	return guideStyle.Render(strings.Repeat("│ ", n))
-}
-
-// itemContent renders the text of one row (without marker or indent guides).
-func (m model) itemContent(it renderItem, selected bool) string {
+// rowBody renders an item's content to the right of the cursor column.
+func (m model) rowBody(it renderItem, selected bool) string {
 	switch it.kind {
 	case kindSession:
-		if m.folded[it.sessionKey] {
-			return sessionHeaderStyle.Render(fmt.Sprintf("▸ %s  (%d)", it.label, it.count))
-		}
-		return sessionHeaderStyle.Render("▾ " + it.label)
-	case kindWindow:
-		return windowHeaderStyle.Render(it.label)
+		return m.sessionBar(it)
 	case kindAgent:
-		a := m.agents[it.agentIdx]
-		badge := statusStyle[a.Status].Render(padRight(statusBadge[a.Status], badgeWidth))
-		title := padRight(truncate(displayTitle(a.Title, it.sessionKey), titleColWidth), titleColWidth)
-		if selected {
-			title = selectedStyle.Render(title)
-		}
-		row := badge + " " + title
-		if !it.nested && it.window != "" {
-			row += " " + locStyle.Render(truncate(it.window, locColWidth))
-		}
-		return row
+		return m.agentRow(it, selected)
 	}
 	return ""
+}
+
+// sessionBar renders a session header as a full-width bar, left-aligned to the start
+// of the list. A folded section shows a collapsed glyph and its hidden-agent count.
+func (m model) sessionBar(it renderItem) string {
+	label := "▾ " + it.label
+	if m.folded[it.sessionKey] {
+		label = fmt.Sprintf("▸ %s  (%d)", it.label, it.count)
+	}
+	return sessionBarStyle.Width(rowContentWidth).Render(truncate(label, rowContentWidth))
+}
+
+// agentRow renders one agent at fixed columns: the status gutter (glyph + word), an
+// indent, the gray window label, then the white name. The selected row carries a
+// full-row highlight spanning gutter→name in addition to the cursor glyph.
+func (m model) agentRow(it renderItem, selected bool) string {
+	a := m.agents[it.agentIdx]
+	gutter := " " + statusGlyph[a.Status] + " " + padRight(statusWord[a.Status], 4) + "  "
+	indent := strings.Repeat(" ", agentIndent)
+	win := padRight(truncate(it.window, windowColWidth-1), windowColWidth)
+	name := padRight(truncate(displayTitle(a.Title, it.sessionKey), nameColWidth), nameColWidth)
+	st := statusStyle[a.Status]
+	if !selected {
+		return st.Render(gutter) + indent + windowColStyle.Render(win) + nameColStyle.Render(name)
+	}
+	hl := lipgloss.NewStyle().Background(rowHL)
+	return st.Background(rowHL).Render(gutter) +
+		hl.Render(indent) +
+		windowColStyle.Background(rowHL).Render(win) +
+		nameColStyle.Background(rowHL).Bold(true).Render(name)
 }
 
 // displayTitle drops a leading "<session>:" from an agent title, since the session

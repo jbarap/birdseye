@@ -24,7 +24,7 @@ type Color struct {
 // the agents view. Keep these distinct from one another so types stay readable.
 var (
 	Blue   = Color{"#4ea8ff", 39}  // tmux / sessions
-	Coral  = Color{"#ff7a6b", 209} // tmuxp / primary accent + chrome
+	Coral  = Color{"#ff7a6b", 209} // tmuxp candidate-type color (see Accent for the tool-wide accent)
 	Gold   = Color{"#f5c542", 220} // dir
 	Green  = Color{"#4ec98a", 114} // worktree / success
 	Attach = Color{"#38bdf8", 33}  // "attach" marker
@@ -32,7 +32,17 @@ var (
 	Gray   = Color{"#8a8a8a", 245} // dim / unlisted
 	Border = Color{"#3a3a3a", 240} // borders, info chrome
 	Red    = Color{"#ff6b6b", 203} // needs-attention / errors
+
+	Text      = Color{"#e6e6e6", 254} // primary row text (agent name)
+	Accent    = Color{"#c792ea", 176} // tool-wide selection + brand accent (cursor, title, picker chrome); configurable
+	SessionBg = Color{"#1d2b3f", 235} // agents view: session section-bar background
+	SessionFg = Color{"#9cc7ff", 153} // agents view: session section-bar text
+	RowHL     = Color{"#2c2c34", 236} // agents view: selected-row highlight background
 )
+
+// CursorGlyph is the tool-wide selection pointer: the agents-view cursor and the
+// picker's fzf --pointer. A nerd-font arrow (U+F0055).
+const CursorGlyph = "\U000f0055" // 󰁕
 
 const reset = "\x1b[0m"
 

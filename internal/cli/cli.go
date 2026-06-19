@@ -30,7 +30,7 @@ var (
 	warnPrefix  = errRenderer.NewStyle().Bold(true).Foreground(lipgloss.Color(theme.Red.Hex))
 
 	okMark    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(theme.Green.Hex))
-	infoStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(theme.Coral.Hex))
+	infoStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(theme.Accent.Hex))
 	hintStyle = lipgloss.NewStyle().Faint(true)
 )
 

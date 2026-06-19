@@ -62,6 +62,9 @@ type Agents struct {
 	// [agents.keys]) to the keys that trigger it. Absent actions keep their
 	// built-in bindings; an action listed here replaces (not extends) its keys.
 	Keys map[string][]string `toml:"keys"`
+	// Accent overrides the agents-view accent color (the title and the cursor
+	// indicator). A #rrggbb hex; empty keeps the built-in default.
+	Accent string `toml:"accent"`
 }
 
 // Default returns the built-in configuration used when no file (or no key) is

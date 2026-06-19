@@ -54,11 +54,17 @@ func TestDisplayOmitsIconWhenUnset(t *testing.T) {
 
 func TestFzfColorSpecSwitchesFormat(t *testing.T) {
 	tc := fzfColorSpec(true)
-	if !strings.Contains(tc, "hl:#4ea8ff") || !strings.Contains(tc, "hl+:#ff7a6b") {
+	// Selection chrome uses the shared accent (#c792ea); the match base stays blue.
+	if !strings.Contains(tc, "hl:#4ea8ff") || !strings.Contains(tc, "hl+:#c792ea") {
 		t.Errorf("truecolor spec should use hex accents, got %q", tc)
 	}
+	for _, role := range []string{"pointer:#c792ea", "prompt:#c792ea", "marker:#c792ea"} {
+		if !strings.Contains(tc, role) {
+			t.Errorf("selection chrome should use the shared accent: missing %q in %q", role, tc)
+		}
+	}
 	p := fzfColorSpec(false)
-	if !strings.Contains(p, "hl:39") || !strings.Contains(p, "hl+:209") {
+	if !strings.Contains(p, "hl:39") || !strings.Contains(p, "hl+:176") {
 		t.Errorf("256 spec should use palette indices, got %q", p)
 	}
 }
@@ -76,4 +82,26 @@ func names(cs []provider.Candidate) []string {
 		out[i] = c.Name
 	}
 	return out
+}
+
+func TestFzfVersionAtLeast(t *testing.T) {
+	cases := []struct {
+		ver  string
+		want bool
+	}{
+		{"0.72.0 (6fefe025)", true},
+		{"0.72.0", true},
+		{"0.80.1", true},
+		{"1.0.0", true},
+		{"0.71.0", false},
+		{"0.9.0", false},
+		{"", false},
+		{"garbage", false},
+		{"0", false},
+	}
+	for _, c := range cases {
+		if got := fzfVersionAtLeast(c.ver, 0, 72); got != c.want {
+			t.Errorf("fzfVersionAtLeast(%q, 0, 72) = %v, want %v", c.ver, got, c.want)
+		}
+	}
 }

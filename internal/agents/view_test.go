@@ -312,23 +312,18 @@ func ag(session, window, title string, st Status) Agent {
 	}
 }
 
-// shape renders the grouped items into compact tags for assertion: S:<session>,
-// W:<window>(<count>), A:<title> (nested under a window header), A:<title>@<window>
-// (collapsed single-agent window, window shown inline).
+// shape renders the grouped items into compact tags for assertion: S:<session> for a
+// session header, A:<title>@<window> for an agent row (or A:<title> when the agent has
+// no window label).
 func shape(ordered []Agent, items []renderItem) []string {
 	var got []string
 	for _, it := range items {
 		switch it.kind {
 		case kindSession:
 			got = append(got, "S:"+it.label)
-		case kindWindow:
-			got = append(got, fmt.Sprintf("W:%s(%d)", it.label, it.count))
 		case kindAgent:
 			tag := "A:" + ordered[it.agentIdx].Title
-			switch {
-			case it.nested:
-				tag += "*"
-			case it.window != "":
+			if it.window != "" {
 				tag += "@" + it.window
 			}
 			got = append(got, tag)
@@ -337,7 +332,7 @@ func shape(ordered []Agent, items []renderItem) []string {
 	return got
 }
 
-func TestGroupAgentsHierarchyCollapseAndOrder(t *testing.T) {
+func TestGroupAgentsFlatSessionOrderAndWindowLabels(t *testing.T) {
 	in := []Agent{
 		ag("api-server", "1", "write tests", StatusWorking),
 		ag("api-server", "1", "refactor auth", StatusNeedsAttention),
@@ -347,16 +342,35 @@ func TestGroupAgentsHierarchyCollapseAndOrder(t *testing.T) {
 	ordered, items := groupAgents(in)
 
 	want := []string{
-		"S:api-server",     // needs-attn session floats above web (all-done)
-		"W:win 1(2)",       // window with 2 agents gets a header (index fallback)
-		"A:refactor auth*", // needs-attn ordered first within the window
-		"A:write tests*",
-		"A:migrate db@win 2", // single-agent window collapses inline, even though
-		"S:web",              // its session (api-server) spans multiple windows
+		"S:api-server",          // needs-attn session floats above web (all-done)
+		"A:refactor auth@win 1", // agents ordered by urgency within the session, window is
+		"A:write tests@win 1",   // just a label (here win 1's two agents happen to be adjacent)
+		"A:migrate db@win 2",    // no window headers, no inline-collapse special case
+		"S:web",
 		"A:ship landing@win 0",
 	}
 	if got := shape(ordered, items); !reflect.DeepEqual(got, want) {
 		t.Fatalf("grouped shape mismatch:\n got %v\nwant %v", got, want)
+	}
+}
+
+func TestGroupAgentsWindowLabelNotForcedContiguous(t *testing.T) {
+	// Within one session, urgency ordering wins: two agents sharing a window are not
+	// pulled adjacent — a more-urgent agent from another window sits between them.
+	in := []Agent{
+		ag("s", "1", "low", StatusIdle),
+		ag("s", "1", "high", StatusNeedsAttention),
+		ag("s", "2", "mid", StatusWorking),
+	}
+	ordered, items := groupAgents(in)
+	want := []string{
+		"S:s",
+		"A:high@win 1", // needs-attn
+		"A:mid@win 2",  // working sits between the two win 1 agents
+		"A:low@win 1",  // idle
+	}
+	if got := shape(ordered, items); !reflect.DeepEqual(got, want) {
+		t.Fatalf("non-contiguity shape mismatch:\n got %v\nwant %v", got, want)
 	}
 }
 
@@ -374,10 +388,9 @@ func TestGroupAgentsUsesWindowName(t *testing.T) {
 	ordered, items := groupAgents(in)
 	want := []string{
 		"S:api",
-		"W:editor(2)", // multi-agent window shows its tmux name, not "win 1"
-		"A:a1*",
-		"A:a2*",
-		"A:a3@server", // collapsed single-agent window shows its name inline
+		"A:a1@editor", // window label is the tmux window name, not "win 1"
+		"A:a2@editor",
+		"A:a3@server",
 	}
 	if got := shape(ordered, items); !reflect.DeepEqual(got, want) {
 		t.Fatalf("window-name shape mismatch:\n got %v\nwant %v", got, want)
@@ -467,6 +480,25 @@ func TestFoldStateSurvivesRefresh(t *testing.T) {
 	it, _ := m.currentItem()
 	if it.kind != kindSession || it.sessionKey != "arewa" {
 		t.Fatalf("selection should stay on the folded arewa header across refresh, got %+v", it)
+	}
+}
+
+func TestResolveAccent(t *testing.T) {
+	// Empty falls back to the built-in default (non-empty color).
+	def, err := ResolveAccent("")
+	if err != nil || def == "" {
+		t.Fatalf("empty accent should yield the default color, got %q err=%v", def, err)
+	}
+	// A valid hex is used verbatim.
+	got, err := ResolveAccent("#ff8800")
+	if err != nil || string(got) != "#ff8800" {
+		t.Fatalf("valid hex should pass through, got %q err=%v", got, err)
+	}
+	// Malformed values are rejected rather than silently ignored.
+	for _, bad := range []string{"ff8800", "#fff", "#gggggg", "#ff88000"} {
+		if _, err := ResolveAccent(bad); err == nil {
+			t.Errorf("accent %q should be rejected", bad)
+		}
 	}
 }
 
@@ -560,9 +592,9 @@ func TestNavigationCrossesGroupsLeavesOnly(t *testing.T) {
 		t.Fatalf("G should land on last agent w1, got cursor %d", m.cursor)
 	}
 
-	// The view brackets the leaves with session and window headers.
+	// The view brackets the leaves with session bars and shows each agent's window label.
 	v := m.View()
 	if !strings.Contains(v, "api") || !strings.Contains(v, "win 1") || !strings.Contains(v, "web") {
-		t.Fatalf("view should show session and window headers:\n%s", v)
+		t.Fatalf("view should show session bars and window labels:\n%s", v)
 	}
 }

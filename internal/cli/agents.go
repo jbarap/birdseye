@@ -28,6 +28,10 @@ func runAgents() error {
 	if err != nil {
 		return err
 	}
+	accent, err := agents.ResolveAccent(cfg.Agents.Accent)
+	if err != nil {
+		return err
+	}
 	src, err := agents.NewClaudeSource()
 	if err != nil {
 		return err
@@ -44,7 +48,7 @@ func runAgents() error {
 		prev = agents.NewTmuxPreviewer(client, 200)
 	}
 
-	chosen, err := agents.Run(src, prev, keys)
+	chosen, err := agents.Run(src, prev, keys, accent)
 	if err != nil {
 		return err
 	}
