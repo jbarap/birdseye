@@ -9,7 +9,8 @@ import (
 	"time"
 )
 
-func TestStatusForEvent(t *testing.T) {
+func TestStatusForEventName(t *testing.T) {
+	// Events whose status comes from the name alone (empty payload).
 	cases := map[string]Status{
 		"Notification":     StatusNeedsAttention,
 		"Stop":             StatusIdle,
@@ -19,9 +20,38 @@ func TestStatusForEvent(t *testing.T) {
 		"Whatever":         StatusWorking,
 	}
 	for ev, want := range cases {
-		if got := StatusForEvent(ev); got != want {
-			t.Errorf("StatusForEvent(%q) = %q, want %q", ev, got, want)
+		if got := StatusFor(ev, hookInput{}); got != want {
+			t.Errorf("StatusFor(%q, {}) = %q, want %q", ev, got, want)
 		}
+	}
+}
+
+// TestStatusForNotificationMessage pins the payload-aware split: only Claude's
+// idle nudge downgrades to idle; permission prompts and anything unrecognized
+// stay needs-attention. The idle string here mirrors Claude's live copy — if
+// that wording changes, this is the test that catches it.
+func TestStatusForNotificationMessage(t *testing.T) {
+	cases := []struct {
+		name    string
+		message string
+		want    Status
+	}{
+		{"idle nudge", "Claude is waiting for your input", StatusIdle},
+		{"idle nudge cased", "WAITING FOR YOUR INPUT", StatusIdle},
+		{"permission prompt", "Claude needs your permission to use Bash", StatusNeedsAttention},
+		{"unrecognized", "Something brand new", StatusNeedsAttention},
+		{"empty", "", StatusNeedsAttention},
+	}
+	for _, c := range cases {
+		got := StatusFor("Notification", hookInput{Message: c.message})
+		if got != c.want {
+			t.Errorf("%s: StatusFor(Notification, %q) = %q, want %q", c.name, c.message, got, c.want)
+		}
+	}
+	// The message only matters for Notification — a Stop with the idle phrase is
+	// still idle by the event name, and a non-Notification event ignores it.
+	if got := StatusFor("UserPromptSubmit", hookInput{Message: "waiting for your input"}); got != StatusWorking {
+		t.Errorf("message should not affect non-Notification events, got %q", got)
 	}
 }
 

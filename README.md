@@ -182,10 +182,15 @@ event→status mapping:
 
 | Hook event                                                       | Status           |
 |------------------------------------------------------------------|------------------|
-| `Notification`                                                   | needs-attention  |
+| `Notification` (permission prompt / unrecognized message)        | needs-attention  |
+| `Notification` (idle "waiting for your input" nudge)             | idle             |
 | `Stop`                                                           | idle             |
 | `SessionEnd`                                                     | done             |
 | `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`  | working          |
+
+`Notification` is split by its message: Claude's periodic idle nudge maps to **idle**, while a
+permission/approval prompt — or any message bird's-eye doesn't recognize — maps to
+**needs-attention**, so an unfamiliar notification still surfaces to you.
 
 Status not refreshed within `agents.stale_after` is shown as **unknown**.
 

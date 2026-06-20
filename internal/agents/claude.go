@@ -193,18 +193,32 @@ func dropSupersededByPane(in []Agent) []Agent {
 	return out
 }
 
-// StatusForEvent maps a Claude Code hook event name to a status.
-//
-// The mapping is deliberately small and may be tuned (see design.md open
-// questions):
+// idleNotification is the lowercase substring that identifies Claude Code's
+// periodic idle nudge ("Claude is waiting for your input"), as opposed to a
+// permission/approval prompt. It is matched as a substring, not an exact
+// string, so it survives small wording changes (e.g. a trailing duration);
+// if Claude reword its idle copy, this is the one line to update.
+const idleNotification = "waiting for your input"
+
+// StatusFor maps a Claude Code hook event — together with its parsed payload —
+// to a status. The event name is the primary signal; the payload only refines
+// the cases where the name alone is ambiguous.
 //
 //	SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, SubagentStop -> working
-//	Notification                                                          -> needs-attention
+//	Notification (idle "waiting for your input" message)                  -> idle
+//	Notification (permission/approval or any unrecognized message)        -> needs-attention
 //	Stop                                                                  -> idle
 //	SessionEnd                                                            -> done
-func StatusForEvent(event string) Status {
+//
+// The Notification split is deliberately downgrade-only and conservative: only a
+// recognized idle message becomes idle; everything else stays needs-attention,
+// so an unfamiliar notification still reaches the user rather than being hidden.
+func StatusFor(event string, in hookInput) Status {
 	switch event {
 	case "Notification":
+		if strings.Contains(strings.ToLower(in.Message), idleNotification) {
+			return StatusIdle
+		}
 		return StatusNeedsAttention
 	case "Stop":
 		return StatusIdle
@@ -217,10 +231,13 @@ func StatusForEvent(event string) Status {
 	}
 }
 
-// hookInput is the subset of the Claude Code hook payload we consume.
+// hookInput is the subset of the Claude Code hook payload we consume. Message is
+// the human notification text carried by Notification events, used to tell an
+// idle nudge apart from a permission prompt.
 type hookInput struct {
 	SessionID string `json:"session_id"`
 	CWD       string `json:"cwd"`
+	Message   string `json:"message"`
 }
 
 // HandleHook processes one hook invocation: it reads the hook payload from r,
@@ -240,7 +257,7 @@ func HandleHook(event string, r io.Reader) error {
 
 	rec, _ := readRecord(dir, in.SessionID)
 	rec.SessionID = in.SessionID
-	rec.Status = StatusForEvent(event)
+	rec.Status = StatusFor(event, in)
 	rec.Updated = time.Now()
 	// Record the Claude session process so `be agents` can treat that process's
 	// liveness as the agent's liveness (a closed Claude → its entry is reclaimed).
