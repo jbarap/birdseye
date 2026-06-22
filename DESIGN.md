@@ -14,6 +14,10 @@ chrome — follows it so the tool feels like one thing. All colors and visual gl
    once and scans. Truncate rather than reflow.
 4. **One source of truth.** Colors and selection glyphs live in `theme`. Surfaces reference tokens,
    never literals.
+5. **Recognize structure; don't own it.** bird's-eye is a lens over tmux and the filesystem, not a
+   workspace that owns them. It lights up when it *recognizes* a convention and otherwise gets out
+   of the way — an unrecognized session looks and behaves exactly as it does without the tool. See
+   [Recognition over ownership](#recognition-over-ownership).
 
 ## Palette and semantics
 
@@ -88,6 +92,40 @@ Needs-attention sorts first; the most-urgent group floats to the top.
   background — visually different from the selection highlight so structure and cursor never blur.
 - **The status gutter is pinned.** Status sits at the same column on every row regardless of
   grouping, so it reads as one vertical stripe.
+
+## Recognition over ownership
+
+bird's-eye's advanced features (agent orchestration) are built on top of **independently useful
+primitives** — git worktrees, tmux session/window/pane management, agent status monitoring — and
+never require the user to adopt the whole. Each primitive stands alone: a user who wants only the
+worktree tool, or only the agent status view, gets exactly that. The tool layers in two tiers:
+
+- **Primitives.** Standalone, self-contained operations (`be worktree`, session listing/creation,
+  hook-driven agent status). Usable on their own; they know nothing about orchestration.
+- **Orchestration.** Pure *composition* of those primitives plus a recognition step. It owns no
+  persistent state — every refresh it re-derives what it knows from tmux + the filesystem + hooks,
+  the way agent liveness is already re-derived rather than tracked.
+
+The litmus test for any new feature: **if it requires bird's-eye to own state, it is probably the
+wrong design.** Recognize the structure each tick; don't become a session manager.
+
+### The orthogonal row model
+
+In the agents view, two facts about a row are **independent**: whether it has a live **agent**
+(a hook record) and whether it is a managed **worktree** (its window started inside a recognized
+repo's worktree). A row can be either, both, or neither. This orthogonality is what lets a managed
+repo and a user's ordinary, unrecognized session coexist in the same view — and in the same tmux
+session — without one reshaping the other. A window surfaces only when it has an agent, is a managed
+worktree, or is a repo's anchor; anything else stays invisible, so an unrecognized session renders
+identically to a tool-free terminal.
+
+The **worktree is the row** — not a new indent level. In the common case (one agent per worktree),
+the worktree row and the agent row are the same line, so the view stays a two-level tree
+(session → row) with the [pinned status gutter](#layout-philosophy) intact. A managed repo's
+session bar carries a recognition indicator (glyph + worktree count, never color alone); rows that
+are worktrees without an agent, and the repo's default-branch anchor, each take their own
+pinned-gutter token (glyph + word), defined in `theme` exactly like every other status — so the
+managed view never relies on color to convey "empty slot" or "anchor."
 
 ## Degradation
 
