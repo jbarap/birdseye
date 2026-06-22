@@ -32,12 +32,12 @@ func TestResolveKeymapDefaultsWhenAbsent(t *testing.T) {
 }
 
 func TestResolveKeymapOverrideReplacesAction(t *testing.T) {
-	km, err := ResolveKeymap(map[string][]string{"down": {"n"}})
+	km, err := ResolveKeymap(map[string][]string{"down": {"p"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	res, _ := km.buildResolver()
-	if res.single["n"] != ActionDown {
+	if res.single["p"] != ActionDown {
 		t.Fatalf("custom down key not bound")
 	}
 	if _, ok := res.single["j"]; ok {

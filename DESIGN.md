@@ -84,6 +84,18 @@ Each status is a glyph **plus** a short word in a fixed gutter, color-coded — 
 
 Needs-attention sorts first; the most-urgent group floats to the top.
 
+In a [managed repo](#the-orthogonal-row-model) the same pinned gutter also carries two
+structural **markers** (not statuses — they mark the absence/role of an agent), in `Gray`:
+
+| Marker | Glyph + word | Meaning |
+|---|---|---|
+| anchor | `⌂ base` | the repo's default-branch checkout (no agent) |
+| slot | `◌ slot` | a worktree with no agent — a spawn target |
+
+A managed repo's section bar additionally carries a source-control indicator (`󰘬`) and its
+worktree count, so recognition reads from a glyph and a word, never color. Within the repo
+the anchor pins first and slots sort last, while live worktrees keep the status ordering.
+
 ## Layout philosophy
 
 - **Fixed columns.** The agents view is `cursor | status gutter | indent | window | name`, each at a

@@ -143,3 +143,28 @@ func indexOf(s, sub string) int {
 	}
 	return -1
 }
+
+func TestAgentsRefreshAndCommand(t *testing.T) {
+	// Defaults when unset.
+	var a Agents
+	if d, err := a.RefreshInterval(); err != nil || d.String() != "1s" {
+		t.Fatalf("default refresh = (%v,%v), want 1s", d, err)
+	}
+	if a.AgentCommand() != "claude" {
+		t.Fatalf("default command = %q, want claude", a.AgentCommand())
+	}
+	// Honored when set.
+	a = Agents{Refresh: "2s", Command: "aider"}
+	if d, err := a.RefreshInterval(); err != nil || d.String() != "2s" {
+		t.Fatalf("refresh = (%v,%v), want 2s", d, err)
+	}
+	if a.AgentCommand() != "aider" {
+		t.Fatalf("command = %q, want aider", a.AgentCommand())
+	}
+	// Malformed and non-positive are rejected.
+	for _, bad := range []string{"nope", "0s", "-1s"} {
+		if _, err := (Agents{Refresh: bad}).RefreshInterval(); err == nil {
+			t.Errorf("refresh %q should be rejected", bad)
+		}
+	}
+}

@@ -71,11 +71,26 @@ func send(m model, msg tea.Msg) model {
 
 func mustModel(t *testing.T, list []Agent, prev Previewer, km Keymap) model {
 	t.Helper()
-	m, err := newModel(&fakeSource{list: list}, prev, km)
+	m, err := nm(&fakeSource{list: list}, prev, km)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return m
+}
+
+// nm builds a model from a plain agent Source (wrapped as rows) with the default
+// refresh, mirroring the old newModel(Source, ...) test signature.
+func nm(src Source, prev Previewer, km Keymap) (model, error) {
+	return newModel(AgentsAsRows(src), prev, km, 0)
+}
+
+// rowsOf converts agents to RowAgent rows for the grouping tests.
+func rowsOf(ags ...Agent) []Row {
+	out := make([]Row, len(ags))
+	for i, a := range ags {
+		out[i] = agentRow(a)
+	}
+	return out
 }
 
 func TestNavigationVimMotions(t *testing.T) {
@@ -146,14 +161,14 @@ func TestSelectAndQuit(t *testing.T) {
 }
 
 func TestRebindReplacesDefaultKey(t *testing.T) {
-	km, err := ResolveKeymap(map[string][]string{"down": {"n"}})
+	km, err := ResolveKeymap(map[string][]string{"down": {"p"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	m := mustModel(t, agentsN(3), nil, km)
-	m = send(m, key("n"))
+	m = send(m, key("p"))
 	if m.cursor != 1 {
-		t.Fatalf("custom key n should move down, got %d", m.cursor)
+		t.Fatalf("custom key p should move down, got %d", m.cursor)
 	}
 	m = send(m, key("j"))
 	if m.cursor != 1 {
@@ -163,12 +178,12 @@ func TestRebindReplacesDefaultKey(t *testing.T) {
 
 func TestRefreshPreservesSelectionAcrossResort(t *testing.T) {
 	src := &fakeSource{list: agentsN(3)} // sessions a,b,c all working → grouped order a,b,c
-	m, err := newModel(src, nil, DefaultKeymap())
+	m, err := nm(src, nil, DefaultKeymap())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m.agents[1].SessionID != "b" {
-		t.Fatalf("precondition: expected b at index 1, got %s", m.agents[1].SessionID)
+	if m.rows[1].SessionID != "b" {
+		t.Fatalf("precondition: expected b at index 1, got %s", m.rows[1].SessionID)
 	}
 	m.cursor = 1 // on "b"
 
@@ -178,14 +193,14 @@ func TestRefreshPreservesSelectionAcrossResort(t *testing.T) {
 	updated[1].Status = StatusNeedsAttention
 	src.list = updated
 	m = send(m, tickMsg(time.Now()))
-	if m.cursor != 0 || m.agents[m.cursor].SessionID != "b" {
-		t.Fatalf("selection should follow agent b to index 0, got %d (%s)", m.cursor, m.agents[m.cursor].SessionID)
+	if m.cursor != 0 || m.rows[m.cursor].SessionID != "b" {
+		t.Fatalf("selection should follow agent b to index 0, got %d (%s)", m.cursor, m.rows[m.cursor].SessionID)
 	}
 }
 
 func TestRefreshClampsWhenSelectedVanishes(t *testing.T) {
 	src := &fakeSource{list: agentsN(3)}
-	m, _ := newModel(src, nil, DefaultKeymap())
+	m, _ := nm(src, nil, DefaultKeymap())
 	m.cursor = 2 // on "c"
 
 	src.list = agentsN(1) // only "a" remains
@@ -193,8 +208,8 @@ func TestRefreshClampsWhenSelectedVanishes(t *testing.T) {
 	if m.cursor != 0 {
 		t.Fatalf("vanished selection should clamp to 0, got %d", m.cursor)
 	}
-	if m.cursor >= len(m.agents) {
-		t.Fatalf("cursor out of bounds: %d of %d", m.cursor, len(m.agents))
+	if m.cursor >= len(m.rows) {
+		t.Fatalf("cursor out of bounds: %d of %d", m.cursor, len(m.rows))
 	}
 }
 
@@ -226,8 +241,8 @@ func TestPreviewPlaceholderOnErrorAndStatusUnaffected(t *testing.T) {
 		t.Fatalf("failed capture should yield empty preview, got %q", m.preview)
 	}
 	// Status is hook-derived, never inferred from preview output.
-	if m.agents[0].Status != StatusWorking {
-		t.Fatalf("status must not be derived from preview, got %q", m.agents[0].Status)
+	if m.rows[0].Status != StatusWorking {
+		t.Fatalf("status must not be derived from preview, got %q", m.rows[0].Status)
 	}
 }
 
@@ -338,14 +353,14 @@ func ag(session, window, title string, st Status) Agent {
 // shape renders the grouped items into compact tags for assertion: S:<session> for a
 // session header, A:<title>@<window> for an agent row (or A:<title> when the agent has
 // no window label).
-func shape(ordered []Agent, items []renderItem) []string {
+func shape(ordered []Row, items []renderItem) []string {
 	var got []string
 	for _, it := range items {
 		switch it.kind {
 		case kindSession:
 			got = append(got, "S:"+it.label)
-		case kindAgent:
-			tag := "A:" + ordered[it.agentIdx].Title
+		case kindRow:
+			tag := "A:" + ordered[it.rowIdx].Title
 			if it.window != "" {
 				tag += "@" + it.window
 			}
@@ -362,7 +377,7 @@ func TestGroupAgentsFlatSessionOrderAndWindowLabels(t *testing.T) {
 		ag("api-server", "2", "migrate db", StatusIdle),
 		ag("web", "0", "ship landing", StatusDone),
 	}
-	ordered, items := groupAgents(in)
+	ordered, items := groupRows(rowsOf(in...))
 
 	want := []string{
 		"S:api-server",          // needs-attn session floats above web (all-done)
@@ -385,7 +400,7 @@ func TestGroupAgentsWindowLabelNotForcedContiguous(t *testing.T) {
 		ag("s", "1", "high", StatusNeedsAttention),
 		ag("s", "2", "mid", StatusWorking),
 	}
-	ordered, items := groupAgents(in)
+	ordered, items := groupRows(rowsOf(in...))
 	want := []string{
 		"S:s",
 		"A:high@win 1", // needs-attn
@@ -408,7 +423,7 @@ func TestGroupAgentsUsesWindowName(t *testing.T) {
 		withName("api", "1", "editor", "a2", StatusWorking),
 		withName("api", "2", "server", "a3", StatusIdle),
 	}
-	ordered, items := groupAgents(in)
+	ordered, items := groupRows(rowsOf(in...))
 	want := []string{
 		"S:api",
 		"A:a1@editor", // window label is the tmux window name, not "win 1"
@@ -425,7 +440,7 @@ func TestGroupAgentsUngroupedBucket(t *testing.T) {
 		ag("api", "0", "real one", StatusDone),
 		{SessionID: "loose-id", Title: "loose", Status: StatusWorking}, // no tmux session
 	}
-	ordered, items := groupAgents(in)
+	ordered, items := groupRows(rowsOf(in...))
 
 	// The ungrouped bucket (working, more urgent) floats above the done session.
 	want := []string{
@@ -445,7 +460,7 @@ func TestFoldCollapsesAndUnfolds(t *testing.T) {
 		ag("arewa", "1", "write tests", StatusWorking),
 		ag("web", "0", "ship landing", StatusDone),
 	}
-	m, err := newModel(&fakeSource{list: in}, nil, DefaultKeymap())
+	m, err := nm(&fakeSource{list: in}, nil, DefaultKeymap())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -475,7 +490,7 @@ func TestFoldCollapsesAndUnfolds(t *testing.T) {
 	if len(m.nav) != 3 {
 		t.Fatalf("after unfold: want 3 navigable rows, got %d", len(m.nav))
 	}
-	a, ok := m.currentAgent()
+	a, ok := m.currentRow()
 	if !ok || a.Title != "refactor auth" {
 		t.Fatalf("unfold should land on the first agent, got %+v ok=%v", a, ok)
 	}
@@ -487,7 +502,7 @@ func TestFoldStateSurvivesRefresh(t *testing.T) {
 		ag("arewa", "1", "a2", StatusWorking),
 		ag("web", "0", "w1", StatusWorking),
 	}}
-	m, err := newModel(src, nil, DefaultKeymap())
+	m, err := nm(src, nil, DefaultKeymap())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -549,7 +564,7 @@ func TestSectionJumpMotions(t *testing.T) {
 		ag("beta", "0", "b1", StatusWorking),
 		ag("gamma", "0", "g1", StatusWorking),
 	}
-	m, err := newModel(&fakeSource{list: in}, nil, DefaultKeymap())
+	m, err := nm(&fakeSource{list: in}, nil, DefaultKeymap())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -601,17 +616,17 @@ func TestNavigationCrossesGroupsLeavesOnly(t *testing.T) {
 		ag("api", "1", "a2", StatusWorking),
 		ag("web", "0", "w1", StatusWorking),
 	}
-	m, err := newModel(&fakeSource{list: in}, nil, DefaultKeymap())
+	m, err := nm(&fakeSource{list: in}, nil, DefaultKeymap())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(m.agents) != 3 {
-		t.Fatalf("expected 3 selectable leaves, got %d", len(m.agents))
+	if len(m.rows) != 3 {
+		t.Fatalf("expected 3 selectable leaves, got %d", len(m.rows))
 	}
 
 	// G lands on the last agent leaf, never a header; one j past it stays put.
 	m = send(m, key("G"))
-	if m.cursor != 2 || m.agents[m.cursor].Title != "w1" {
+	if m.cursor != 2 || m.rows[m.cursor].Title != "w1" {
 		t.Fatalf("G should land on last agent w1, got cursor %d", m.cursor)
 	}
 

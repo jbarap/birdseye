@@ -164,6 +164,52 @@ func TestCloneAddDefaultBranch(t *testing.T) {
 	}
 }
 
+// TestRemoveCleanAndDirty checks the dirty-guard: a clean worktree removes, a dirty one
+// is refused without force and removed with it.
+func TestRemoveCleanAndDirty(t *testing.T) {
+	requireGitBinary(t)
+	parent := t.TempDir()
+	src := filepath.Join(parent, "src")
+	gitInit(t, src, "main")
+	gitCommit(t, src)
+
+	// A clean linked worktree removes without force.
+	cleanDir, err := Add(src, "clean", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dirty, _ := IsDirty(cleanDir); dirty {
+		t.Fatal("fresh worktree should be clean")
+	}
+	if err := Remove(cleanDir, false); err != nil {
+		t.Fatalf("remove clean: %v", err)
+	}
+	if _, err := os.Stat(cleanDir); !os.IsNotExist(err) {
+		t.Fatalf("clean worktree dir should be gone, stat err=%v", err)
+	}
+
+	// A dirty worktree is refused without force, removed with it.
+	dirtyDir, err := Add(src, "dirty", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dirtyDir, "scratch.txt"), []byte("wip\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if dirty, _ := IsDirty(dirtyDir); !dirty {
+		t.Fatal("worktree with an untracked file should be dirty")
+	}
+	if err := Remove(dirtyDir, false); err == nil {
+		t.Fatal("removing a dirty worktree without force should fail")
+	}
+	if err := Remove(dirtyDir, true); err != nil {
+		t.Fatalf("force-remove dirty: %v", err)
+	}
+	if _, err := os.Stat(dirtyDir); !os.IsNotExist(err) {
+		t.Fatalf("dirty worktree dir should be gone after force, stat err=%v", err)
+	}
+}
+
 // --- helpers ---
 
 func mustMkdir(t *testing.T, p string) {

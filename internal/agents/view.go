@@ -12,18 +12,17 @@ import (
 	"github.com/jbarap/birds-eye/internal/theme"
 )
 
-// refreshInterval is how often the open view re-reads agent state and the
-// selected agent's preview.
-const refreshInterval = time.Second
+// defaultRefresh is the fallback live-refresh interval when none is configured.
+const defaultRefresh = time.Second
 
 // Layout constants. Column widths keep every row's data points at fixed positions;
 // the preview is only shown when the terminal is at least previewMinWidth wide.
 const (
 	cursorColWidth  = 2  // leftmost gutter: cursor glyph on the selected row, else blank
 	statusColWidth  = 9  // " G word  " — status glyph + 4-char word, pinned across rows
-	agentIndent     = 6  // an agent's columns sit this far right of the session bar's label
+	agentIndent     = 6  // a row's columns sit this far right of the session bar's label
 	windowColWidth  = 11 // gray window-label column
-	nameColWidth    = 22 // white agent-name column
+	nameColWidth    = 22 // white name column
 	previewMinWidth = 92
 	minPreviewCols  = 24
 )
@@ -31,6 +30,16 @@ const (
 // rowContentWidth is a row's width after the cursor column. Session bars and the
 // selected-row highlight span exactly this, so their backgrounds line up.
 const rowContentWidth = statusColWidth + agentIndent + windowColWidth + nameColWidth
+
+// Glyphs that live alongside the status glyphs (colors come from theme; these marks
+// are not colors, so they stay here next to statusGlyph by convention).
+const (
+	anchorGlyph  = "⌂" // a managed repo's default-branch checkout (no agent)
+	anchorWord   = "base"
+	slotGlyph    = "◌" // a managed worktree with no agent (a spawn target)
+	slotWord     = "slot"
+	managedGlyph = "\U000f0612" // 󰘬 md-source_branch: the managed-repo indicator
+)
 
 // lipColor adapts a shared-palette color to lipgloss, handing it the hex value;
 // lipgloss performs its own profile-based downgrade (truecolor → 256 → 16).
@@ -43,6 +52,10 @@ var statusStyle = map[Status]lipgloss.Style{
 	StatusDone:           lipgloss.NewStyle().Foreground(lipColor(theme.Gray)),
 	StatusUnknown:        lipgloss.NewStyle().Faint(true),
 }
+
+// markerStyle renders the anchor/slot gutter tokens — gray, like done/unknown, since
+// they are structural markers rather than live statuses.
+var markerStyle = lipgloss.NewStyle().Foreground(lipColor(theme.Gray))
 
 // statusGlyph and statusWord render a status in the gutter as a glyph plus a 4-char
 // word, so statuses stay distinguishable on terminals without color.
@@ -139,7 +152,7 @@ func validHex(s string) bool {
 }
 
 // helpOrder is the order actions appear in the help line.
-var helpOrder = []Action{ActionDown, ActionUp, ActionTop, ActionBottom, ActionPrevSection, ActionNextSection, ActionFold, ActionSelect, ActionQuit}
+var helpOrder = []Action{ActionDown, ActionUp, ActionTop, ActionBottom, ActionPrevSection, ActionNextSection, ActionFold, ActionNewAgent, ActionDeleteAgent, ActionSelect, ActionQuit}
 
 var actionLabel = map[Action]string{
 	ActionUp:          "up",
@@ -152,54 +165,76 @@ var actionLabel = map[Action]string{
 	ActionNextSection: "next session",
 	ActionSelect:      "jump",
 	ActionFold:        "fold",
+	ActionNewAgent:    "new",
+	ActionDeleteAgent: "delete",
 	ActionQuit:        "quit",
 }
 
 // tickMsg drives the periodic live refresh.
 type tickMsg time.Time
 
+// mode is the model's interaction mode: normal navigation, the new-agent name prompt,
+// or the delete confirmation for a dirty worktree.
+type mode int
+
+const (
+	modeNormal mode = iota
+	modeNewAgent
+	modeConfirmDelete
+)
+
 // model is the Bubble Tea model for the agents view.
 type model struct {
-	src  Source
-	prev Previewer
-	keys Keymap
-	res  *resolver
+	src     RowSource
+	prev    Previewer
+	keys    Keymap
+	res     *resolver
+	refresh time.Duration
+	orch    Orchestrator // optional; nil disables n/d
 
-	agents  []Agent         // agent leaves in render order
-	items   []renderItem    // full tree: headers + agent rows interleaved
+	rows    []Row           // leaf rows in render order
+	items   []renderItem    // full tree: headers + leaf rows interleaved
 	folded  map[string]bool // session keys whose section is collapsed
 	nav     []int           // item indices the cursor can land on, given fold state
-	cursor  int             // index into nav (an agent, or a folded session header)
-	chosen  *Agent
+	cursor  int             // index into nav (a leaf, or a folded session header)
+	chosen  *Row
 	pending rune // armed first rune of a chord (0 = none)
 
+	mode   mode
+	input  string // new-agent name buffer (modeNewAgent)
+	target Row    // the row the active modal acts on (new-agent repo / delete confirm)
+	notice string // transient status line (errors from actions)
+
 	width, height int
-	preview       string         // cached preview for the selected agent
+	preview       string         // cached preview for the selected row
 	accent        lipgloss.Color // title + cursor color (configurable)
 	err           error
 }
 
-// newModel builds the initial model, loading agents and the first preview.
-func newModel(src Source, prev Previewer, keys Keymap) (model, error) {
+// newModel builds the initial model, loading rows and the first preview.
+func newModel(src RowSource, prev Previewer, keys Keymap, refresh time.Duration) (model, error) {
 	res, err := keys.buildResolver()
 	if err != nil {
 		return model{}, err
 	}
-	m := model{src: src, prev: prev, keys: keys, res: res, folded: map[string]bool{}, accent: lipColor(theme.Accent)}
-	list, err := src.Agents()
+	if refresh <= 0 {
+		refresh = defaultRefresh
+	}
+	m := model{src: src, prev: prev, keys: keys, res: res, refresh: refresh, folded: map[string]bool{}, accent: lipColor(theme.Accent)}
+	list, err := src.Rows()
 	if err != nil {
 		return model{}, err
 	}
-	m.setAgents(list)
+	m.setRows(list)
 	m.refreshPreview()
 	return m, nil
 }
 
-// setAgents arranges the source's agents into the session→window render order,
-// caches the interleaved items, drops fold state for sessions that are gone, and
-// recomputes the navigable rows.
-func (m *model) setAgents(list []Agent) {
-	m.agents, m.items = groupAgents(list)
+// setRows arranges the source's rows into the session render order, caches the
+// interleaved items, drops fold state for sessions that are gone, and recomputes the
+// navigable rows.
+func (m *model) setRows(list []Row) {
+	m.rows, m.items = groupRows(list)
 	m.pruneFolded()
 	m.recomputeNav()
 }
@@ -223,8 +258,8 @@ func (m *model) pruneFolded() {
 	}
 }
 
-// recomputeNav rebuilds the list of item indices the cursor may land on: every
-// agent of an unfolded session, plus the header of each folded session (its single
+// recomputeNav rebuilds the list of item indices the cursor may land on: every leaf
+// of an unfolded session, plus the header of each folded session (its single
 // navigable stand-in). Window headers are never navigable.
 func (m *model) recomputeNav() {
 	m.nav = m.nav[:0]
@@ -234,7 +269,7 @@ func (m *model) recomputeNav() {
 			if m.folded[it.sessionKey] {
 				m.nav = append(m.nav, i)
 			}
-		case kindAgent:
+		case kindRow:
 			if !m.folded[it.sessionKey] {
 				m.nav = append(m.nav, i)
 			}
@@ -242,16 +277,18 @@ func (m *model) recomputeNav() {
 	}
 }
 
-// Run renders the agents view and blocks until the user selects an agent or
-// quits. It returns the chosen agent (nil when quit without selecting).
-func Run(src Source, prev Previewer, keys Keymap, accent lipgloss.Color) (*Agent, error) {
-	m, err := newModel(src, prev, keys)
+// Run renders the agents view and blocks until the user selects a row or quits. It
+// returns the chosen row (nil when quit without selecting). orch may be nil to disable
+// the create/delete actions.
+func Run(src RowSource, prev Previewer, keys Keymap, accent lipgloss.Color, refresh time.Duration, orch Orchestrator) (*Row, error) {
+	m, err := newModel(src, prev, keys, refresh)
 	if err != nil {
 		return nil, err
 	}
 	if accent != "" {
 		m.accent = accent
 	}
+	m.orch = orch
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	out, err := p.Run()
 	if err != nil {
@@ -260,10 +297,14 @@ func Run(src Source, prev Previewer, keys Keymap, accent lipgloss.Color) (*Agent
 	return out.(model).chosen, nil
 }
 
-func (m model) Init() tea.Cmd { return tick() }
+func (m model) Init() tea.Cmd { return m.tick() }
 
-func tick() tea.Cmd {
-	return tea.Tick(refreshInterval, func(t time.Time) tea.Msg { return tickMsg(t) })
+func (m model) tick() tea.Cmd {
+	d := m.refresh
+	if d <= 0 {
+		d = defaultRefresh
+	}
+	return tea.Tick(d, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -273,36 +314,36 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tickMsg:
 		m.reload()
-		return m, tick()
+		return m, m.tick()
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
 	return m, nil
 }
 
-// reload re-reads agent state through the Source, preserving the selected agent
-// by identity, and refreshes the preview.
+// reload re-reads rows through the source, preserving the selected row by identity,
+// and refreshes the preview.
 func (m *model) reload() {
-	list, err := m.src.Agents()
+	list, err := m.src.Rows()
 	if err != nil {
 		m.err = err
 		return
 	}
 	m.err = nil
 	selKey := m.currentRowKey()
-	m.setAgents(list)
+	m.setRows(list)
 	m.cursor = relocate(m, selKey, m.cursor)
 	m.refreshPreview()
 }
 
-// rowKey identifies a navigable row by what it represents — an agent (by session
-// id) or a folded session header (by session key) — so selection can follow that
-// row across a refresh even as ordering or fold state shifts.
+// rowKey identifies a navigable row by what it represents — a leaf (by its row id) or
+// a folded session header (by session key) — so selection can follow that row across a
+// refresh even as ordering or fold state shifts.
 func (m model) rowKey(itemIdx int) string {
 	it := m.items[itemIdx]
 	switch it.kind {
-	case kindAgent:
-		return "a:" + m.agents[it.agentIdx].SessionID
+	case kindRow:
+		return "r:" + m.rows[it.rowIdx].SessionID
 	case kindSession:
 		return "s:" + it.sessionKey
 	}
@@ -347,45 +388,51 @@ func (m model) currentItem() (renderItem, bool) {
 	return m.items[m.nav[m.cursor]], true
 }
 
-// currentAgent returns the agent the cursor points at: the selected agent leaf, or
-// the most-urgent agent of a folded session whose header is selected. The second
-// case lets the preview and jump still target something useful while folded.
-func (m model) currentAgent() (Agent, bool) {
+// currentRow returns the row the cursor points at: the selected leaf, or the
+// first row of a folded session whose header is selected. The second case lets the
+// preview and jump still target something useful while folded.
+func (m model) currentRow() (Row, bool) {
 	it, ok := m.currentItem()
 	if !ok {
-		return Agent{}, false
+		return Row{}, false
 	}
 	switch it.kind {
-	case kindAgent:
-		return m.agents[it.agentIdx], true
+	case kindRow:
+		return m.rows[it.rowIdx], true
 	case kindSession:
-		return m.firstAgentOfSession(it.sessionKey)
+		return m.firstRowOfSession(it.sessionKey)
 	}
-	return Agent{}, false
+	return Row{}, false
 }
 
-// firstAgentOfSession returns the first agent (in render order) of a session.
-func (m model) firstAgentOfSession(key string) (Agent, bool) {
+// firstRowOfSession returns the first row (in render order) of a session.
+func (m model) firstRowOfSession(key string) (Row, bool) {
 	for _, it := range m.items {
-		if it.kind == kindAgent && it.sessionKey == key {
-			return m.agents[it.agentIdx], true
+		if it.kind == kindRow && it.sessionKey == key {
+			return m.rows[it.rowIdx], true
 		}
 	}
-	return Agent{}, false
+	return Row{}, false
 }
 
-// refreshPreview captures the selected agent's preview, caching the result.
+// refreshPreview captures the selected row's pane preview, caching the result. Any row
+// with a tmux location (agent, anchor, or slot) can be previewed.
 func (m *model) refreshPreview() {
 	if m.prev == nil {
 		m.preview = ""
 		return
 	}
-	a, ok := m.currentAgent()
-	if !ok {
+	r, ok := m.currentRow()
+	if !ok || r.TmuxSession == "" {
 		m.preview = ""
 		return
 	}
-	out, err := m.prev.Preview(a)
+	out, err := m.prev.Preview(Agent{
+		SessionID:   r.SessionID,
+		TmuxSession: r.TmuxSession,
+		TmuxWindow:  r.TmuxWindow,
+		TmuxPane:    r.TmuxPane,
+	})
 	if err != nil {
 		m.preview = ""
 		return
@@ -394,6 +441,13 @@ func (m *model) refreshPreview() {
 }
 
 func (m model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch m.mode {
+	case modeNewAgent:
+		return m.handleNewAgentKey(key)
+	case modeConfirmDelete:
+		return m.handleConfirmKey(key)
+	}
+
 	k := key.String()
 	r, isRune := singleRune(k)
 
@@ -451,9 +505,13 @@ func (m model) applyAction(a Action) (tea.Model, tea.Cmd) {
 		m.cursor = m.nextSection()
 	case ActionFold:
 		return m.toggleFold()
+	case ActionNewAgent:
+		return m.startNewAgent()
+	case ActionDeleteAgent:
+		return m.startDelete()
 	case ActionSelect:
-		if a, ok := m.currentAgent(); ok {
-			m.chosen = &a
+		if r, ok := m.currentRow(); ok {
+			m.chosen = &r
 		}
 		return m, tea.Quit
 	case ActionQuit:
@@ -466,8 +524,8 @@ func (m model) applyAction(a Action) (tea.Model, tea.Cmd) {
 }
 
 // toggleFold collapses or expands the section under the cursor. Folding a section
-// from one of its agents leaves the cursor on the now-collapsed session header;
-// unfolding from that header drops the cursor onto the section's first agent.
+// from one of its rows leaves the cursor on the now-collapsed session header;
+// unfolding from that header drops the cursor onto the section's first row.
 func (m model) toggleFold() (tea.Model, tea.Cmd) {
 	it, ok := m.currentItem()
 	if !ok {
@@ -482,11 +540,11 @@ func (m model) toggleFold() (tea.Model, tea.Cmd) {
 }
 
 // navIndexForSession returns the cursor position of a session's navigable row: its
-// header when folded, otherwise its first agent.
+// header when folded, otherwise its first row.
 func (m model) navIndexForSession(key string) int {
 	for i, itemIdx := range m.nav {
 		it := m.items[itemIdx]
-		if it.sessionKey == key && (it.kind == kindSession || it.kind == kindAgent) {
+		if it.sessionKey == key && (it.kind == kindSession || it.kind == kindRow) {
 			return i
 		}
 	}
@@ -566,7 +624,7 @@ func (m model) halfPage() int {
 }
 
 func (m model) View() string {
-	if len(m.agents) == 0 {
+	if len(m.rows) == 0 {
 		return m.emptyView()
 	}
 
@@ -578,6 +636,13 @@ func (m model) View() string {
 	}
 
 	parts := []string{body}
+	if m.mode == modeNewAgent {
+		parts = append(parts, helpStyle.Render("new worktree name: "+m.input+"▌  (enter to create, esc to cancel)"))
+	} else if m.mode == modeConfirmDelete {
+		parts = append(parts, helpStyle.Render(fmt.Sprintf("worktree %q has uncommitted changes — force remove? (y/n)", m.target.Worktree)))
+	} else if m.notice != "" {
+		parts = append(parts, helpStyle.Render(m.notice))
+	}
 	if m.height == 0 || m.height >= 6 {
 		parts = append(parts, m.renderHelp())
 	}
@@ -596,23 +661,25 @@ type renderKind int
 
 const (
 	kindSession renderKind = iota // tmux session header, drawn as a full-width section bar
-	kindAgent                     // a selectable agent row
+	kindRow                       // a selectable leaf row (agent, anchor, or slot)
 )
 
 // renderItem is one line of the grouped list. A session item is a header (not
-// selectable); an agent item points at an entry in the ordered agents slice and
-// carries its window label for the gray window column.
+// selectable); a leaf item points at an entry in the ordered rows slice and carries
+// its window label for the gray window column.
 type renderItem struct {
 	kind       renderKind
 	label      string // session name or "ungrouped" (session header)
 	sessionKey string // owning tmux session (its own key for a session header)
-	window     string // the agent's window label (gray column)
-	count      int    // agents in the session, for the folded header's count
-	agentIdx   int    // index into model.agents, for kindAgent
+	window     string // the row's window/worktree label (gray column)
+	count      int    // leaves in the session, for the folded header's count
+	managed    bool   // the session is a recognized managed repo (session header)
+	worktrees  int    // worktree count, for the managed indicator (session header)
+	rowIdx     int    // index into model.rows, for kindRow
 }
 
-// windowLabel is how an agent's window is shown in the gray column: its tmux window
-// name when set, else "win <index>". With neither (an agent outside tmux) it is empty.
+// windowLabel is how a row's window is shown in the gray column: its tmux window name
+// when set, else "win <index>". With neither it is empty.
 func windowLabel(index, name string) string {
 	if name != "" {
 		return name
@@ -623,87 +690,132 @@ func windowLabel(index, name string) string {
 	return ""
 }
 
-// sessionGroup is one tmux session's agents ("" key is the ungrouped bucket).
+// sessionGroup is one tmux session's rows ("" key is the ungrouped bucket).
 type sessionGroup struct {
-	key    string
-	agents []Agent
+	key       string
+	rows      []Row
+	managed   bool
+	worktrees int
 }
 
-// groupAgents arranges agents into a flat session→agent list and returns them in
-// render order alongside the interleaved header/agent items the view draws. Sessions
-// are ordered by their most-urgent member (lowest status rank), then by name; agents
-// within a session by status rank then title. Windows are not a grouping level, so
-// agents that share a window are not forced adjacent — each agent simply carries its
-// window as a label. Agents lacking a tmux session collect under an "ungrouped" heading.
-func groupAgents(in []Agent) ([]Agent, []renderItem) {
+// groupRows arranges rows into a flat session→row list and returns them in render
+// order alongside the interleaved header/row items the view draws. Sessions are
+// ordered by their most-urgent agent (lowest status rank), then by name. Within a
+// session the anchor (if any) is pinned first, agents follow by status rank then
+// title, and empty worktree slots sort last. Rows lacking a tmux session collect under
+// an "ungrouped" heading.
+func groupRows(in []Row) ([]Row, []renderItem) {
 	if len(in) == 0 {
 		return nil, nil
 	}
 
 	var sessions []*sessionGroup
-	sessIdx := map[string]*sessionGroup{}
-	for _, a := range in {
-		sg := sessIdx[a.TmuxSession]
+	idx := map[string]*sessionGroup{}
+	for _, r := range in {
+		sg := idx[r.TmuxSession]
 		if sg == nil {
-			sg = &sessionGroup{key: a.TmuxSession}
-			sessIdx[a.TmuxSession] = sg
+			sg = &sessionGroup{key: r.TmuxSession}
+			idx[r.TmuxSession] = sg
 			sessions = append(sessions, sg)
 		}
-		sg.agents = append(sg.agents, a)
+		sg.rows = append(sg.rows, r)
+		if r.Managed {
+			sg.managed = true
+		}
 	}
 
 	for _, sg := range sessions {
-		sort.SliceStable(sg.agents, func(i, j int) bool { return agentLess(sg.agents[i], sg.agents[j]) })
+		sort.SliceStable(sg.rows, func(i, j int) bool { return rowLess(sg.rows[i], sg.rows[j]) })
+		seen := map[string]bool{}
+		for _, r := range sg.rows {
+			if r.Worktree != "" && !seen[r.Worktree] {
+				seen[r.Worktree] = true
+				sg.worktrees++
+			}
+		}
 	}
 	sort.SliceStable(sessions, func(i, j int) bool {
-		if ri, rj := groupRank(sessions[i].agents), groupRank(sessions[j].agents); ri != rj {
+		if ri, rj := groupRank(sessions[i].rows), groupRank(sessions[j].rows); ri != rj {
 			return ri < rj
 		}
 		return sessions[i].key < sessions[j].key
 	})
 
-	ordered := make([]Agent, 0, len(in))
+	ordered := make([]Row, 0, len(in))
 	items := make([]renderItem, 0, len(in)+len(sessions))
 	for _, sg := range sessions {
 		label := sg.key
 		if label == "" {
 			label = "ungrouped"
 		}
-		items = append(items, renderItem{kind: kindSession, label: label, sessionKey: sg.key, count: len(sg.agents)})
-		for _, a := range sg.agents {
-			ordered = append(ordered, a)
+		items = append(items, renderItem{kind: kindSession, label: label, sessionKey: sg.key, count: len(sg.rows), managed: sg.managed, worktrees: sg.worktrees})
+		for _, r := range sg.rows {
+			ordered = append(ordered, r)
 			items = append(items, renderItem{
-				kind:       kindAgent,
+				kind:       kindRow,
 				sessionKey: sg.key,
-				window:     windowLabel(a.TmuxWindow, a.TmuxWindowName),
-				agentIdx:   len(ordered) - 1,
+				window:     rowLabel(r),
+				rowIdx:     len(ordered) - 1,
 			})
 		}
 	}
 	return ordered, items
 }
 
-// agentLess orders agents within a session: most-urgent status first, then title.
-func agentLess(a, b Agent) bool {
-	if a.Status.rank() != b.Status.rank() {
-		return a.Status.rank() < b.Status.rank()
+// rowLabel is the gray-column label for a leaf row: the worktree name when the row is
+// a managed worktree (or anchor), else the tmux window label.
+func rowLabel(r Row) string {
+	if r.Worktree != "" {
+		return r.Worktree
+	}
+	return windowLabel(r.TmuxWindow, r.TmuxWindowName)
+}
+
+// rowLess orders rows within a session: the anchor first, then by status rank, with
+// empty slots last; ties break by title.
+func rowLess(a, b Row) bool {
+	if ra, rb := rowRank(a), rowRank(b); ra != rb {
+		return ra < rb
 	}
 	return a.Title < b.Title
 }
 
-// groupRank is the urgency of a set of agents: the lowest (most-urgent) status rank.
-func groupRank(agents []Agent) int {
+// rowRank ranks a row for within-session ordering: anchor before everything, slots
+// after everything, agents by their status rank in between.
+func rowRank(r Row) int {
+	switch r.Kind {
+	case RowAnchor:
+		return -1
+	case RowSlot:
+		return 100
+	default:
+		return r.Status.rank()
+	}
+}
+
+// groupRank is the urgency of a session: the lowest (most-urgent) status rank among
+// its live agents. A session with no live agents (e.g. a managed repo of only an
+// anchor and slots) sorts as if idle so it sits among quiet sessions.
+func groupRank(rows []Row) int {
 	r := int(^uint(0) >> 1) // max int
-	for _, a := range agents {
-		if rk := a.Status.rank(); rk < r {
+	has := false
+	for _, row := range rows {
+		if row.Kind != RowAgent {
+			continue
+		}
+		has = true
+		if rk := row.Status.rank(); rk < r {
 			r = rk
 		}
+	}
+	if !has {
+		return StatusIdle.rank()
 	}
 	return r
 }
 
 // renderRows draws each visible item: a leftmost cursor column, then the session bar
-// or the fixed-column agent row. Agents under a folded session are skipped.
+// or the fixed-column leaf row. Rows under a folded session are skipped.
 func (m model) renderRows() string {
 	selItem := -1
 	if m.cursor >= 0 && m.cursor < len(m.nav) {
@@ -711,7 +823,7 @@ func (m model) renderRows() string {
 	}
 	var rows []string
 	for i, it := range m.items {
-		if it.kind == kindAgent && m.folded[it.sessionKey] {
+		if it.kind == kindRow && m.folded[it.sessionKey] {
 			continue // hidden beneath a folded session
 		}
 		selected := i == selItem
@@ -734,32 +846,41 @@ func (m model) rowBody(it renderItem, selected bool) string {
 	switch it.kind {
 	case kindSession:
 		return m.sessionBar(it)
-	case kindAgent:
-		return m.agentRow(it, selected)
+	case kindRow:
+		return m.leafRow(it, selected)
 	}
 	return ""
 }
 
 // sessionBar renders a session header as a full-width bar, left-aligned to the start
-// of the list. A folded section shows a collapsed glyph and its hidden-agent count.
+// of the list. A managed repo carries the worktree-source indicator and its worktree
+// count; a folded section shows a collapsed glyph and its hidden-row count.
 func (m model) sessionBar(it renderItem) string {
-	label := "▾ " + it.label
-	if m.folded[it.sessionKey] {
-		label = fmt.Sprintf("▸ %s  (%d)", it.label, it.count)
+	name := it.label
+	if it.managed {
+		name = managedGlyph + " " + it.label
+	}
+	var label string
+	switch {
+	case m.folded[it.sessionKey]:
+		label = fmt.Sprintf("▸ %s  (%d)", name, it.count)
+	case it.managed && it.worktrees > 0:
+		label = fmt.Sprintf("▾ %s   %d wt", name, it.worktrees)
+	default:
+		label = "▾ " + name
 	}
 	return sessionBarStyle.Width(rowContentWidth).Render(truncate(label, rowContentWidth))
 }
 
-// agentRow renders one agent at fixed columns: the status gutter (glyph + word), an
-// indent, the gray window label, then the white name. The selected row carries a
-// full-row highlight spanning gutter→name in addition to the cursor glyph.
-func (m model) agentRow(it renderItem, selected bool) string {
-	a := m.agents[it.agentIdx]
-	gutter := " " + statusGlyph[a.Status] + " " + padRight(statusWord[a.Status], 4) + "  "
+// leafRow renders one row at fixed columns: the status/marker gutter (glyph + word), an
+// indent, the gray window/worktree label, then the white name. The selected row carries
+// a full-row highlight spanning gutter→name in addition to the cursor glyph.
+func (m model) leafRow(it renderItem, selected bool) string {
+	r := m.rows[it.rowIdx]
+	gutter, st := gutterFor(r)
 	indent := strings.Repeat(" ", agentIndent)
 	win := padRight(truncate(it.window, windowColWidth-1), windowColWidth)
-	name := padRight(truncate(displayTitle(a.Title, it.sessionKey), nameColWidth), nameColWidth)
-	st := statusStyle[a.Status]
+	name := padRight(truncate(displayTitle(r.Title, it.sessionKey), nameColWidth), nameColWidth)
 	if !selected {
 		return st.Render(gutter) + indent + windowColStyle.Render(win) + nameColStyle.Render(name)
 	}
@@ -770,9 +891,22 @@ func (m model) agentRow(it renderItem, selected bool) string {
 		nameColStyle.Background(rowHL).Bold(true).Render(name)
 }
 
-// displayTitle drops a leading "<session>:" from an agent title, since the session
-// is already shown by its header — "arewa:birds_eye" under session "arewa" becomes
-// "birds_eye". Titles without that prefix (or ungrouped agents) are unchanged.
+// gutterFor returns the pinned status/marker gutter for a row and the style to render
+// it: a per-status glyph+word for agents, or the gray anchor/slot marker otherwise.
+func gutterFor(r Row) (string, lipgloss.Style) {
+	switch r.Kind {
+	case RowAnchor:
+		return " " + anchorGlyph + " " + padRight(anchorWord, 4) + "  ", markerStyle
+	case RowSlot:
+		return " " + slotGlyph + " " + padRight(slotWord, 4) + "  ", markerStyle
+	default:
+		return " " + statusGlyph[r.Status] + " " + padRight(statusWord[r.Status], 4) + "  ", statusStyle[r.Status]
+	}
+}
+
+// displayTitle drops a leading "<session>:" from a row title, since the session is
+// already shown by its header — "arewa:birds_eye" under session "arewa" becomes
+// "birds_eye". Titles without that prefix (or ungrouped rows) are unchanged.
 func displayTitle(title, sessionKey string) string {
 	if sessionKey == "" {
 		return title
@@ -848,6 +982,9 @@ func previewLines(content string, h, w int) []string {
 func (m model) renderHelp() string {
 	var parts []string
 	for _, a := range helpOrder {
+		if (a == ActionNewAgent || a == ActionDeleteAgent) && m.orch == nil {
+			continue // create/delete unavailable without an orchestrator
+		}
 		keys := m.keys[a]
 		if len(keys) == 0 {
 			continue

@@ -65,3 +65,88 @@ type Agent struct {
 type Source interface {
 	Agents() ([]Agent, error)
 }
+
+// RowKind distinguishes the leaf rows the agents view renders. A row may carry a
+// live agent, mark a managed repo's default-branch anchor, or mark an empty worktree
+// slot (a worktree window with no agent — a spawn target).
+type RowKind int
+
+const (
+	RowAgent  RowKind = iota // a live agent (status from its hook record)
+	RowAnchor                // a managed repo's default-branch checkout (no agent)
+	RowSlot                  // a managed worktree with no agent (spawn target)
+)
+
+// Row is one leaf the agents view renders. It is the view's unit — a tmux location
+// plus display — optionally backed by a live agent. Anchor and slot rows carry no
+// agent, which is why the view models rows rather than overloading Agent.
+type Row struct {
+	Kind RowKind
+	// SessionID is the agent's id for RowAgent rows (used to follow selection across
+	// refreshes and to forget a deleted agent); a stable synthetic id otherwise.
+	SessionID string
+	// Tmux location of the row, used for grouping, preview, jump, and lifecycle ops.
+	TmuxSession    string
+	TmuxWindow     string
+	TmuxWindowName string
+	TmuxPane       string
+	// Dir is the row's filesystem directory (the pane's start path / worktree dir),
+	// used to add or remove a worktree. Empty when unknown.
+	Dir string
+	// Worktree is the worktree's name when the row is a managed worktree (RowSlot, or
+	// a RowAgent running in a worktree window); empty for incidental agents and rows
+	// outside a managed repo. A non-empty value is what makes delete also remove the
+	// worktree.
+	Worktree string
+	// Managed reports whether the owning session is a recognized managed repo, so its
+	// section bar shows the indicator and `n` is available.
+	Managed bool
+	// Title is the row's display name.
+	Title string
+	// Status is the agent's status for RowAgent rows; anchor/slot rows render their
+	// own marker and ignore this.
+	Status Status
+	// Updated is when the backing state was last written (RowAgent); used for the
+	// most-recent dedup and selection stability.
+	Updated time.Time
+}
+
+// RowSource yields the rows the agents view renders. The plain agents view uses an
+// adapter over a Source; orchestration uses the Workspace reconciler.
+type RowSource interface {
+	Rows() ([]Row, error)
+}
+
+// agentsAsRows adapts a plain Source into a RowSource — every agent a RowAgent — for
+// the non-orchestration path and for tests.
+type agentsAsRows struct{ src Source }
+
+func (a agentsAsRows) Rows() ([]Row, error) {
+	ags, err := a.src.Agents()
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]Row, 0, len(ags))
+	for _, ag := range ags {
+		rows = append(rows, agentRow(ag))
+	}
+	return rows, nil
+}
+
+// AgentsAsRows wraps a Source so it can drive the view without orchestration.
+func AgentsAsRows(src Source) RowSource { return agentsAsRows{src} }
+
+// agentRow builds a RowAgent Row from an Agent.
+func agentRow(a Agent) Row {
+	return Row{
+		Kind:           RowAgent,
+		SessionID:      a.SessionID,
+		TmuxSession:    a.TmuxSession,
+		TmuxWindow:     a.TmuxWindow,
+		TmuxWindowName: a.TmuxWindowName,
+		TmuxPane:       a.TmuxPane,
+		Title:          a.Title,
+		Status:         a.Status,
+		Updated:        a.Updated,
+	}
+}

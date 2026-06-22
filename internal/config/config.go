@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -67,6 +68,36 @@ type Agents struct {
 	// Accent overrides the agents-view accent color (the title and the cursor
 	// indicator). A #rrggbb hex; empty keeps the built-in default.
 	Accent string `toml:"accent"`
+	// Refresh is the live-refresh interval (a Go duration like "1s"); empty keeps
+	// the one-second default.
+	Refresh string `toml:"refresh"`
+	// Command is the program spawned for a new orchestration agent; empty defaults
+	// to "claude".
+	Command string `toml:"command"`
+}
+
+// RefreshInterval resolves the configured live-refresh interval, defaulting to one
+// second. A malformed or non-positive duration is reported as an error.
+func (a Agents) RefreshInterval() (time.Duration, error) {
+	if a.Refresh == "" {
+		return time.Second, nil
+	}
+	d, err := time.ParseDuration(a.Refresh)
+	if err != nil {
+		return 0, fmt.Errorf("invalid agents.refresh %q: want a duration like \"1s\"", a.Refresh)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("invalid agents.refresh %q: must be positive", a.Refresh)
+	}
+	return d, nil
+}
+
+// AgentCommand resolves the command spawned for a new agent, defaulting to "claude".
+func (a Agents) AgentCommand() string {
+	if a.Command == "" {
+		return "claude"
+	}
+	return a.Command
 }
 
 // Default returns the built-in configuration used when no file (or no key) is

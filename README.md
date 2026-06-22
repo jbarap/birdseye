@@ -28,7 +28,9 @@ bird's-eye draws on ideas/visuals/concepts from these projects:
 - **`be agents`** — a tmux-popup-friendly view of your Claude Code sessions and
   their status (needs-attention / working / idle / done), so you know which need
   you. It **updates live** as sessions change, shows a **preview** of the selected
-  session's terminal, and navigates with **vim-native, configurable** keys.
+  session's terminal, and navigates with **vim-native, configurable** keys. When a
+  tmux session is a **managed repo** (see below) it also surfaces that repo's
+  worktrees and lets you spin agents up and tear them down in place.
 - **`be worktree`** — clone a repo into `<parent>/<repo>/<default-branch>` (anywhere on
   disk) and spin up sibling worktrees from inside it; worktrees discovered under
   optional configured roots are surfaced as session candidates.
@@ -83,6 +85,32 @@ with vim keys — `j`/`k` (or arrows) to move, `gg`/`G` for top/bottom, `ctrl+d`
 for half-page — `enter` jumps to the selected agent's session, and `q` dismisses it.
 All of these keys are configurable (see `[agents.keys]` below).
 
+### Managed repos (agent orchestration)
+
+`be agents` *recognizes* — it never takes over — the common worktree-per-agent layout.
+A tmux session is a **managed repo** when one of its windows started in a
+`<repo>/<default-branch>` directory (the structure `be worktree` creates). bird's-eye
+owns no state for this: every refresh it re-derives the picture from tmux + git, so an
+unrecognized session looks and behaves exactly as before.
+
+In a managed repo the view shows, beside live agents:
+
+- a `󰘬` indicator and worktree count on the session bar,
+- a `⌂ base` row for the default-branch checkout,
+- a `◌ slot` row for each worktree window with no agent (a spawn target).
+
+Two actions become available (configurable, see `[agents.keys]`):
+
+- **`n` — new agent**: prompts for a worktree name, creates the worktree, opens a tmux
+  window rooted there, and starts the configured agent command (`[agents] command`,
+  default `claude`).
+- **`d` — delete agent**: removes the agent's window; for a managed worktree it also
+  runs `git worktree remove`, asking to force when the worktree is dirty. An incidental
+  agent (one not in a worktree) is just closed; the repo anchor can't be deleted.
+
+Agents in non-managed sessions, and incidental shells inside a managed session, keep
+working exactly as today — orchestration is purely additive.
+
 ## Configuration
 
 Config lives at `~/.config/birds-eye/config.toml` (TOML). All keys are optional;
@@ -126,9 +154,9 @@ roots = ["~/projects", "~/work"]
 roots = ["~/code", "~/work"]
 
 [agents]
-stale_after  = "5m"                   # status older than this shows as "unknown"
-forget_done  = "24h"                  # delete ended sessions this long after they finish
-forget_stale = "24h"                  # delete crashed/abandoned sessions after this (0 disables)
+refresh = "1s"                        # live-refresh interval (a Go duration)
+command = "claude"                    # program spawned for a new agent (the `n` action)
+# accent = "#c792ea"                  # agents-view accent (title + cursor); #rrggbb
 
 # Rebind the agents-view keys. Each action lists the keys that trigger it;
 # omit an action to keep its default. A two-letter value of the same key (e.g.

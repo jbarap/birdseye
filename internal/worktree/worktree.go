@@ -160,6 +160,64 @@ func List(roots ...string) ([]Managed, error) {
 	return out, nil
 }
 
+// IsDirty reports whether the worktree at dir has uncommitted changes or untracked
+// files — the signal that removing it needs confirmation.
+func IsDirty(dir string) (bool, error) {
+	out, err := output(dir, "git", "status", "--porcelain")
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(out) != "", nil
+}
+
+// Remove removes the worktree at dir via `git worktree remove`. With force=false git
+// declines a worktree that has uncommitted changes; force=true passes --force. The
+// command runs from the repository's main worktree (resolved from the common git dir)
+// so removing a linked worktree — even the caller's own — succeeds.
+func Remove(dir string, force bool) error {
+	if err := requireGit(); err != nil {
+		return err
+	}
+	commonDir, err := output(dir, "git", "rev-parse", "--git-common-dir")
+	if err != nil {
+		return err
+	}
+	if !filepath.IsAbs(commonDir) {
+		commonDir = filepath.Join(dir, commonDir)
+	}
+	mainWorktree := filepath.Dir(commonDir)
+	args := []string{"worktree", "remove", dir}
+	if force {
+		args = append(args, "--force")
+	}
+	return run(mainWorktree, "git", args...)
+}
+
+// Info describes the managed-repo context of a directory.
+type Info struct {
+	Container     string // the <repo>/ container (parent of the worktree top level)
+	Repo          string // the container's base name
+	DefaultBranch string // the repo's default branch (e.g. main, master)
+	TopLevel      string // the directory's worktree top level
+	Worktree      string // the worktree's name (base of TopLevel)
+}
+
+// Resolve returns the managed-repo context of dir, or ok=false when dir is not inside
+// a git worktree. It is the git-backed classifier the agents view's reconciler uses.
+func Resolve(dir string) (Info, bool) {
+	container, top, err := containerOf(dir)
+	if err != nil {
+		return Info{}, false
+	}
+	return Info{
+		Container:     container,
+		Repo:          filepath.Base(container),
+		DefaultBranch: defaultBranchOfRepo(top),
+		TopLevel:      top,
+		Worktree:      filepath.Base(top),
+	}, true
+}
+
 // containerOf returns the <repo>/ container and the current worktree's top level for
 // a starting directory: the container is the parent of `git rev-parse --show-toplevel`.
 // It errors clearly when start is not inside a git worktree.

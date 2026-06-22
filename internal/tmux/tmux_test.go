@@ -165,3 +165,57 @@ func TestListSessionsParsesAndToleratesNoServer(t *testing.T) {
 		t.Fatalf("no-server should yield empty, no error; got %v err %v", got2, err)
 	}
 }
+
+func TestListPanesParsesStructure(t *testing.T) {
+	rec := newRecorder()
+	rec.replies["list-panes -a -F #{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_start_path}"] =
+		"arewa\t0\tmain\t%1\t/home/u/birds_eye/main\narewa\t1\tnvim\t%2\t/home/u/birds_eye/feat\n"
+	c := NewWithRunner(rec.run, false)
+
+	panes, err := c.ListPanes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(panes) != 2 {
+		t.Fatalf("expected 2 panes, got %d: %+v", len(panes), panes)
+	}
+	if panes[0] != (Pane{Session: "arewa", WindowIndex: "0", WindowName: "main", PaneID: "%1", StartPath: "/home/u/birds_eye/main"}) {
+		t.Fatalf("pane[0] mismatch: %+v", panes[0])
+	}
+	if panes[1].StartPath != "/home/u/birds_eye/feat" || panes[1].PaneID != "%2" {
+		t.Fatalf("pane[1] mismatch: %+v", panes[1])
+	}
+}
+
+func TestListPanesNoServerIsEmpty(t *testing.T) {
+	rec := newRecorder()
+	rec.errs["list-panes -a -F #{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_start_path}"] = errors.New("no server")
+	c := NewWithRunner(rec.run, false)
+	panes, err := c.ListPanes()
+	if err != nil || panes != nil {
+		t.Fatalf("no server should yield empty, got %+v err=%v", panes, err)
+	}
+}
+
+func TestLifecycleOps(t *testing.T) {
+	rec := newRecorder()
+	rec.replies["new-window -d -P -F #{window_id} -t proj: -c /tmp/wt claude"] = "@7\n"
+	c := NewWithRunner(rec.run, false)
+
+	id, err := c.NewWindow("proj", "/tmp/wt", "claude")
+	if err != nil || id != "@7" {
+		t.Fatalf("NewWindow = (%q,%v), want (@7,nil)", id, err)
+	}
+	if err := c.KillWindow("@7"); err != nil {
+		t.Fatal(err)
+	}
+	if !rec.called("kill-window -t @7") {
+		t.Fatalf("expected kill-window, calls=%v", rec.calls)
+	}
+	if err := c.KillSession("proj"); err != nil {
+		t.Fatal(err)
+	}
+	if !rec.called("kill-session -t =proj") {
+		t.Fatalf("expected kill-session, calls=%v", rec.calls)
+	}
+}

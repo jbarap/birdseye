@@ -1,0 +1,152 @@
+package agents
+
+import "testing"
+
+type spawnCall struct {
+	repo Row
+	name string
+}
+type removeCall struct {
+	row   Row
+	force bool
+}
+
+type fakeOrch struct {
+	spawns  []spawnCall
+	removes []removeCall
+	dirty   bool // when true, Remove(force=false) reports ErrWorktreeDirty
+}
+
+func (f *fakeOrch) Spawn(repo Row, name string) error {
+	f.spawns = append(f.spawns, spawnCall{repo, name})
+	return nil
+}
+
+func (f *fakeOrch) Remove(r Row, force bool) error {
+	f.removes = append(f.removes, removeCall{r, force})
+	if f.dirty && !force {
+		return ErrWorktreeDirty
+	}
+	return nil
+}
+
+// fixedRows is a RowSource over a fixed row list.
+type fixedRows struct{ rows []Row }
+
+func (f fixedRows) Rows() ([]Row, error) { return f.rows, nil }
+
+func modelWith(t *testing.T, orch Orchestrator, rows []Row) model {
+	t.Helper()
+	m, err := newModel(fixedRows{rows}, nil, DefaultKeymap(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.orch = orch
+	return m
+}
+
+func typeRunes(m model, s string) model {
+	for _, r := range s {
+		nm, _ := m.handleNewAgentKey(key(string(r)))
+		m = nm.(model)
+	}
+	return m
+}
+
+func TestNewAgentGatedToManagedRepo(t *testing.T) {
+	orch := &fakeOrch{}
+	// A plain (non-managed) agent row: new-agent must not start.
+	m := modelWith(t, orch, []Row{{Kind: RowAgent, SessionID: "x", TmuxSession: "plain", Title: "x"}})
+	nm, _ := m.startNewAgent()
+	m = nm.(model)
+	if m.mode != modeNormal {
+		t.Fatalf("new-agent should not open in a plain session, mode=%v", m.mode)
+	}
+	if len(orch.spawns) != 0 {
+		t.Fatalf("no spawn should occur in a plain session")
+	}
+}
+
+func TestNewAgentPromptAndSpawn(t *testing.T) {
+	orch := &fakeOrch{}
+	repo := Row{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", Title: "feat", Managed: true, Dir: "/code/proj/feat", Worktree: "feat"}
+	m := modelWith(t, orch, []Row{repo})
+
+	nm, _ := m.startNewAgent()
+	m = nm.(model)
+	if m.mode != modeNewAgent {
+		t.Fatalf("new-agent should open the name prompt in a managed repo, mode=%v", m.mode)
+	}
+	m = typeRunes(m, "wip")
+	nm, _ = m.handleNewAgentKey(key("enter"))
+	m = nm.(model)
+	if m.mode != modeNormal {
+		t.Fatalf("submitting should return to normal mode, got %v", m.mode)
+	}
+	if len(orch.spawns) != 1 || orch.spawns[0].name != "wip" || orch.spawns[0].repo.Dir != "/code/proj/feat" {
+		t.Fatalf("spawn not invoked with the typed name and repo dir: %+v", orch.spawns)
+	}
+}
+
+func TestNewAgentEscCancels(t *testing.T) {
+	orch := &fakeOrch{}
+	m := modelWith(t, orch, []Row{{Kind: RowAgent, Managed: true, Dir: "/d", TmuxSession: "proj", Title: "t"}})
+	nm, _ := m.startNewAgent()
+	m = nm.(model)
+	m = typeRunes(m, "abc")
+	nm, _ = m.handleNewAgentKey(key("esc"))
+	m = nm.(model)
+	if m.mode != modeNormal || len(orch.spawns) != 0 {
+		t.Fatalf("esc should cancel without spawning, mode=%v spawns=%v", m.mode, orch.spawns)
+	}
+}
+
+func TestDeleteAnchorBlocked(t *testing.T) {
+	orch := &fakeOrch{}
+	m := modelWith(t, orch, []Row{{Kind: RowAnchor, SessionID: "anchor:proj", TmuxSession: "proj", Worktree: "main", Managed: true}})
+	nm, _ := m.startDelete()
+	m = nm.(model)
+	if len(orch.removes) != 0 {
+		t.Fatalf("the anchor must not be removable, removes=%v", orch.removes)
+	}
+}
+
+func TestDeleteCleanWorktreeImmediate(t *testing.T) {
+	orch := &fakeOrch{dirty: false}
+	m := modelWith(t, orch, []Row{{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", Worktree: "feat", Managed: true, Dir: "/d"}})
+	nm, _ := m.startDelete()
+	m = nm.(model)
+	if m.mode != modeNormal {
+		t.Fatalf("a clean worktree should remove without a prompt, mode=%v", m.mode)
+	}
+	if len(orch.removes) != 1 || orch.removes[0].force {
+		t.Fatalf("clean delete should call Remove(force=false) once, got %+v", orch.removes)
+	}
+}
+
+func TestDeleteDirtyWorktreeConfirms(t *testing.T) {
+	orch := &fakeOrch{dirty: true}
+	m := modelWith(t, orch, []Row{{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", Worktree: "feat", Managed: true, Dir: "/d"}})
+
+	nm, _ := m.startDelete()
+	m = nm.(model)
+	if m.mode != modeConfirmDelete {
+		t.Fatalf("a dirty worktree should open the confirm, mode=%v", m.mode)
+	}
+	// Cancel leaves it intact (only the initial non-force probe ran).
+	cancel, _ := m.handleConfirmKey(key("n"))
+	mc := cancel.(model)
+	if mc.mode != modeNormal || len(orch.removes) != 1 {
+		t.Fatalf("cancel should not force-remove, mode=%v removes=%v", mc.mode, orch.removes)
+	}
+	// Confirming forces removal.
+	confirm, _ := m.handleConfirmKey(key("y"))
+	mf := confirm.(model)
+	if mf.mode != modeNormal {
+		t.Fatalf("confirm should return to normal, mode=%v", mf.mode)
+	}
+	last := orch.removes[len(orch.removes)-1]
+	if !last.force {
+		t.Fatalf("confirm should call Remove(force=true), got %+v", orch.removes)
+	}
+}

@@ -43,6 +43,21 @@ force every Source (and the abstraction's "list agents" contract) to know about
 worktrees. Keeping `Agents()` narrow and reconciling above it preserves the extension
 point.
 
+### The view renders `[]Row`, not `[]Agent` (Agent stays pure)
+
+The view's unit is a **Row**: a tmux location + a display + a pinned-gutter token,
+optionally backed by a live `Agent`. Anchor and slot rows carry no agent (a slot is
+literally the absence of one), so overloading `Agent` with a "kind" flag would make it
+mean two things and leak through `currentAgent`, the Source GC, and every consumer.
+Instead `Agent` stays exactly what the Source yields, and the `Workspace` reconciler
+emits `[]Row` that the model groups and renders. `Row.Kind` is `RowAgent | RowAnchor |
+RowSlot`; preview/jump use the row's tmux coordinates regardless of kind.
+
+*Alternative considered:* additive fields on `Agent` (`Dir`, `Worktree`, `Row`) for a
+smaller diff — rejected as a short-term convenience that corrupts the abstraction the
+spec names as its extension point. Breaking the view's internal `[]Agent` contract is
+acceptable; the `Agent`/`Source` public shape is preserved.
+
 ### Cheap tick, lazy git cache
 
 Per tick: enumerate tmux (one call), read agent records (existing), then classify each

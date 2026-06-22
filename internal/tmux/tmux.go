@@ -150,6 +150,73 @@ func (c *Client) ConnectPane(session, window, pane string) error {
 	return c.Connect(session)
 }
 
+// Pane is one tmux pane located within the session/window structure, carrying the
+// directory it was started in. It is the per-tick input the agents view reconciles
+// into its workspace snapshot.
+type Pane struct {
+	Session     string
+	WindowIndex string
+	WindowName  string
+	PaneID      string
+	StartPath   string
+}
+
+// ListPanes enumerates every pane across all sessions with its start path. When no
+// server is running it returns an empty slice without error.
+func (c *Client) ListPanes() ([]Pane, error) {
+	const format = "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_start_path}"
+	out, err := c.run("list-panes", "-a", "-F", format)
+	if err != nil {
+		// No server / no panes is not an error for enumeration purposes.
+		return nil, nil
+	}
+	var panes []Pane
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line == "" {
+			continue
+		}
+		f := strings.SplitN(line, "\t", 5)
+		for len(f) < 5 {
+			f = append(f, "")
+		}
+		panes = append(panes, Pane{
+			Session:     f[0],
+			WindowIndex: f[1],
+			WindowName:  f[2],
+			PaneID:      f[3],
+			StartPath:   f[4],
+		})
+	}
+	return panes, nil
+}
+
+// NewWindow creates a window in session rooted at dir and running command, returning
+// the new window's id (e.g. "@7"). command may be empty to open a plain shell.
+func (c *Client) NewWindow(session, dir, command string) (string, error) {
+	args := []string{"new-window", "-d", "-P", "-F", "#{window_id}", "-t", session + ":"}
+	if dir != "" {
+		args = append(args, "-c", dir)
+	}
+	if command != "" {
+		args = append(args, command)
+	}
+	out, err := c.run(args...)
+	return strings.TrimSpace(out), err
+}
+
+// KillWindow removes the window identified by target (a window id like "@7" or a
+// session:window target).
+func (c *Client) KillWindow(target string) error {
+	_, err := c.run("kill-window", "-t", target)
+	return err
+}
+
+// KillSession removes the named session.
+func (c *Client) KillSession(name string) error {
+	_, err := c.run("kill-session", "-t", "="+name)
+	return err
+}
+
 // ListSessions returns the names of all running sessions. When no server is
 // running it returns an empty slice without error.
 func (c *Client) ListSessions() ([]string, error) {
