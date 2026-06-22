@@ -59,6 +59,8 @@ func key(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyCtrlU}
 	case "tab":
 		return tea.KeyMsg{Type: tea.KeyTab}
+	case "shift+tab":
+		return tea.KeyMsg{Type: tea.KeyShiftTab}
 	default:
 		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 	}
@@ -769,5 +771,47 @@ func TestNavigationCrossesGroupsLeavesOnly(t *testing.T) {
 	v := m.View()
 	if !strings.Contains(v, "api") || !strings.Contains(v, "win 1") || !strings.Contains(v, "web") {
 		t.Fatalf("view should show session bars and window labels:\n%s", v)
+	}
+}
+
+// TestOverlayCenter checks the modal compositor: the foreground is spliced centered
+// into the background, the canvas keeps the background's dimensions, and background
+// cells outside the modal footprint survive intact.
+func TestOverlayCenter(t *testing.T) {
+	bg := strings.Join([]string{
+		"..........",
+		"..........",
+		"..........",
+		"..........",
+		"..........",
+	}, "\n")
+	fg := strings.Join([]string{
+		"####",
+		"####",
+	}, "\n")
+
+	out := overlayCenter(bg, fg)
+	lines := strings.Split(out, "\n")
+
+	if got := len(lines); got != 5 {
+		t.Fatalf("overlay changed row count: got %d, want 5", got)
+	}
+	for i, ln := range lines {
+		if w := lipgloss.Width(ln); w != 10 {
+			t.Fatalf("row %d width = %d, want 10 (background width preserved)", i, w)
+		}
+	}
+	// fg is 2 rows tall over 5 → top padding (5-2)/2 = 1, so rows 1 and 2 carry it.
+	// fg is 4 wide over 10 → left (10-4)/2 = 3, occupying columns [3,7).
+	if want := "...####..."; lines[1] != want {
+		t.Fatalf("row 1 = %q, want %q", lines[1], want)
+	}
+	if want := "...####..."; lines[2] != want {
+		t.Fatalf("row 2 = %q, want %q", lines[2], want)
+	}
+	for _, i := range []int{0, 3, 4} {
+		if lines[i] != ".........." {
+			t.Fatalf("row %d should be untouched background, got %q", i, lines[i])
+		}
 	}
 }

@@ -190,22 +190,35 @@ func (c *Client) ListPanes() ([]Pane, error) {
 	return panes, nil
 }
 
-// NewWindow creates a window in session rooted at dir and running command, returning
-// the new window's id (e.g. "@7"). command may be empty to open a plain shell.
+// NewWindow creates a detached window in session rooted at dir and returns its window
+// id (e.g. "@7"). When command is non-empty it is typed into the window's shell via
+// send-keys, so the agent runs *inside the user's interactive shell* — loading their
+// normal per-directory environment (direnv, shell profile, PATH) exactly as opening a
+// pane there would. Handing the command to tmux as the window's bare child process
+// instead would bypass all of that, so an env-derived setting (e.g. a direnv-selected
+// CLAUDE_CONFIG_DIR) would be wrong. command may be empty to leave a plain shell.
 func (c *Client) NewWindow(session, dir, command string) (string, error) {
 	args := []string{"new-window", "-d", "-P", "-F", "#{window_id}", "-t", session + ":"}
 	if dir != "" {
 		args = append(args, "-c", dir)
 	}
-	if command != "" {
-		args = append(args, command)
-	}
 	out, err := c.run(args...)
-	return strings.TrimSpace(out), err
+	if err != nil {
+		return "", err
+	}
+	id := strings.TrimSpace(out)
+	if command != "" {
+		if _, err := c.run("send-keys", "-t", id, command, "Enter"); err != nil {
+			return id, err
+		}
+	}
+	return id, nil
 }
 
-// KillWindow removes the window identified by target (a window id like "@7" or a
-// session:window target).
+// KillWindow removes the window identified by target. target may be a window id
+// ("@7"), a session:window target, or a pane id ("%154") — tmux resolves a pane id to
+// its containing window, which is the stable way to reach a window whose index may
+// have drifted.
 func (c *Client) KillWindow(target string) error {
 	_, err := c.run("kill-window", "-t", target)
 	return err

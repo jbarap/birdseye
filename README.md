@@ -101,15 +101,47 @@ In a managed repo the view shows, beside live agents:
 
 Two actions become available (configurable, see `[agents.keys]`):
 
-- **`n` — new agent**: prompts for a worktree name, creates the worktree, opens a tmux
-  window rooted there, and starts the configured agent command (`[agents] command`,
-  default `claude`).
-- **`d` — delete agent**: removes the agent's window; for a managed worktree it also
+- **`n` — new agent**: opens a small form with two fields — **branch** and **worktree** —
+  where the worktree directory auto-fills from a slugified branch name (`feature/login` →
+  `feature-login`) until you edit it. `⏎` creates, `⇥` switches fields (so you can tweak
+  the worktree name), `esc` cancels. It then creates the worktree on that branch, opens a
+  tmux window rooted there, and runs the configured agent command (`[agents] command`,
+  default `claude`) **inside that window's interactive shell**.
+- **`dd` — delete agent**: removes the agent's window; for a managed worktree it also
   runs `git worktree remove`, asking to force when the worktree is dirty. An incidental
   agent (one not in a worktree) is just closed; the repo anchor can't be deleted.
 
 Agents in non-managed sessions, and incidental shells inside a managed session, keep
 working exactly as today — orchestration is purely additive.
+
+The agent command is run *through the window's shell* (typed in with `tmux send-keys`),
+not as tmux's bare child process. That means it inherits your normal per-directory
+environment — `direnv`, shell profile, `PATH` — exactly as if you opened a pane in the
+worktree and typed the command yourself. If you select a per-project tool config via
+`direnv` (e.g. a `CLAUDE_CONFIG_DIR` set from an `.envrc`), the spawned agent picks it
+up automatically.
+
+### The Claude Code trust / permission prompt
+
+A freshly created worktree is a directory Claude Code hasn't seen, so by default it
+opens with *"Quick safety check: Is this a project you created or one you trust?"* and,
+on each action, a permission prompt. Neither is a bird's-eye behavior — both come from
+Claude Code — but two settings make `n` prompt-free without weakening anything by hand:
+
+- **Trust once, inherit everywhere.** Claude Code records folder trust per directory and
+  **walks up parent directories** when checking it. So trusting a *parent* of your
+  worktrees once — run `claude` in, say, your repo root or worktree root and accept the
+  dialog — covers every worktree created beneath it. No per-worktree prompts, and
+  nothing edited by hand. (Because the agent runs through your shell, this is checked in
+  the correct profile if you use per-project `CLAUDE_CONFIG_DIR`.)
+- **Reduce permission prompts.** Set the agent command's permission mode, e.g.
+  `command = "claude --permission-mode=auto"`. `auto` lets routine, low-risk actions
+  through while still gating the dangerous ones — safer than `--dangerously-skip-permissions`,
+  which turns *all* gates off (and, on current Claude Code, does **not** skip the trust
+  dialog anyway).
+
+The git worktree is the isolation boundary either way: an agent works on its own branch
+in its own directory.
 
 ## Configuration
 
@@ -155,7 +187,8 @@ roots = ["~/code", "~/work"]
 
 [agents]
 refresh = "1s"                        # live-refresh interval (a Go duration)
-command = "claude"                    # program spawned for a new agent (the `n` action)
+command = "claude"                    # agent command for `n`, run in the window's shell
+# command = "claude --permission-mode=auto"   # fewer permission prompts (see above)
 # accent = "#c792ea"                  # agents-view accent (title + cursor); #rrggbb
 
 # Rebind the agents-view keys. Each action lists the keys that trigger it;
@@ -169,6 +202,8 @@ bottom    = ["G"]
 half_up   = ["ctrl+u"]
 half_down = ["ctrl+d"]
 select    = ["enter"]
+new_agent    = ["n"]
+delete_agent = ["dd"]                  # "dd" is the d key pressed twice (a chord)
 quit      = ["q", "esc", "ctrl+c"]
 ```
 

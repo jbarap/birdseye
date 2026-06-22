@@ -199,12 +199,17 @@ func TestListPanesNoServerIsEmpty(t *testing.T) {
 
 func TestLifecycleOps(t *testing.T) {
 	rec := newRecorder()
-	rec.replies["new-window -d -P -F #{window_id} -t proj: -c /tmp/wt claude"] = "@7\n"
+	rec.replies["new-window -d -P -F #{window_id} -t proj: -c /tmp/wt"] = "@7\n"
 	c := NewWithRunner(rec.run, false)
 
-	id, err := c.NewWindow("proj", "/tmp/wt", "claude")
+	id, err := c.NewWindow("proj", "/tmp/wt", "claude --permission-mode=auto")
 	if err != nil || id != "@7" {
 		t.Fatalf("NewWindow = (%q,%v), want (@7,nil)", id, err)
+	}
+	// The agent command runs inside the window's shell (via send-keys), not as tmux's
+	// bare child, so per-directory env (direnv, profile) loads as in a real pane.
+	if !rec.called("send-keys -t @7 claude --permission-mode=auto Enter") {
+		t.Fatalf("expected the agent command typed via send-keys, calls=%v", rec.calls)
 	}
 	if err := c.KillWindow("@7"); err != nil {
 		t.Fatal(err)

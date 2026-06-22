@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/jbarap/birds-eye/internal/theme"
 )
@@ -87,9 +88,12 @@ var (
 	placeholderStyle = lipgloss.NewStyle().Faint(true).Italic(true)
 
 	sessionBarStyle = lipgloss.NewStyle().Bold(true).Foreground(lipColor(theme.SessionFg)).Background(lipColor(theme.SessionBg))
-	windowColStyle  = lipgloss.NewStyle().Foreground(lipColor(theme.Gray))
-	nameColStyle    = lipgloss.NewStyle().Foreground(lipColor(theme.Text))
-	rowHL           = lipColor(theme.RowHL)
+	// sessionBarCountStyle is the bar's trailing worktree count: same bar background,
+	// but faint and unbolded so it reads as a subordinate annotation, not a heading.
+	sessionBarCountStyle = lipgloss.NewStyle().Faint(true).Foreground(lipColor(theme.SessionFg)).Background(lipColor(theme.SessionBg))
+	windowColStyle       = lipgloss.NewStyle().Foreground(lipColor(theme.Gray))
+	nameColStyle         = lipgloss.NewStyle().Foreground(lipColor(theme.Text))
+	rowHL                = lipColor(theme.RowHL)
 )
 
 // cursorGlyphStyle renders the cursor indicator in the accent color; it takes the
@@ -189,6 +193,15 @@ const (
 	modeConfirmDelete
 )
 
+// formField identifies a field in the new-agent form. Tab cycles between them.
+type formField int
+
+const (
+	fieldBranch formField = iota
+	fieldWorktree
+	numFormFields
+)
+
 // noticeLevel selects how a transient notice is styled. The zero value is an
 // error/rejection (the common case), so a notice set without a level still reads as
 // notable rather than silently neutral.
@@ -217,12 +230,15 @@ type model struct {
 	chosen  *Row
 	pending rune // armed first rune of a chord (0 = none)
 
-	mode        mode
-	input       string      // new-agent name buffer (modeNewAgent)
-	target      Row         // the row the active modal acts on (new-agent repo / delete confirm)
-	notice      string      // transient status line (feedback from actions)
-	noticeLevel noticeLevel // how to style the notice (error vs neutral info)
-	noticeGen   int         // bumped each time a notice is set, so a stale auto-dismiss no-ops
+	mode           mode
+	branchInput    string      // new-agent branch field (modeNewAgent)
+	worktreeInput  string      // new-agent worktree-dir field; auto-derived from the branch
+	worktreeEdited bool        // the user edited the worktree field, so stop auto-deriving it
+	focusField     formField   // which new-agent field has focus (fieldBranch / fieldWorktree)
+	target         Row         // the row the active modal acts on (new-agent repo / delete confirm)
+	notice         string      // transient status line (feedback from actions)
+	noticeLevel    noticeLevel // how to style the notice (error vs neutral info)
+	noticeGen      int         // bumped each time a notice is set, so a stale auto-dismiss no-ops
 
 	width, height int
 	preview       string         // cached preview for the selected row
@@ -334,9 +350,13 @@ func (m model) tick() tea.Cmd {
 // bumps noticeGen so a pending auto-dismiss for an older notice no-ops once a newer one
 // (or a clear) supersedes it. These are the single way to touch the notice, so its
 // text, level, and generation never drift apart.
-func (m *model) setError(msg string) { m.notice, m.noticeLevel, m.noticeGen = msg, noticeError, m.noticeGen+1 }
-func (m *model) setInfo(msg string)  { m.notice, m.noticeLevel, m.noticeGen = msg, noticeInfo, m.noticeGen+1 }
-func (m *model) clearNotice()        { m.notice, m.noticeLevel, m.noticeGen = "", noticeError, m.noticeGen+1 }
+func (m *model) setError(msg string) {
+	m.notice, m.noticeLevel, m.noticeGen = msg, noticeError, m.noticeGen+1
+}
+func (m *model) setInfo(msg string) {
+	m.notice, m.noticeLevel, m.noticeGen = msg, noticeInfo, m.noticeGen+1
+}
+func (m *model) clearNotice() { m.notice, m.noticeLevel, m.noticeGen = "", noticeError, m.noticeGen+1 }
 
 // noticeExpireMsg auto-dismisses the notice of a given generation after noticeTTL.
 type noticeExpireMsg struct{ gen int }
@@ -709,9 +729,11 @@ func (m model) chromeLines() int {
 	return n
 }
 
-// modalLineActive reports whether View will render a notice or modal prompt line.
+// modalLineActive reports whether View will render a notice or confirm line below the
+// body. The new-agent prompt is excluded: it renders as a centered modal *over* the
+// body (same height), so it reserves no extra chrome.
 func (m model) modalLineActive() bool {
-	return m.mode == modeNewAgent || m.mode == modeConfirmDelete || m.notice != ""
+	return m.mode == modeConfirmDelete || m.notice != ""
 }
 
 // contentRows is the number of body rows that fit inside the panel border given the
@@ -805,6 +827,9 @@ func (m model) View() string {
 	if m.showPreview() {
 		body = lipgloss.JoinHorizontal(lipgloss.Top, list, "  ", m.renderPreview(list))
 	}
+	if m.mode == modeNewAgent {
+		body = overlayCenter(body, m.newAgentModal())
+	}
 
 	parts := []string{body}
 	if line, ok := m.statusLine(); ok {
@@ -823,9 +848,6 @@ func (m model) View() string {
 // two lines chromeLines reserves so the view never overflows.
 func (m model) statusLine() (string, bool) {
 	switch {
-	case m.mode == modeNewAgent:
-		s := lipgloss.NewStyle().Bold(true).Foreground(m.accent).MarginTop(1)
-		return s.Render(m.fitLine("new worktree name: " + m.input + "▌  (enter to create, esc to cancel)")), true
 	case m.mode == modeConfirmDelete:
 		s := lipgloss.NewStyle().Bold(true).Foreground(lipColor(theme.Red)).MarginTop(1)
 		return s.Render(m.fitLine(fmt.Sprintf("worktree %q has uncommitted changes — force remove? (y/n)", m.target.Worktree))), true
@@ -833,6 +855,83 @@ func (m model) statusLine() (string, bool) {
 		return m.renderNotice(), true
 	}
 	return "", false
+}
+
+// newAgentModal renders the new-agent form as a titled, bordered card: it echoes the
+// target repo for context and presents two labeled fields — branch and worktree — with the
+// focused field carrying the accent and a cursor block. It floats centered over the list
+// (see overlayCenter) so the form reads as a focused popup rather than a crowded status
+// line.
+func (m model) newAgentModal() string {
+	width := clamp(m.width/2, 32, 52)
+	if m.width > 0 && width > m.width-4 {
+		width = m.width - 4
+	}
+	inner := width - 2 // inside the border's left/right padding (frameStyle pads 0,1)
+
+	label := lipgloss.NewStyle().Foreground(lipColor(theme.Gray))
+	hint := lipgloss.NewStyle().Faint(true)
+
+	repo := m.target.TmuxSession
+	if repo == "" {
+		repo = m.target.Title
+	}
+	rows := []string{
+		label.Render("repo  ") + lipgloss.NewStyle().Foreground(lipColor(theme.Text)).Render(truncate(repo, inner-6)),
+		"",
+		label.Render("branch"),
+		m.formField(m.branchInput, m.focusField == fieldBranch, inner),
+		"",
+		label.Render("worktree"),
+		m.formField(m.worktreeInput, m.focusField == fieldWorktree, inner),
+		"",
+		hint.Render("⏎ create   ⇥ field   esc cancel"),
+	}
+	box := frameStyle.Width(width).Render(strings.Join(rows, "\n"))
+	return panelTitle(box, "new agent", m.accent)
+}
+
+// formField renders one input line of the new-agent form. The focused field is accented
+// and bold with a trailing cursor block; an unfocused field is plain gray text. An empty
+// unfocused field shows a faint dash so the row never looks broken.
+func (m model) formField(val string, focused bool, width int) string {
+	if focused {
+		s := lipgloss.NewStyle().Foreground(m.accent).Bold(true)
+		return s.Render(truncate("› "+val+"▌", width))
+	}
+	if val == "" {
+		return lipgloss.NewStyle().Faint(true).Render("  —")
+	}
+	return lipgloss.NewStyle().Foreground(lipColor(theme.Text)).Render(truncate("  "+val, width))
+}
+
+// overlayCenter composites fg centered over bg, splicing fg's cells in place of the
+// underlying ones so the modal floats above the list instead of replacing it. bg defines
+// the canvas size; each spliced row is cut ANSI-aware (x/ansi) so the background styling
+// on either side of the modal survives.
+func overlayCenter(bg, fg string) string {
+	bgLines := strings.Split(bg, "\n")
+	fgLines := strings.Split(fg, "\n")
+	bgH, bgW := len(bgLines), lipgloss.Width(bg)
+	fgH, fgW := len(fgLines), lipgloss.Width(fg)
+
+	top := max((bgH-fgH)/2, 0)
+	left := max((bgW-fgW)/2, 0)
+
+	for i, fl := range fgLines {
+		row := top + i
+		if row < 0 || row >= bgH {
+			continue
+		}
+		bgLine := bgLines[row]
+		leftPart := ansi.Truncate(bgLine, left, "")
+		if w := lipgloss.Width(leftPart); w < left { // bg line shorter than the cut
+			leftPart += strings.Repeat(" ", left-w)
+		}
+		rightPart := ansi.TruncateLeft(bgLine, left+fgW, "")
+		bgLines[row] = leftPart + fl + rightPart
+	}
+	return strings.Join(bgLines, "\n")
 }
 
 // renderNotice styles the transient notice by level: a red "✗" for an error or
@@ -1074,16 +1173,27 @@ func (m model) sessionBar(it renderItem) string {
 	if it.managed {
 		name = managedGlyph + " " + it.label
 	}
-	var label string
 	switch {
 	case m.folded[it.sessionKey]:
-		label = fmt.Sprintf("▸ %s  (%d)", name, it.count)
+		return sessionBarStyle.Width(rowContentWidth).Render(truncate(fmt.Sprintf("▸ %s  (%d)", name, it.count), rowContentWidth))
 	case it.managed && it.worktrees > 0:
-		label = fmt.Sprintf("▾ %s   %d wt", name, it.worktrees)
+		return m.barWithCount("▾ "+name, fmt.Sprintf("%d wt", it.worktrees))
 	default:
-		label = "▾ " + name
+		return sessionBarStyle.Width(rowContentWidth).Render(truncate("▾ "+name, rowContentWidth))
 	}
-	return sessionBarStyle.Width(rowContentWidth).Render(truncate(label, rowContentWidth))
+}
+
+// barWithCount renders a full-width session bar with left pinned to the start and a
+// subtle count pinned to the right edge, over a continuous bar background. When the
+// two would not fit, it degrades to a single left-aligned, truncated label.
+func (m model) barWithCount(left, count string) string {
+	gap := rowContentWidth - lipgloss.Width(left) - lipgloss.Width(count)
+	if gap < 1 {
+		return sessionBarStyle.Width(rowContentWidth).Render(truncate(left+"  "+count, rowContentWidth))
+	}
+	return sessionBarStyle.Render(left) +
+		sessionBarStyle.Render(strings.Repeat(" ", gap)) +
+		sessionBarCountStyle.Render(count)
 }
 
 // leafRow renders one row at fixed columns: the status/marker gutter (glyph + word), an

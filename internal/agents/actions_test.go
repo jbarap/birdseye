@@ -3,8 +3,9 @@ package agents
 import "testing"
 
 type spawnCall struct {
-	repo Row
-	name string
+	repo   Row
+	branch string
+	name   string
 }
 type removeCall struct {
 	row   Row
@@ -17,8 +18,8 @@ type fakeOrch struct {
 	dirty   bool // when true, Remove(force=false) reports ErrWorktreeDirty
 }
 
-func (f *fakeOrch) Spawn(repo Row, name string) error {
-	f.spawns = append(f.spawns, spawnCall{repo, name})
+func (f *fakeOrch) Spawn(repo Row, branch, name string) error {
+	f.spawns = append(f.spawns, spawnCall{repo, branch, name})
 	return nil
 }
 
@@ -83,8 +84,50 @@ func TestNewAgentPromptAndSpawn(t *testing.T) {
 	if m.mode != modeNormal {
 		t.Fatalf("submitting should return to normal mode, got %v", m.mode)
 	}
-	if len(orch.spawns) != 1 || orch.spawns[0].name != "wip" || orch.spawns[0].repo.Dir != "/code/proj/feat" {
-		t.Fatalf("spawn not invoked with the typed name and repo dir: %+v", orch.spawns)
+	// Typing into the branch field auto-derives the worktree, so both arrive as "wip".
+	if len(orch.spawns) != 1 || orch.spawns[0].branch != "wip" || orch.spawns[0].name != "wip" || orch.spawns[0].repo.Dir != "/code/proj/feat" {
+		t.Fatalf("spawn not invoked with the typed branch/name and repo dir: %+v", orch.spawns)
+	}
+}
+
+// TestNewAgentWorktreeSlugsBranch checks the form's two-field behavior: typing a branch
+// with a slash auto-fills a slugified worktree name, and tabbing to the worktree field to
+// edit it stops the auto-derivation so the branch and worktree decouple.
+func TestNewAgentWorktreeSlugsBranch(t *testing.T) {
+	orch := &fakeOrch{}
+	repo := Row{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", Title: "feat", Managed: true, Dir: "/code/proj/feat", Worktree: "feat"}
+	m := modelWith(t, orch, []Row{repo})
+
+	nm, _ := m.startNewAgent()
+	m = nm.(model)
+	m = typeRunes(m, "feature/login")
+	if m.worktreeInput != "feature-login" {
+		t.Fatalf("worktree should auto-slug the branch, got %q", m.worktreeInput)
+	}
+
+	// Tab to the worktree field and append: the manual edit stops auto-derivation.
+	nm, _ = m.handleNewAgentKey(key("tab"))
+	m = nm.(model)
+	if m.focusField != fieldWorktree {
+		t.Fatalf("tab should focus the worktree field, got %v", m.focusField)
+	}
+	m = typeRunes(m, "-wt")
+	if m.worktreeInput != "feature-login-wt" {
+		t.Fatalf("worktree manual edit not applied, got %q", m.worktreeInput)
+	}
+
+	// Editing the branch again must no longer overwrite the hand-edited worktree.
+	nm, _ = m.handleNewAgentKey(key("shift+tab"))
+	m = nm.(model)
+	m = typeRunes(m, "X")
+	if m.worktreeInput != "feature-login-wt" {
+		t.Fatalf("worktree should stay hand-edited, got %q", m.worktreeInput)
+	}
+
+	nm, _ = m.handleNewAgentKey(key("enter"))
+	m = nm.(model)
+	if len(orch.spawns) != 1 || orch.spawns[0].branch != "feature/loginX" || orch.spawns[0].name != "feature-login-wt" {
+		t.Fatalf("spawn branch/name wrong: %+v", orch.spawns)
 	}
 }
 

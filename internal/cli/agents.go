@@ -116,10 +116,10 @@ type orchestrator struct {
 	command string
 }
 
-// Spawn adds a worktree in the row's repo, opens a window rooted there, and starts the
-// configured agent command.
-func (o orchestrator) Spawn(repo agents.Row, name string) error {
-	dir, err := worktree.Add(repo.Dir, name, "")
+// Spawn adds a worktree in the row's repo (directory name, checking out branch), opens a
+// window rooted there, and starts the configured agent command.
+func (o orchestrator) Spawn(repo agents.Row, branch, name string) error {
+	dir, err := worktree.Add(repo.Dir, name, branch)
 	if err != nil {
 		return err
 	}
@@ -138,8 +138,15 @@ func (o orchestrator) Remove(r agents.Row, force bool) error {
 			return agents.ErrWorktreeDirty
 		}
 	}
-	if r.TmuxWindow != "" {
-		_ = o.client.KillWindow(r.TmuxSession + ":" + r.TmuxWindow) // best-effort; may be gone
+	// Target the window by its pane id, which is stable for the pane's lifetime; the
+	// window *index* drifts as tmux renumbers windows when others close, so a recorded
+	// index can point at the wrong (or no) window. Fall back to session:index only when
+	// no pane is known.
+	switch {
+	case r.TmuxPane != "":
+		_ = o.client.KillWindow(r.TmuxPane) // best-effort; may be gone
+	case r.TmuxWindow != "":
+		_ = o.client.KillWindow(r.TmuxSession + ":" + r.TmuxWindow)
 	}
 	if isWorktree {
 		return worktree.Remove(r.Dir, force)

@@ -78,10 +78,12 @@ func Clone(parent, url string) (dir string, existed bool, err error) {
 
 // Add creates a sibling worktree <container>/<name>, inferring the <repo>/ container
 // from cwd (the parent of the current worktree's top level), so it works from anywhere
-// inside any worktree of the repo. Branch handling: an explicit branch is used as
-// given; with no branch, a name matching an existing local/remote branch checks that
-// branch out, otherwise a new branch named after the worktree is created off the
-// repository's default branch. It declines to overwrite an existing directory.
+// inside any worktree of the repo. Branch handling: branch defaults to the worktree name
+// when empty, so a lone name still creates a <name> branch in a <name> directory; an
+// explicit branch decouples the two (branch "feature/login" in directory "feature-login").
+// A branch that already exists (local or remote-tracking) is checked out; otherwise a new
+// branch of that name is created off the repository's default branch. It declines to
+// overwrite an existing directory.
 func Add(cwd, name, branch string) (dir string, err error) {
 	if err := requireGit(); err != nil {
 		return "", err
@@ -94,17 +96,16 @@ func Add(cwd, name, branch string) (dir string, err error) {
 	if _, statErr := os.Stat(dir); statErr == nil {
 		return "", fmt.Errorf("worktree %q already exists at %s", name, dir)
 	}
+	if branch == "" {
+		branch = name
+	}
 	var args []string
-	switch {
-	case branch != "":
-		// Explicit ref: let git check it out (DWIM-ing a remote branch if needed).
+	if branchExists(top, branch) {
+		// Existing local/remote branch: check it out in the new worktree.
 		args = []string{"worktree", "add", dir, branch}
-	case branchExists(top, name):
-		// Name matches an existing branch: check it out rather than failing.
-		args = []string{"worktree", "add", dir, name}
-	default:
-		// New branch named after the worktree, based on the default branch.
-		args = []string{"worktree", "add", "-b", name, dir}
+	} else {
+		// New branch of the given name, based on the repository's default branch.
+		args = []string{"worktree", "add", "-b", branch, dir}
 		if def := defaultBranchOfRepo(top); def != "" {
 			args = append(args, def)
 		}

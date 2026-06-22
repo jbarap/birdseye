@@ -52,7 +52,7 @@ func DefaultKeymap() Keymap {
 		ActionSelect:      {"enter"},
 		ActionFold:        {"tab"},
 		ActionNewAgent:    {"n"},
-		ActionDeleteAgent: {"d"},
+		ActionDeleteAgent: {"dd"},
 		ActionQuit:        {"q", "esc", "ctrl+c"},
 	}
 }
