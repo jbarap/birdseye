@@ -154,42 +154,74 @@ func TestDeleteAnchorBlocked(t *testing.T) {
 	}
 }
 
-func TestDeleteCleanWorktreeImmediate(t *testing.T) {
+func TestDeleteAlwaysConfirms(t *testing.T) {
+	orch := &fakeOrch{dirty: false}
+	m := modelWith(t, orch, []Row{{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", Worktree: "feat", Managed: true, Dir: "/d"}})
+
+	// dd opens a confirmation and removes nothing yet — the safety gate.
+	nm, _ := m.startDelete()
+	m = nm.(model)
+	if m.mode != modeConfirmDelete {
+		t.Fatalf("delete should open a confirm before acting, mode=%v", m.mode)
+	}
+	if len(orch.removes) != 0 {
+		t.Fatalf("no removal should happen before confirming, got %+v", orch.removes)
+	}
+
+	// Confirming a clean worktree removes it once, unforced.
+	nm, _ = m.handleConfirmKey(key("y"))
+	m = nm.(model)
+	if m.mode != modeNormal {
+		t.Fatalf("confirm should return to normal, mode=%v", m.mode)
+	}
+	if len(orch.removes) != 1 || orch.removes[0].force {
+		t.Fatalf("confirm should call Remove(force=false) once, got %+v", orch.removes)
+	}
+}
+
+func TestDeleteConfirmCancelDoesNothing(t *testing.T) {
 	orch := &fakeOrch{dirty: false}
 	m := modelWith(t, orch, []Row{{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", Worktree: "feat", Managed: true, Dir: "/d"}})
 	nm, _ := m.startDelete()
 	m = nm.(model)
-	if m.mode != modeNormal {
-		t.Fatalf("a clean worktree should remove without a prompt, mode=%v", m.mode)
-	}
-	if len(orch.removes) != 1 || orch.removes[0].force {
-		t.Fatalf("clean delete should call Remove(force=false) once, got %+v", orch.removes)
+	nm, _ = m.handleConfirmKey(key("n"))
+	m = nm.(model)
+	if m.mode != modeNormal || len(orch.removes) != 0 {
+		t.Fatalf("cancel must not remove anything, mode=%v removes=%v", m.mode, orch.removes)
 	}
 }
 
-func TestDeleteDirtyWorktreeConfirms(t *testing.T) {
+func TestDeleteDirtyWorktreeEscalatesToForce(t *testing.T) {
 	orch := &fakeOrch{dirty: true}
 	m := modelWith(t, orch, []Row{{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", Worktree: "feat", Managed: true, Dir: "/d"}})
 
 	nm, _ := m.startDelete()
 	m = nm.(model)
-	if m.mode != modeConfirmDelete {
-		t.Fatalf("a dirty worktree should open the confirm, mode=%v", m.mode)
+	// Confirming a dirty worktree declines the unforced remove and escalates.
+	nm, _ = m.handleConfirmKey(key("y"))
+	m = nm.(model)
+	if m.mode != modeConfirmForce {
+		t.Fatalf("a dirty worktree should escalate to the force confirm, mode=%v", m.mode)
 	}
-	// Cancel leaves it intact (only the initial non-force probe ran).
-	cancel, _ := m.handleConfirmKey(key("n"))
+	if len(orch.removes) != 1 || orch.removes[0].force {
+		t.Fatalf("the escalation should come from a single unforced probe, got %+v", orch.removes)
+	}
+
+	// Cancelling the force confirm leaves the worktree intact.
+	cancel, _ := m.handleConfirmForceKey(key("n"))
 	mc := cancel.(model)
 	if mc.mode != modeNormal || len(orch.removes) != 1 {
 		t.Fatalf("cancel should not force-remove, mode=%v removes=%v", mc.mode, orch.removes)
 	}
-	// Confirming forces removal.
-	confirm, _ := m.handleConfirmKey(key("y"))
+
+	// Confirming the force confirm forces removal.
+	confirm, _ := m.handleConfirmForceKey(key("y"))
 	mf := confirm.(model)
 	if mf.mode != modeNormal {
-		t.Fatalf("confirm should return to normal, mode=%v", mf.mode)
+		t.Fatalf("force confirm should return to normal, mode=%v", mf.mode)
 	}
 	last := orch.removes[len(orch.removes)-1]
 	if !last.force {
-		t.Fatalf("confirm should call Remove(force=true), got %+v", orch.removes)
+		t.Fatalf("force confirm should call Remove(force=true), got %+v", orch.removes)
 	}
 }

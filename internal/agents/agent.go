@@ -111,6 +111,13 @@ type Row struct {
 	Updated time.Time
 }
 
+// isManagedWorktree reports whether the row is a removable managed worktree (not the
+// anchor): deleting it also runs `git worktree remove`. An incidental agent — a window
+// with no worktree — is only closed. This mirrors the orchestrator's own delete logic.
+func (r Row) isManagedWorktree() bool {
+	return r.Worktree != "" && r.Kind != RowAnchor && r.Dir != ""
+}
+
 // RowSource yields the rows the agents view renders. The plain agents view uses an
 // adapter over a Source; orchestration uses the Workspace reconciler.
 type RowSource interface {

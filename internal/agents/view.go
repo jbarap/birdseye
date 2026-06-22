@@ -183,14 +183,15 @@ var actionLabel = map[Action]string{
 // tickMsg drives the periodic live refresh.
 type tickMsg time.Time
 
-// mode is the model's interaction mode: normal navigation, the new-agent name prompt,
-// or the delete confirmation for a dirty worktree.
+// mode is the model's interaction mode: normal navigation, the new-agent form, the
+// delete confirmation, or the dirty-worktree force escalation.
 type mode int
 
 const (
 	modeNormal mode = iota
 	modeNewAgent
-	modeConfirmDelete
+	modeConfirmDelete // confirm any delete before it happens
+	modeConfirmForce  // a worktree was dirty: confirm a forced (changes-discarding) remove
 )
 
 // formField identifies a field in the new-agent form. Tab cycles between them.
@@ -526,6 +527,8 @@ func (m model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleNewAgentKey(key)
 	case modeConfirmDelete:
 		return m.handleConfirmKey(key)
+	case modeConfirmForce:
+		return m.handleConfirmForceKey(key)
 	}
 
 	k := key.String()
@@ -733,7 +736,7 @@ func (m model) chromeLines() int {
 // body. The new-agent prompt is excluded: it renders as a centered modal *over* the
 // body (same height), so it reserves no extra chrome.
 func (m model) modalLineActive() bool {
-	return m.mode == modeConfirmDelete || m.notice != ""
+	return m.mode == modeConfirmDelete || m.mode == modeConfirmForce || m.notice != ""
 }
 
 // contentRows is the number of body rows that fit inside the panel border given the
@@ -849,6 +852,9 @@ func (m model) View() string {
 func (m model) statusLine() (string, bool) {
 	switch {
 	case m.mode == modeConfirmDelete:
+		s := lipgloss.NewStyle().Bold(true).Foreground(m.accent).MarginTop(1)
+		return s.Render(m.fitLine(m.deletePrompt() + " (y/n)")), true
+	case m.mode == modeConfirmForce:
 		s := lipgloss.NewStyle().Bold(true).Foreground(lipColor(theme.Red)).MarginTop(1)
 		return s.Render(m.fitLine(fmt.Sprintf("worktree %q has uncommitted changes — force remove? (y/n)", m.target.Worktree))), true
 	case m.notice != "":
@@ -932,6 +938,20 @@ func overlayCenter(bg, fg string) string {
 		bgLines[row] = leftPart + fl + rightPart
 	}
 	return strings.Join(bgLines, "\n")
+}
+
+// deletePrompt phrases the delete confirmation for the target row: removing a managed
+// worktree (which also drops its branch's checkout) reads differently from closing an
+// incidental agent window, so the user knows exactly what `y` will do.
+func (m model) deletePrompt() string {
+	if m.target.isManagedWorktree() {
+		return fmt.Sprintf("remove worktree %q and its window?", m.target.Worktree)
+	}
+	name := displayTitle(m.target.Title, m.target.TmuxSession)
+	if name == "" {
+		name = "this agent"
+	}
+	return fmt.Sprintf("close %s's window?", name)
 }
 
 // renderNotice styles the transient notice by level: a red "✗" for an error or

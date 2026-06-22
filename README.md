@@ -107,9 +107,10 @@ Two actions become available (configurable, see `[agents.keys]`):
   the worktree name), `esc` cancels. It then creates the worktree on that branch, opens a
   tmux window rooted there, and runs the configured agent command (`[agents] command`,
   default `claude`) **inside that window's interactive shell**.
-- **`dd` — delete agent**: removes the agent's window; for a managed worktree it also
-  runs `git worktree remove`, asking to force when the worktree is dirty. An incidental
-  agent (one not in a worktree) is just closed; the repo anchor can't be deleted.
+- **`dd` — delete agent**: always asks `(y/n)` first. On confirm it removes the agent's
+  window; for a managed worktree it also runs `git worktree remove`, escalating to a
+  second force confirmation when the worktree has uncommitted changes. An incidental agent
+  (one not in a worktree) is just closed; the repo anchor can't be deleted.
 
 Agents in non-managed sessions, and incidental shells inside a managed session, keep
 working exactly as today — orchestration is purely additive.

@@ -137,9 +137,9 @@ func worktreeSlug(branch string) string {
 	return strings.Trim(slug, "-.")
 }
 
-// startDelete removes the row under the cursor. A clean worktree (or an incidental
-// agent) is removed immediately; a dirty worktree opens a force/cancel confirm. The
-// anchor is never removable.
+// startDelete opens a confirmation before any delete — a deliberate gate so an
+// accidental `dd` never tears down a window or worktree. The anchor is never removable.
+// The actual removal happens in handleConfirmKey on "y".
 func (m model) startDelete() (tea.Model, tea.Cmd) {
 	if m.orch == nil {
 		return m, nil
@@ -152,34 +152,47 @@ func (m model) startDelete() (tea.Model, tea.Cmd) {
 		m.setError("the repo anchor cannot be deleted")
 		return m, nil
 	}
-	err := m.orch.Remove(r, false)
-	if errors.Is(err, ErrWorktreeDirty) {
-		m.mode = modeConfirmDelete
-		m.target = r
-		return m, nil
-	}
-	if err != nil {
-		m.setError("delete: " + err.Error())
-		return m, nil
-	}
-	m.clearNotice()
-	m.reload()
+	m.mode = modeConfirmDelete
+	m.target = r
 	return m, nil
 }
 
-// handleConfirmKey resolves the dirty-worktree confirmation: y forces removal, n/esc
-// cancel (the default).
+// handleConfirmKey resolves the delete confirmation: y removes, n/esc cancel (the
+// default). A dirty worktree declines the unforced remove and escalates to the force
+// confirmation rather than discarding changes silently.
 func (m model) handleConfirmKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch key.String() {
 	case "y", "Y":
+		err := m.orch.Remove(m.target, false)
+		if errors.Is(err, ErrWorktreeDirty) {
+			m.mode = modeConfirmForce
+			return m, nil
+		}
 		m.mode = modeNormal
-		if m.orch != nil {
-			if err := m.orch.Remove(m.target, true); err != nil {
-				m.setError("delete: " + err.Error())
-			} else {
-				m.clearNotice()
-				m.reload()
-			}
+		if err != nil {
+			m.setError("delete: " + err.Error())
+			return m, nil
+		}
+		m.clearNotice()
+		m.reload()
+	case "n", "N", "esc", "ctrl+c", "q":
+		m.mode = modeNormal
+		m.setInfo("delete cancelled")
+	}
+	return m, nil
+}
+
+// handleConfirmForceKey resolves the dirty-worktree escalation: y forces removal
+// (discarding changes), n/esc cancel (the default).
+func (m model) handleConfirmForceKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch key.String() {
+	case "y", "Y":
+		m.mode = modeNormal
+		if err := m.orch.Remove(m.target, true); err != nil {
+			m.setError("delete: " + err.Error())
+		} else {
+			m.clearNotice()
+			m.reload()
 		}
 	case "n", "N", "esc", "ctrl+c", "q":
 		m.mode = modeNormal
