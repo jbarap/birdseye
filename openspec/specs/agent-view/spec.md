@@ -123,15 +123,16 @@ sessions require action.
 
 ### Requirement: Popup-friendly invocation
 
-The system SHALL run `be agents` as a self-contained command suitable for launching in a
-transient context such as a tmux popup, SHALL allow navigating to a selected agent's
-session — landing on the exact window and pane the agent runs in — and SHALL keep the
-view's rendered state current by refreshing in place as agent state changes while the view
-is open, without the user re-running the command.
+The system SHALL run the agents view — the default `be` command (also reachable as
+`be agents`) — as a self-contained command suitable for launching in a transient context
+such as a tmux popup, SHALL allow navigating to a selected agent's session — landing on the
+exact window and pane the agent runs in — and SHALL keep the view's rendered state current
+by refreshing in place as agent state changes while the view is open, without the user
+re-running the command.
 
 #### Scenario: Runs in a popup context
 
-- **WHEN** `be agents` is launched via `tmux display-popup -E be agents`
+- **WHEN** the agents view is launched via `tmux display-popup -E be`
 - **THEN** the view renders within the popup and exits cleanly when dismissed
 
 #### Scenario: Jump to selected agent's exact pane
@@ -587,6 +588,35 @@ SHALL be defined in the shared theme package.
 - **WHEN** a managed session contains a window with a live agent that is not a worktree
   of the repo
 - **THEN** that window renders as an ordinary agent row, the same as in a plain session
+
+### Requirement: Create a session from the agents view
+
+The agents view SHALL provide a rebindable action (default `s`) that opens a new tmux
+session through the same fuzzy session picker as `be sessions` — drawing on the same
+providers (running sessions, templates, directory roots, worktrees). The picker SHALL be
+presented by temporarily releasing the terminal to it (so the picker's full-screen UI runs
+cleanly) and restoring the agents view afterward. The selected candidate's session SHALL be
+**materialized without attaching**: the system creates (or reuses) the session but does not
+switch the tmux client to it, so the user stays in the agents view. The new session SHALL
+appear in the view on the next refresh, with the cursor moved onto it. Cancelling the picker
+SHALL leave the view unchanged. The action SHALL require orchestration support (tmux) and be
+absent otherwise.
+
+#### Scenario: Open a session without leaving the view
+
+- **WHEN** the user invokes the new-session action and selects a candidate
+- **THEN** the system ensures that candidate's tmux session exists, does not attach to it,
+  and the agents view stays in front with the new session listed and focused on refresh
+
+#### Scenario: Cancelling the picker is a no-op
+
+- **WHEN** the user dismisses the picker without selecting a candidate
+- **THEN** no session is created or changed and the view is left exactly as it was
+
+#### Scenario: New-session action requires tmux
+
+- **WHEN** the agents view runs without tmux (no orchestration)
+- **THEN** the new-session action is unavailable and omitted from the help line
 
 ### Requirement: Create a new agent in a managed repo
 

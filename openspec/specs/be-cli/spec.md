@@ -24,13 +24,28 @@ that runs without a runtime interpreter or external language dependencies.
 
 ### Requirement: Command surface
 
-The system SHALL expose a primary command surface consisting of a default picker
-command and named subcommands, with `be` (no args) behaving identically to `be list`.
+The system SHALL expose a primary command surface whose default command (`be` with no
+args) is the agents view, with the fuzzy session picker available as `be sessions`. The
+agents view is the default because it degrades gracefully without tmux (plain triage
+rows), whereas the picker requires tmux. `be agents` SHALL remain a named alias for the
+default, and `be list` SHALL remain a hidden, deprecated alias for `be sessions` so
+existing invocations keep working.
 
-#### Scenario: Default command opens picker
+#### Scenario: Default command opens the agents view
 
 - **WHEN** the user runs `be` with no arguments
-- **THEN** the system opens the session picker (equivalent to `be list`)
+- **THEN** the system opens the agents view (equivalent to `be agents`)
+
+#### Scenario: Picker is reached via `be sessions`
+
+- **WHEN** the user runs `be sessions`
+- **THEN** the system opens the fuzzy session picker
+
+#### Scenario: Deprecated picker alias still works
+
+- **WHEN** the user runs `be list`
+- **THEN** the system opens the session picker (the alias is accepted though hidden from
+  help)
 
 #### Scenario: Named subcommands are routed
 
