@@ -22,15 +22,16 @@ bird's-eye draws on ideas/visuals/concepts from these projects:
 
 ## Features
 
-- **One fuzzy picker** (`be`) over running tmux sessions, `tmuxp` templates,
-  `zoxide`/directory roots, and git worktrees — attach to what exists or create
-  what doesn't.
-- **`be agents`** — a tmux-popup-friendly view of your Claude Code sessions and
+- **`be`** — a tmux-popup-friendly view of your Claude Code sessions and
   their status (needs-attention / working / idle / done), so you know which need
   you. It **updates live** as sessions change, shows a **preview** of the selected
   session's terminal, and navigates with **vim-native, configurable** keys. When a
   tmux session is a **managed repo** (see below) it also surfaces that repo's
-  worktrees and lets you spin agents up and tear them down in place.
+  worktrees and lets you spin agents up and tear them down in place. Press `s` to
+  open a new session from the same fuzzy picker without leaving the view.
+- **One fuzzy picker** (`be sessions`) over running tmux sessions, `tmuxp` templates,
+  `zoxide`/directory roots, and git worktrees — attach to what exists or create
+  what doesn't.
 - **`be worktree`** — clone a repo into `<parent>/<repo>/<default-branch>` (anywhere on
   disk) and spin up sibling worktrees from inside it; worktrees discovered under
   optional configured roots are surfaced as session candidates.
@@ -64,8 +65,8 @@ any compatible machine and run it; no Go toolchain required.
 ## Usage
 
 ```sh
-be                    # open the picker (same as `be list`)
-be agents             # agent status view
+be                    # agent status view (also `be agents`)
+be sessions           # open the fuzzy session picker
 be worktree clone <url> [parent]   # → <parent-or-cwd>/<repo>/<default-branch>
 be worktree add <name> [branch]    # run from inside the repo; new sibling worktree
 ```
@@ -75,7 +76,7 @@ be worktree add <name> [branch]    # run from inside the repo; new sibling workt
 Add to `~/.tmux.conf` to pop the agents view from anywhere:
 
 ```tmux
-bind-key g display-popup -E -w 80% -h 60% "be agents"
+bind-key g display-popup -E -w 80% -h 60% "be"
 ```
 
 The agents view refreshes in place as hooks report new state, so a popup left open
@@ -83,6 +84,8 @@ stays current. When the popup is wide enough it shows a live preview of the sele
 session's terminal beside the list; on narrow popups the preview is hidden. Navigate
 with vim keys — `j`/`k` (or arrows) to move, `gg`/`G` for top/bottom, `ctrl+d`/`ctrl+u`
 for half-page — `enter` jumps to the selected agent's session, and `q` dismisses it.
+`s` opens a new session via the fuzzy picker (the same one as `be sessions`) and drops
+you back in the view with it listed — handy for opening a repo before spinning agents up.
 All of these keys are configurable (see `[agents.keys]` below).
 
 ### Managed repos (agent orchestration)
@@ -203,6 +206,7 @@ bottom    = ["G"]
 half_up   = ["ctrl+u"]
 half_down = ["ctrl+d"]
 select    = ["enter"]
+new_session  = ["s"]                   # open a session via the picker, stay in the view
 new_agent    = ["n"]
 delete_agent = ["dd"]                  # "dd" is the d key pressed twice (a chord)
 quit      = ["q", "esc", "ctrl+c"]

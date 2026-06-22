@@ -162,7 +162,7 @@ func validHex(s string) bool {
 }
 
 // helpOrder is the order actions appear in the help line.
-var helpOrder = []Action{ActionDown, ActionUp, ActionTop, ActionBottom, ActionPrevSection, ActionNextSection, ActionFold, ActionNewAgent, ActionDeleteAgent, ActionSelect, ActionQuit}
+var helpOrder = []Action{ActionDown, ActionUp, ActionTop, ActionBottom, ActionPrevSection, ActionNextSection, ActionFold, ActionNewSession, ActionNewAgent, ActionDeleteAgent, ActionSelect, ActionQuit}
 
 var actionLabel = map[Action]string{
 	ActionUp:          "up",
@@ -175,6 +175,7 @@ var actionLabel = map[Action]string{
 	ActionNextSection: "next session",
 	ActionSelect:      "jump",
 	ActionFold:        "fold",
+	ActionNewSession:  "open",
 	ActionNewAgent:    "new",
 	ActionDeleteAgent: "delete",
 	ActionQuit:        "quit",
@@ -396,6 +397,18 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.clearNotice()
 		}
 		return m, nil
+	case sessionCreatedMsg:
+		if msg.err != nil {
+			m.setError("open session: " + msg.err.Error())
+			return m, nil
+		}
+		if msg.name != "" {
+			m.reload()
+			m.focusSession(msg.name)
+			m.refreshPreview()
+			m.setInfo("opened " + msg.name)
+		}
+		return m, nil
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -588,6 +601,8 @@ func (m model) applyAction(a Action) (tea.Model, tea.Cmd) {
 		m.cursor = m.nextSection()
 	case ActionFold:
 		return m.toggleFold()
+	case ActionNewSession:
+		return m.startNewSession()
 	case ActionNewAgent:
 		return m.startNewAgent()
 	case ActionDeleteAgent:
@@ -631,6 +646,18 @@ func (m model) toggleFold() (tea.Model, tea.Cmd) {
 	m.dismissNotice()
 	m.refreshPreview()
 	return m, nil
+}
+
+// focusSession moves the cursor onto the named session (its header when folded, else its
+// first row) when it is present, and leaves the cursor put otherwise. Used after opening a
+// new session so the eye lands on what was just created.
+func (m *model) focusSession(name string) {
+	for i, itemIdx := range m.nav {
+		if m.items[itemIdx].sessionKey == name {
+			m.cursor = i
+			return
+		}
+	}
 }
 
 // navIndexForSession returns the cursor position of a session's navigable row: its
@@ -980,7 +1007,14 @@ func (m model) emptyView() string {
 	body := placeholderStyle.Render("No agents tracked yet.\n" +
 		"Wire up Claude Code hooks (see README) so sessions report status here.")
 	panel := panelTitle(frameStyle.Render(body), "agents", m.accent)
-	return panel + "\n" + helpStyle.Render("q quit")
+	help := "q quit"
+	// With orchestration, opening a session is the natural next step from an empty view.
+	if m.orch != nil {
+		if keys := m.keys[ActionNewSession]; len(keys) > 0 {
+			help = prettyKeys(keys) + " open · " + help
+		}
+	}
+	return panel + "\n" + helpStyle.Render(help)
 }
 
 // renderKind distinguishes the line types in the grouped list.
@@ -1323,7 +1357,7 @@ func previewLines(content string, h, w int) []string {
 func (m model) renderHelp() string {
 	var parts []string
 	for _, a := range helpOrder {
-		if (a == ActionNewAgent || a == ActionDeleteAgent) && m.orch == nil {
+		if (a == ActionNewSession || a == ActionNewAgent || a == ActionDeleteAgent) && m.orch == nil {
 			continue // create/delete unavailable without an orchestrator
 		}
 		keys := m.keys[a]

@@ -13,9 +13,11 @@ type removeCall struct {
 }
 
 type fakeOrch struct {
-	spawns  []spawnCall
-	removes []removeCall
-	dirty   bool // when true, Remove(force=false) reports ErrWorktreeDirty
+	spawns      []spawnCall
+	removes     []removeCall
+	dirty       bool   // when true, Remove(force=false) reports ErrWorktreeDirty
+	newSessions int    // count of NewSession calls
+	newSession  string // session name NewSession returns
 }
 
 func (f *fakeOrch) Spawn(repo Row, branch, name string) error {
@@ -29,6 +31,11 @@ func (f *fakeOrch) Remove(r Row, force bool) error {
 		return ErrWorktreeDirty
 	}
 	return nil
+}
+
+func (f *fakeOrch) NewSession() (string, error) {
+	f.newSessions++
+	return f.newSession, nil
 }
 
 // fixedRows is a RowSource over a fixed row list.
@@ -223,5 +230,67 @@ func TestDeleteDirtyWorktreeEscalatesToForce(t *testing.T) {
 	last := orch.removes[len(orch.removes)-1]
 	if !last.force {
 		t.Fatalf("force confirm should call Remove(force=true), got %+v", orch.removes)
+	}
+}
+
+// TestNewSessionFocusesCreatedSession drives the create-session flow: pressing the action
+// runs the picker (a command, since it must release the terminal), and the resulting
+// sessionCreatedMsg reloads and moves the cursor onto the just-opened session.
+func TestNewSessionFocusesCreatedSession(t *testing.T) {
+	orch := &fakeOrch{newSession: "proj2"}
+	rows := []Row{
+		{Kind: RowAgent, SessionID: "a", TmuxSession: "proj1", Title: "a"},
+		{Kind: RowAgent, SessionID: "b", TmuxSession: "proj2", Title: "b"},
+	}
+	m := modelWith(t, orch, rows)
+
+	// Cursor starts on the first session; opening must hand off to the picker via a command.
+	nm, cmd := m.startNewSession()
+	m = nm.(model)
+	if cmd == nil {
+		t.Fatal("startNewSession should return a command to run the picker")
+	}
+
+	// The picker's completion message lands in update; it should focus proj2.
+	out, _ := m.update(sessionCreatedMsg{name: "proj2"})
+	m = out.(model)
+	if got, _ := m.currentRow(); got.TmuxSession != "proj2" {
+		t.Fatalf("cursor should land on the opened session, got %q", got.TmuxSession)
+	}
+	if m.notice == "" || m.noticeLevel != noticeInfo {
+		t.Fatalf("opening a session should set an info notice, got %q level=%v", m.notice, m.noticeLevel)
+	}
+}
+
+// TestNewSessionCancelIsQuiet checks that a cancelled picker (empty name) leaves the view
+// untouched: no cursor move, no notice.
+func TestNewSessionCancelIsQuiet(t *testing.T) {
+	orch := &fakeOrch{newSession: ""}
+	rows := []Row{
+		{Kind: RowAgent, SessionID: "a", TmuxSession: "proj1", Title: "a"},
+		{Kind: RowAgent, SessionID: "b", TmuxSession: "proj2", Title: "b"},
+	}
+	m := modelWith(t, orch, rows)
+	m.cursor = 1
+
+	out, _ := m.update(sessionCreatedMsg{name: ""})
+	m = out.(model)
+	if m.cursor != 1 {
+		t.Fatalf("a cancelled open should not move the cursor, got %d", m.cursor)
+	}
+	if m.notice != "" {
+		t.Fatalf("a cancelled open should be quiet, got notice %q", m.notice)
+	}
+}
+
+// TestNewSessionDisabledWithoutOrch verifies the action is inert without an orchestrator.
+func TestNewSessionDisabledWithoutOrch(t *testing.T) {
+	m, err := newModel(fixedRows{[]Row{{Kind: RowAgent, SessionID: "a", TmuxSession: "p", Title: "a"}}}, nil, DefaultKeymap(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, cmd := m.startNewSession()
+	if cmd != nil {
+		t.Fatal("startNewSession should be a no-op without an orchestrator")
 	}
 }

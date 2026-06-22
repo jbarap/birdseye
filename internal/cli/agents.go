@@ -6,7 +6,11 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jbarap/birds-eye/internal/agents"
+	"github.com/jbarap/birds-eye/internal/config"
+	"github.com/jbarap/birds-eye/internal/picker"
+	"github.com/jbarap/birds-eye/internal/provider"
 	"github.com/jbarap/birds-eye/internal/tmux"
+	"github.com/jbarap/birds-eye/internal/tools"
 	"github.com/jbarap/birds-eye/internal/worktree"
 )
 
@@ -52,7 +56,7 @@ func runAgents() error {
 	if clientErr == nil {
 		prev = agents.NewTmuxPreviewer(client, 200)
 		rowSrc = agents.NewWorkspace(src, paneLister{client}, repoResolver{})
-		orch = orchestrator{client: client, command: cfg.Agents.AgentCommand()}
+		orch = orchestrator{client: client, command: cfg.Agents.AgentCommand(), cfg: cfg}
 	}
 
 	chosen, err := agents.Run(rowSrc, prev, keys, accent, refresh, orch)
@@ -114,7 +118,41 @@ func (repoResolver) Resolve(dir string) (agents.RepoInfo, bool) {
 type orchestrator struct {
 	client  *tmux.Client
 	command string
+	cfg     config.Config
 }
+
+// NewSession runs the session picker (the same providers and fuzzy UI as `be sessions`)
+// and materializes the chosen candidate without attaching, returning its session name.
+// Cancelling or an empty candidate list returns "" with no error. Not attaching is what
+// keeps the agents view in front: ensureOnly runs the candidate's Ensure but skips the
+// Connect that would switch the tmux client away.
+func (o orchestrator) NewSession() (string, error) {
+	reg := buildRegistry(o.cfg, tools.Probe(), o.client)
+	sel, err := picker.Pick(reg.Candidates(), o.cfg)
+	switch err {
+	case nil:
+		// proceed
+	case picker.ErrCancelled, picker.ErrNoCandidates:
+		return "", nil
+	default:
+		return "", err
+	}
+	if sel == nil {
+		return "", nil
+	}
+	if err := sel.Action(ensureOnly{o.client}); err != nil {
+		return "", err
+	}
+	return sel.Name, nil
+}
+
+// ensureOnly is a provider.Backend that creates sessions but never connects, so a
+// candidate's action materializes its tmux session without pulling the user out of the
+// agents view into the new session.
+type ensureOnly struct{ b provider.Backend }
+
+func (e ensureOnly) Ensure(name, dir string) error { return e.b.Ensure(name, dir) }
+func (e ensureOnly) Connect(string) error          { return nil }
 
 // Spawn adds a worktree in the row's repo (directory name, checking out branch), opens a
 // window rooted there, and starts the configured agent command.

@@ -2,6 +2,7 @@ package agents
 
 import (
 	"errors"
+	"io"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -23,6 +24,46 @@ type Orchestrator interface {
 	// managed worktree, removes the git worktree. With force=false it returns
 	// ErrWorktreeDirty rather than removing a dirty worktree.
 	Remove(r Row, force bool) error
+	// NewSession runs the session picker and materializes the chosen session *without*
+	// attaching, returning its tmux session name (empty when cancelled). It takes over
+	// the terminal (fzf), so the view runs it through tea.Exec; not attaching keeps the
+	// user in the agents view to keep orchestrating.
+	NewSession() (string, error)
+}
+
+// pickerExec runs NewSession while Bubble Tea has released the terminal (via tea.Exec),
+// so the picker's fzf can take the screen and restore cleanly afterward. It captures the
+// chosen session name and any error for the completion message. The std streams Bubble Tea
+// hands it are ignored: fzf manages its own /dev/tty.
+type pickerExec struct {
+	run  func() (string, error)
+	name string
+	err  error
+}
+
+func (p *pickerExec) Run() error          { p.name, p.err = p.run(); return p.err }
+func (p *pickerExec) SetStdin(io.Reader)  {}
+func (p *pickerExec) SetStdout(io.Writer) {}
+func (p *pickerExec) SetStderr(io.Writer) {}
+
+// sessionCreatedMsg reports the outcome of the new-session picker back into Update.
+type sessionCreatedMsg struct {
+	name string
+	err  error
+}
+
+// startNewSession hands the terminal to the session picker (the same fuzzy list as
+// `be sessions`) and materializes the chosen session without attaching, so the user stays
+// in the agents view with the new session now listed. A no-op without an orchestrator.
+func (m model) startNewSession() (tea.Model, tea.Cmd) {
+	if m.orch == nil {
+		return m, nil
+	}
+	m.clearNotice()
+	pe := &pickerExec{run: m.orch.NewSession}
+	return m, tea.Exec(pe, func(error) tea.Msg {
+		return sessionCreatedMsg{name: pe.name, err: pe.err}
+	})
 }
 
 // startNewAgent opens the new-worktree name prompt when the cursor is in a managed

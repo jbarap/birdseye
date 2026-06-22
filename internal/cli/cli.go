@@ -38,17 +38,24 @@ var (
 func Execute(version string) error {
 	root := &cobra.Command{
 		Use:           "be",
-		Short:         "bird's-eye — a fuzzy view over tmux sessions and the agents inside them",
+		Short:         "bird's-eye — a live view over your tmux agent sessions",
 		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		RunE:          func(cmd *cobra.Command, args []string) error { return runList() },
+		// The bare command is the agents view (the tool's home); it degrades gracefully
+		// without tmux, unlike the picker. `be sessions` is the fuzzy session picker.
+		RunE: func(cmd *cobra.Command, args []string) error { return runAgents() },
 	}
 	root.AddCommand(
 		&cobra.Command{
-			Use:   "list",
-			Short: "Fuzzy-pick a session to attach to or create",
+			Use:   "sessions",
+			Short: "Fuzzy-pick a tmux session to attach to or create",
 			RunE:  func(cmd *cobra.Command, args []string) error { return runList() },
+		},
+		&cobra.Command{
+			Use:    "list",
+			Hidden: true, // deprecated alias for `be sessions`
+			RunE:   func(cmd *cobra.Command, args []string) error { return runList() },
 		},
 		newAgentsCmd(),
 		newWorktreeCmd(),
