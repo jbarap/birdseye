@@ -42,7 +42,7 @@ const (
 	anchorWord   = "base"
 	slotGlyph    = "◌" // a managed worktree with no agent (a spawn target)
 	slotWord     = "slot"
-	managedGlyph = "\U000f0612" // 󰘬 md-source_branch: the managed-repo indicator
+	managedGlyph = "\U000f02a2" // 󰊢 md-git: the managed-repo indicator
 	errGlyph     = "✗"          // a rejected/failed action (notice, red)
 	infoGlyph    = "•"          // a neutral confirmation (notice, accent)
 )

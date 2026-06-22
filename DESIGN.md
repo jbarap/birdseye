@@ -92,7 +92,7 @@ structural **markers** (not statuses — they mark the absence/role of an agent)
 | anchor | `⌂ base` | the repo's default-branch checkout (no agent) |
 | slot | `◌ slot` | a worktree with no agent — a spawn target |
 
-A managed repo's section bar additionally carries a source-control indicator (`󰘬`) and its
+A managed repo's section bar additionally carries a source-control indicator (`󰊢`) and its
 worktree count, so recognition reads from a glyph and a word, never color. Within the repo
 the anchor pins first and slots sort last, while live worktrees keep the status ordering.
 

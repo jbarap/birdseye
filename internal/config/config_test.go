@@ -54,6 +54,44 @@ stale_after = "30s"
 	}
 }
 
+func TestLoadExpandsTildePaths(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skip("no home directory to expand against")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	body := `
+[tmuxp]
+dir = "~/.tmuxp"
+
+[dir]
+roots = ["~/code", "~", "/abs/path", "relative/path"]
+
+[worktree]
+roots = ["~/projects/open_source"]
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadFrom(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(home, ".tmuxp"); cfg.Tmuxp.Dir != want {
+		t.Errorf("tmuxp.dir = %q, want %q", cfg.Tmuxp.Dir, want)
+	}
+	wantDir := []string{filepath.Join(home, "code"), home, "/abs/path", "relative/path"}
+	for i, w := range wantDir {
+		if cfg.Dir.Roots[i] != w {
+			t.Errorf("dir.roots[%d] = %q, want %q", i, cfg.Dir.Roots[i], w)
+		}
+	}
+	if want := filepath.Join(home, "projects/open_source"); cfg.Worktree.Roots[0] != want {
+		t.Errorf("worktree.roots[0] = %q, want %q", cfg.Worktree.Roots[0], want)
+	}
+}
+
 func TestLoadParsesAgentsKeys(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
@@ -92,8 +130,10 @@ roots = ["~/code", "/work/repos"]
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.Worktree.Roots) != 2 || cfg.Worktree.Roots[0] != "~/code" {
-		t.Fatalf("worktree.roots not parsed: %v", cfg.Worktree.Roots)
+	home, _ := os.UserHomeDir()
+	wantFirst := filepath.Join(home, "code")
+	if len(cfg.Worktree.Roots) != 2 || cfg.Worktree.Roots[0] != wantFirst || cfg.Worktree.Roots[1] != "/work/repos" {
+		t.Fatalf("worktree.roots not parsed/expanded: %v", cfg.Worktree.Roots)
 	}
 }
 

@@ -115,10 +115,19 @@ func Add(cwd, name, branch string) (dir string, err error) {
 	return dir, nil
 }
 
-// List returns the managed repositories discovered under the given roots and their
-// worktree dirs. A managed repo is any immediate child of a root that contains at
-// least one git worktree (a child with a `.git` entry) — no common root and no
-// hardcoded `main` name is assumed.
+// List returns the managed repositories discovered under the given roots. A managed
+// repo is laid out as <root>/<repo>/<worktree>, where each worktree directory is named
+// after the branch checked out there. Recognition turns on the *anchor*: a child whose
+// directory name is the repository's default branch (e.g. <repo>/main) — the same gate
+// the orchestration layer uses. A single anchored checkout with no siblings is a valid
+// managed repo; siblings sharing the anchor's git store are its other worktrees.
+//
+// The anchor is what separates a managed repo from an ordinary projects folder. A
+// directory named after a *project* — `~/projects/{repoA,repoB,…}` or `docs/tax`, a
+// plain clone two levels under a root — is not its repo's default branch, so it is not
+// mistaken for a worktree. Children are grouped by git common-dir, so an unrelated
+// clone sitting beside a real worktree set lands in its own (anchorless) group and is
+// excluded rather than poisoning the set.
 func List(roots ...string) ([]Managed, error) {
 	var out []Managed
 	for _, root := range roots {
@@ -136,28 +145,68 @@ func List(roots ...string) ([]Managed, error) {
 			if !e.IsDir() {
 				continue
 			}
-			repoDir := filepath.Join(root, e.Name())
-			sub, err := os.ReadDir(repoDir)
-			if err != nil {
-				continue
-			}
-			var dirs []Dir
-			for _, s := range sub {
-				if !s.IsDir() {
-					continue
-				}
-				p := filepath.Join(repoDir, s.Name())
-				if isGitWorktree(p) {
-					dirs = append(dirs, Dir{Name: s.Name(), Path: p})
-				}
-			}
-			if len(dirs) == 0 {
-				continue // not a managed repo container
-			}
-			out = append(out, Managed{Repo: e.Name(), Dirs: dirs})
+			out = append(out, managedReposIn(e.Name(), filepath.Join(root, e.Name()))...)
 		}
 	}
 	return out, nil
+}
+
+// managedReposIn groups the git-worktree children of a container directory by the
+// repository they belong to (their git common-dir) and returns one Managed per group
+// that contains an anchor — a worktree whose directory name is that repo's default
+// branch. Directory order is preserved.
+func managedReposIn(name, container string) []Managed {
+	sub, err := os.ReadDir(container)
+	if err != nil {
+		return nil
+	}
+	var order []string
+	groups := map[string][]Dir{}
+	anchored := map[string]bool{}
+	for _, s := range sub {
+		if !s.IsDir() {
+			continue
+		}
+		p := filepath.Join(container, s.Name())
+		if !isGitWorktree(p) {
+			continue
+		}
+		key, ok := commonDirOf(p)
+		if !ok {
+			continue // a stray `.git` that git itself rejects is not a worktree
+		}
+		if _, seen := groups[key]; !seen {
+			order = append(order, key)
+		}
+		groups[key] = append(groups[key], Dir{Name: s.Name(), Path: p})
+		if !anchored[key] && s.Name() == defaultBranchOfRepo(p) {
+			anchored[key] = true // the repo's default-branch checkout lives here
+		}
+	}
+	var out []Managed
+	for _, key := range order {
+		if anchored[key] {
+			out = append(out, Managed{Repo: name, Dirs: groups[key]})
+		}
+	}
+	return out
+}
+
+// commonDirOf returns the absolute, symlink-resolved git common-dir for a worktree
+// directory — the identity shared by every worktree of the same repository. ok is
+// false when path is not actually a git worktree (git rejects it).
+func commonDirOf(path string) (string, bool) {
+	out, err := output(path, "git", "rev-parse", "--git-common-dir")
+	if err != nil {
+		return "", false
+	}
+	if !filepath.IsAbs(out) {
+		out = filepath.Join(path, out)
+	}
+	if resolved, err := filepath.EvalSymlinks(out); err == nil {
+		out = resolved
+	}
+	return filepath.Clean(out), true
 }
 
 // IsDirty reports whether the worktree at dir has uncommitted changes or untracked

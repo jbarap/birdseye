@@ -22,20 +22,42 @@ func TestRepoNameFromURL(t *testing.T) {
 	}
 }
 
-// TestListFindsManagedRepos exercises the git-free recognition: a container is managed
-// when it holds at least one git worktree child (a `.git` entry), regardless of the
-// default-branch name, across multiple roots.
-func TestListFindsManagedRepos(t *testing.T) {
-	rootA := t.TempDir()
-	rootB := t.TempDir()
-	// "alpha" with master + wt1 (both worktrees); "loose" has only a plain dir (ignored).
-	mustWorktreeDir(t, filepath.Join(rootA, "alpha", "master"))
-	mustWorktreeDir(t, filepath.Join(rootA, "alpha", "wt1"))
-	mustMkdir(t, filepath.Join(rootA, "loose", "stuff"))
-	// A repo under a second root, with a non-"main" default branch dir.
-	mustWorktreeDir(t, filepath.Join(rootB, "beta", "trunk"))
+// TestListRecognizesManagedReposByAnchor checks the recognition rule: a managed repo
+// is recognized by its anchor — a child directory named after the repo's default
+// branch (<repo>/main). A single anchored checkout is valid even with no siblings,
+// while a folder of unrelated clones, and a folder holding a project-named clone, must
+// NOT be read as worktrees — the regression that turned an ordinary projects directory
+// into bogus worktrees.
+func TestListRecognizesManagedReposByAnchor(t *testing.T) {
+	requireGitBinary(t)
+	root := t.TempDir()
 
-	got, err := List(rootA, rootB)
+	// A genuine worktree set: alpha/main (anchor) + alpha/feat (linked worktree).
+	alphaMain := filepath.Join(root, "alpha", "main")
+	gitInit(t, alphaMain, "main")
+	gitCommit(t, alphaMain)
+	mustGit(t, alphaMain, "worktree", "add", filepath.Join(root, "alpha", "feat"))
+
+	// A single-worktree managed repo: <repo>/main with no siblings is still valid —
+	// the default-branch checkout is its own anchor.
+	soloMain := filepath.Join(root, "gizmo", "main")
+	gitInit(t, soloMain, "main")
+	gitCommit(t, soloMain)
+
+	// A folder of unrelated clones side by side — no anchor, not one repo's worktrees.
+	for _, n := range []string{"red", "blue"} {
+		d := filepath.Join(root, "vendor", n)
+		gitInit(t, d, "main")
+		gitCommit(t, d)
+	}
+
+	// A folder holding a single project-named clone — the dir name (tax) is not the
+	// repo's default branch (main), so there is no anchor.
+	tax := filepath.Join(root, "docs", "tax")
+	gitInit(t, tax, "main")
+	gitCommit(t, tax)
+
+	got, err := List(root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,14 +65,17 @@ func TestListFindsManagedRepos(t *testing.T) {
 	for _, m := range got {
 		byRepo[m.Repo] = m
 	}
-	if _, ok := byRepo["loose"]; ok {
-		t.Fatal("a container with no git worktree child must not be listed")
-	}
 	if m, ok := byRepo["alpha"]; !ok || len(m.Dirs) != 2 {
-		t.Fatalf("expected alpha with 2 worktree dirs, got %+v", byRepo["alpha"])
+		t.Fatalf("expected alpha with 2 worktrees, got %+v (all=%+v)", byRepo["alpha"], got)
 	}
-	if m, ok := byRepo["beta"]; !ok || len(m.Dirs) != 1 || m.Dirs[0].Name != "trunk" {
-		t.Fatalf("expected beta/trunk worktree, got %+v", byRepo["beta"])
+	if m, ok := byRepo["gizmo"]; !ok || len(m.Dirs) != 1 || m.Dirs[0].Name != "main" {
+		t.Fatalf("expected gizmo/main (a single anchored worktree), got %+v", byRepo["gizmo"])
+	}
+	if _, ok := byRepo["vendor"]; ok {
+		t.Fatal("a folder of unrelated clones must not be listed as a worktree set")
+	}
+	if _, ok := byRepo["docs"]; ok {
+		t.Fatal("a folder holding a project-named clone must not be listed")
 	}
 }
 
@@ -62,9 +87,12 @@ func TestListNoRootsIsEmpty(t *testing.T) {
 }
 
 func TestProviderCandidatesFromRoots(t *testing.T) {
+	requireGitBinary(t)
 	root := t.TempDir()
-	mustWorktreeDir(t, filepath.Join(root, "alpha", "main"))
-	mustWorktreeDir(t, filepath.Join(root, "alpha", "wt1"))
+	alphaMain := filepath.Join(root, "alpha", "main")
+	gitInit(t, alphaMain, "main")
+	gitCommit(t, alphaMain)
+	mustGit(t, alphaMain, "worktree", "add", filepath.Join(root, "alpha", "wt1"))
 
 	cands, err := NewProvider([]string{root}).Candidates()
 	if err != nil {
@@ -215,16 +243,6 @@ func TestRemoveCleanAndDirty(t *testing.T) {
 func mustMkdir(t *testing.T, p string) {
 	t.Helper()
 	if err := os.MkdirAll(p, 0o755); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// mustWorktreeDir creates a directory marked as a git worktree (a `.git` entry),
-// without standing up a real repo — enough for List's git-free recognition.
-func mustWorktreeDir(t *testing.T, p string) {
-	t.Helper()
-	mustMkdir(t, p)
-	if err := os.WriteFile(filepath.Join(p, ".git"), []byte("gitdir: /dev/null\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

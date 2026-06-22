@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -164,7 +165,40 @@ func LoadFrom(path string) (Config, error) {
 			return Default(), fmt.Errorf("invalid config %s: [worktree] root is no longer supported; use a list, e.g. roots = [\"~/code\"]", path)
 		}
 	}
+	cfg.expandPaths()
 	return cfg, nil
+}
+
+// expandPaths rewrites every path-typed config field through expandTilde, so a
+// leading "~" means the user's home everywhere a path is accepted. The shell
+// does this for command-line paths; values read from the config file never pass
+// through a shell, so we expand them ourselves.
+func (c *Config) expandPaths() {
+	c.Tmuxp.Dir = expandTilde(c.Tmuxp.Dir)
+	for i, p := range c.Dir.Roots {
+		c.Dir.Roots[i] = expandTilde(p)
+	}
+	for i, p := range c.Worktree.Roots {
+		c.Worktree.Roots[i] = expandTilde(p)
+	}
+}
+
+// expandTilde resolves a leading "~" or "~/" to the user's home directory. Other
+// values (absolute, relative, empty, or a "~user" form we don't support) are
+// returned unchanged; if the home directory can't be resolved the path is left
+// as-is rather than failing the whole config load.
+func expandTilde(path string) string {
+	if path != "~" && !strings.HasPrefix(path, "~/") {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return path
+	}
+	if path == "~" {
+		return home
+	}
+	return filepath.Join(home, path[2:])
 }
 
 // Label returns the display label for a type, falling back to the type itself.
