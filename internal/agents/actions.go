@@ -32,13 +32,13 @@ func (m model) startNewAgent() (tea.Model, tea.Cmd) {
 	}
 	r, ok := m.currentRow()
 	if !ok || !r.Managed || r.Dir == "" {
-		m.notice = "new agent: place the cursor inside a managed repo"
+		m.setError("new agent: place the cursor inside a managed repo")
 		return m, nil
 	}
 	m.mode = modeNewAgent
 	m.input = ""
 	m.target = r
-	m.notice = ""
+	m.clearNotice()
 	return m, nil
 }
 
@@ -55,9 +55,9 @@ func (m model) handleNewAgentKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input = ""
 		if name != "" && m.orch != nil {
 			if err := m.orch.Spawn(m.target, name); err != nil {
-				m.notice = "new agent: " + err.Error()
+				m.setError("new agent: " + err.Error())
 			} else {
-				m.notice = ""
+				m.clearNotice()
 				m.reload()
 			}
 		}
@@ -85,7 +85,7 @@ func (m model) startDelete() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if r.Kind == RowAnchor {
-		m.notice = "the repo anchor cannot be deleted"
+		m.setError("the repo anchor cannot be deleted")
 		return m, nil
 	}
 	err := m.orch.Remove(r, false)
@@ -95,10 +95,10 @@ func (m model) startDelete() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if err != nil {
-		m.notice = "delete: " + err.Error()
+		m.setError("delete: " + err.Error())
 		return m, nil
 	}
-	m.notice = ""
+	m.clearNotice()
 	m.reload()
 	return m, nil
 }
@@ -111,15 +111,15 @@ func (m model) handleConfirmKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = modeNormal
 		if m.orch != nil {
 			if err := m.orch.Remove(m.target, true); err != nil {
-				m.notice = "delete: " + err.Error()
+				m.setError("delete: " + err.Error())
 			} else {
-				m.notice = ""
+				m.clearNotice()
 				m.reload()
 			}
 		}
 	case "n", "N", "esc", "ctrl+c", "q":
 		m.mode = modeNormal
-		m.notice = "delete cancelled"
+		m.setInfo("delete cancelled")
 	}
 	return m, nil
 }

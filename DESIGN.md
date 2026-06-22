@@ -96,6 +96,15 @@ A managed repo's section bar additionally carries a source-control indicator (`�
 worktree count, so recognition reads from a glyph and a word, never color. Within the repo
 the anchor pins first and slots sort last, while live worktrees keep the status ordering.
 
+**Action feedback** (a rejected action, an error, a confirm) is *notable*, never the faint
+help line — otherwise a no-op looks like nothing happened. It renders on a fixed line below
+the list, bold and color-coded, paired with a glyph so it reads without color: a rejection or
+failure is `✗` in `Red`, a neutral confirmation (e.g. *delete cancelled*) is `•` in the
+accent, and a destructive confirm prompt is bold `Red` with its `(y/n)`. The line is always a
+single row, so it fits the same height budget the list and preview share. A notice is
+*transient*: it auto-dismisses after a few seconds, and clears the moment the cursor moves —
+feedback that is acknowledged should get out of the way, never linger as stale state.
+
 ## Layout philosophy
 
 - **Fixed columns.** The agents view is `cursor | status gutter | indent | window | name`, each at a

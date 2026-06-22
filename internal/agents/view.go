@@ -15,6 +15,10 @@ import (
 // defaultRefresh is the fallback live-refresh interval when none is configured.
 const defaultRefresh = time.Second
 
+// noticeTTL is how long a transient notice stays before it auto-dismisses. Long enough
+// to read a short line, short enough that a stale error doesn't linger.
+const noticeTTL = 4 * time.Second
+
 // Layout constants. Column widths keep every row's data points at fixed positions;
 // the preview is only shown when the terminal is at least previewMinWidth wide.
 const (
@@ -39,6 +43,8 @@ const (
 	slotGlyph    = "◌" // a managed worktree with no agent (a spawn target)
 	slotWord     = "slot"
 	managedGlyph = "\U000f0612" // 󰘬 md-source_branch: the managed-repo indicator
+	errGlyph     = "✗"          // a rejected/failed action (notice, red)
+	infoGlyph    = "•"          // a neutral confirmation (notice, accent)
 )
 
 // lipColor adapts a shared-palette color to lipgloss, handing it the hex value;
@@ -183,6 +189,16 @@ const (
 	modeConfirmDelete
 )
 
+// noticeLevel selects how a transient notice is styled. The zero value is an
+// error/rejection (the common case), so a notice set without a level still reads as
+// notable rather than silently neutral.
+type noticeLevel int
+
+const (
+	noticeError noticeLevel = iota // a rejection or failure: red, "✗"
+	noticeInfo                     // a neutral confirmation: accent, "•"
+)
+
 // model is the Bubble Tea model for the agents view.
 type model struct {
 	src     RowSource
@@ -197,13 +213,16 @@ type model struct {
 	folded  map[string]bool // session keys whose section is collapsed
 	nav     []int           // item indices the cursor can land on, given fold state
 	cursor  int             // index into nav (a leaf, or a folded session header)
+	top     int             // first visible item (scroll offset into the rendered list)
 	chosen  *Row
 	pending rune // armed first rune of a chord (0 = none)
 
-	mode   mode
-	input  string // new-agent name buffer (modeNewAgent)
-	target Row    // the row the active modal acts on (new-agent repo / delete confirm)
-	notice string // transient status line (errors from actions)
+	mode        mode
+	input       string      // new-agent name buffer (modeNewAgent)
+	target      Row         // the row the active modal acts on (new-agent repo / delete confirm)
+	notice      string      // transient status line (feedback from actions)
+	noticeLevel noticeLevel // how to style the notice (error vs neutral info)
+	noticeGen   int         // bumped each time a notice is set, so a stale auto-dismiss no-ops
 
 	width, height int
 	preview       string         // cached preview for the selected row
@@ -307,7 +326,43 @@ func (m model) tick() tea.Cmd {
 	return tea.Tick(d, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
+// Update funnels every message through update, then re-syncs the scroll offset so
+// the selected row is always within the visible window before the next View. Keeping
+// the sync in one place (rather than at each cursor mutation) is what makes scrolling
+// rock solid: no message can leave the viewport pointing off-screen.
+// setError and setInfo set the transient status line; clearNotice removes it. Each set
+// bumps noticeGen so a pending auto-dismiss for an older notice no-ops once a newer one
+// (or a clear) supersedes it. These are the single way to touch the notice, so its
+// text, level, and generation never drift apart.
+func (m *model) setError(msg string) { m.notice, m.noticeLevel, m.noticeGen = msg, noticeError, m.noticeGen+1 }
+func (m *model) setInfo(msg string)  { m.notice, m.noticeLevel, m.noticeGen = msg, noticeInfo, m.noticeGen+1 }
+func (m *model) clearNotice()        { m.notice, m.noticeLevel, m.noticeGen = "", noticeError, m.noticeGen+1 }
+
+// noticeExpireMsg auto-dismisses the notice of a given generation after noticeTTL.
+type noticeExpireMsg struct{ gen int }
+
+// expireNotice schedules the auto-dismiss for the notice generation gen.
+func expireNotice(gen int) tea.Cmd {
+	return tea.Tick(noticeTTL, func(time.Time) tea.Msg { return noticeExpireMsg{gen} })
+}
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	prevGen := m.noticeGen
+	next, cmd := m.update(msg)
+	mm, ok := next.(model)
+	if !ok {
+		return next, cmd
+	}
+	// A freshly-set notice arms its own auto-dismiss; the gen tag means a later notice
+	// (or a clear) supersedes this timer instead of blanking the new message.
+	if mm.notice != "" && mm.noticeGen != prevGen {
+		cmd = tea.Batch(cmd, expireNotice(mm.noticeGen))
+	}
+	mm.syncViewport()
+	return mm, cmd
+}
+
+func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -315,6 +370,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		m.reload()
 		return m, m.tick()
+	case noticeExpireMsg:
+		if msg.gen == m.noticeGen {
+			m.clearNotice()
+		}
+		return m, nil
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -518,9 +578,19 @@ func (m model) applyAction(a Action) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 	if m.cursor != old {
+		m.dismissNotice()
 		m.refreshPreview()
 	}
 	return m, nil
+}
+
+// dismissNotice clears a showing notice when the user moves on (navigation, fold), so
+// feedback fades the moment it is acknowledged — without churning the generation when
+// there is nothing to clear.
+func (m *model) dismissNotice() {
+	if m.notice != "" {
+		m.clearNotice()
+	}
 }
 
 // toggleFold collapses or expands the section under the cursor. Folding a section
@@ -535,6 +605,7 @@ func (m model) toggleFold() (tea.Model, tea.Cmd) {
 	m.folded[key] = !m.folded[key]
 	m.recomputeNav()
 	m.cursor = m.navIndexForSession(key)
+	m.dismissNotice()
 	m.refreshPreview()
 	return m, nil
 }
@@ -616,11 +687,111 @@ func (m model) prevSection() int {
 
 // halfPage is half the visible list height, at least 1.
 func (m model) halfPage() int {
-	page := m.height - 4 // title + frame + help chrome
+	page := m.contentRows()
 	if page < 2 {
 		page = 10
 	}
 	return max(page/2, 1)
+}
+
+// chromeLines counts the rendered lines stacked below the body (list/preview): the
+// help line and the transient notice/modal line, each two rows (a top margin plus
+// its text). The body must shrink by this much so the whole view never exceeds the
+// terminal height — the overflow that scrolls the top off-screen.
+func (m model) chromeLines() int {
+	n := 0
+	if m.modalLineActive() {
+		n += 2
+	}
+	if m.height == 0 || m.height >= 6 {
+		n += 2 // the help line (same condition as View)
+	}
+	return n
+}
+
+// modalLineActive reports whether View will render a notice or modal prompt line.
+func (m model) modalLineActive() bool {
+	return m.mode == modeNewAgent || m.mode == modeConfirmDelete || m.notice != ""
+}
+
+// contentRows is the number of body rows that fit inside the panel border given the
+// terminal height and the chrome below it. Both the list window and the preview pane
+// size to this, so they always line up and never overflow.
+func (m model) contentRows() int {
+	h := m.height - m.chromeLines() - 2 // the panel's top+bottom border
+	if h < 1 {
+		h = 1
+	}
+	return h
+}
+
+// listCap is the maximum number of list rows to draw. When the terminal size is not
+// yet known (height 0, e.g. before the first WindowSizeMsg or in tests) the list is
+// not windowed.
+func (m model) listCap() int {
+	if m.height <= 0 {
+		return 1 << 30
+	}
+	return m.contentRows()
+}
+
+// visibleItems is the item indices that render, in order: every item except rows
+// hidden beneath a folded session. This is the sequence the scroll window slides over.
+func (m model) visibleItems() []int {
+	out := make([]int, 0, len(m.items))
+	for i, it := range m.items {
+		if it.kind == kindRow && m.folded[it.sessionKey] {
+			continue
+		}
+		out = append(out, i)
+	}
+	return out
+}
+
+// selVisiblePos is the position of the selected item within visibleItems (0 when none).
+func (m model) selVisiblePos(vis []int) int {
+	if m.cursor < 0 || m.cursor >= len(m.nav) {
+		return 0
+	}
+	target := m.nav[m.cursor]
+	for p, i := range vis {
+		if i == target {
+			return p
+		}
+	}
+	return 0
+}
+
+// syncViewport pins the scroll offset so the selected row stays visible, scrolling the
+// minimum amount needed (selection at an edge nudges the window by one, not a jump).
+func (m *model) syncViewport() {
+	vis := m.visibleItems()
+	m.top = windowTop(m.top, m.selVisiblePos(vis), m.listCap(), len(vis))
+}
+
+// windowTop returns the first-visible index for a list of n items with a window of h
+// rows, given the previous top and the selected position: it keeps sel inside
+// [top, top+h) with minimal movement and clamps to the valid range.
+func windowTop(top, sel, h, n int) int {
+	if h <= 0 || n <= h {
+		return 0
+	}
+	if top < 0 {
+		top = 0
+	}
+	if sel < top {
+		top = sel
+	}
+	if sel >= top+h {
+		top = sel - h + 1
+	}
+	if top > n-h {
+		top = n - h
+	}
+	if top < 0 {
+		top = 0
+	}
+	return top
 }
 
 func (m model) View() string {
@@ -636,17 +807,54 @@ func (m model) View() string {
 	}
 
 	parts := []string{body}
-	if m.mode == modeNewAgent {
-		parts = append(parts, helpStyle.Render("new worktree name: "+m.input+"▌  (enter to create, esc to cancel)"))
-	} else if m.mode == modeConfirmDelete {
-		parts = append(parts, helpStyle.Render(fmt.Sprintf("worktree %q has uncommitted changes — force remove? (y/n)", m.target.Worktree)))
-	} else if m.notice != "" {
-		parts = append(parts, helpStyle.Render(m.notice))
+	if line, ok := m.statusLine(); ok {
+		parts = append(parts, line)
 	}
 	if m.height == 0 || m.height >= 6 {
 		parts = append(parts, m.renderHelp())
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+}
+
+// statusLine renders the notable line below the body: an active modal prompt (the
+// new-agent name input or the dirty-delete confirm) or a transient notice. Unlike the
+// faint help line these are bold and color-coded — a rejected action, an error, or a
+// confirm can't be missed. Each is exactly one row plus its top margin, matching the
+// two lines chromeLines reserves so the view never overflows.
+func (m model) statusLine() (string, bool) {
+	switch {
+	case m.mode == modeNewAgent:
+		s := lipgloss.NewStyle().Bold(true).Foreground(m.accent).MarginTop(1)
+		return s.Render(m.fitLine("new worktree name: " + m.input + "▌  (enter to create, esc to cancel)")), true
+	case m.mode == modeConfirmDelete:
+		s := lipgloss.NewStyle().Bold(true).Foreground(lipColor(theme.Red)).MarginTop(1)
+		return s.Render(m.fitLine(fmt.Sprintf("worktree %q has uncommitted changes — force remove? (y/n)", m.target.Worktree))), true
+	case m.notice != "":
+		return m.renderNotice(), true
+	}
+	return "", false
+}
+
+// renderNotice styles the transient notice by level: a red "✗" for an error or
+// rejection, an accent "•" for neutral info — the glyph carries the meaning so it reads
+// without color too (DESIGN.md: never rely on color alone).
+func (m model) renderNotice() string {
+	glyph, color := errGlyph, lipColor(theme.Red)
+	if m.noticeLevel == noticeInfo {
+		glyph, color = infoGlyph, m.accent
+	}
+	s := lipgloss.NewStyle().Bold(true).Foreground(color).MarginTop(1)
+	return s.Render(m.fitLine(glyph + " " + m.notice))
+}
+
+// fitLine truncates a status line to the terminal width so it stays a single row; a
+// wrapped line would add a row the height budget did not reserve and scroll the top
+// off-screen.
+func (m model) fitLine(s string) string {
+	if m.width > 1 {
+		return truncate(s, m.width-1)
+	}
+	return s
 }
 
 func (m model) emptyView() string {
@@ -814,18 +1022,24 @@ func groupRank(rows []Row) int {
 	return r
 }
 
-// renderRows draws each visible item: a leftmost cursor column, then the session bar
-// or the fixed-column leaf row. Rows under a folded session are skipped.
+// renderRows draws the visible window of items: a leftmost cursor column, then the
+// session bar or the fixed-column leaf row. Rows under a folded session are skipped,
+// and only the slice [top, top+cap) is drawn so the list never overflows the panel.
+// The window top is recomputed here (not just trusted from the model) so a View called
+// without a prior Update — e.g. directly in a test — still keeps the cursor on-screen.
 func (m model) renderRows() string {
+	vis := m.visibleItems()
+	h := m.listCap()
+	top := windowTop(m.top, m.selVisiblePos(vis), h, len(vis))
+	end := min(top+h, len(vis))
+
 	selItem := -1
 	if m.cursor >= 0 && m.cursor < len(m.nav) {
 		selItem = m.nav[m.cursor]
 	}
-	var rows []string
-	for i, it := range m.items {
-		if it.kind == kindRow && m.folded[it.sessionKey] {
-			continue // hidden beneath a folded session
-		}
+	rows := make([]string, 0, end-top)
+	for _, i := range vis[top:end] {
+		it := m.items[i]
 		selected := i == selItem
 		rows = append(rows, m.cursorCol(selected)+m.rowBody(it, selected))
 	}
@@ -938,13 +1152,10 @@ func (m model) renderPreview(list string) string {
 
 	// Inner content height: fill the terminal but leave room for everything
 	// stacked around it, so the whole view never exceeds m.height (which would
-	// scroll the list out of view). Budget: this frame's border (2) + help text
-	// and its top margin (2) = 4. The title now lives in the border, not a body
-	// line, so it costs no inner row.
-	inner := m.height - 4
-	if inner < 1 {
-		inner = 1
-	}
+	// scroll the list out of view). contentRows already nets out this frame's
+	// border, the help line, and any active notice/modal line — the list window
+	// uses the same budget, so the two panes line up.
+	inner := m.contentRows()
 
 	lines := previewLines(m.preview, inner, w)
 	if len(lines) == 0 {

@@ -309,6 +309,141 @@ func TestViewFitsTerminalHeightWithTallPreview(t *testing.T) {
 	}
 }
 
+func TestViewFitsHeightWithNoticeLine(t *testing.T) {
+	// The original bug: pressing n on a non-managed row adds a notice line, and the
+	// body did not shrink to make room — so the total view exceeded m.height and the
+	// alt-screen scrolled the top rows (and the preview top) out of view. The notice
+	// must steal from the body budget, never overflow.
+	prev := &fakePreviewer{out: map[string]string{}}
+	for _, dim := range []struct{ w, h int }{{120, 24}, {160, 30}, {80, 20}} {
+		m := mustModel(t, agentsN(40), prev, DefaultKeymap())
+		m.orch = &fakeOrch{}
+		m.width, m.height = dim.w, dim.h
+		m.syncViewport()
+		if h := lipgloss.Height(m.View()); h > m.height {
+			t.Fatalf("normal at %dx%d: height %d exceeds terminal height %d", dim.w, dim.h, h, m.height)
+		}
+		// n on a non-managed row surfaces the "place the cursor inside a managed repo"
+		// notice; the view must still fit.
+		nm, _ := m.Update(key("n"))
+		mn := nm.(model)
+		if mn.notice == "" {
+			t.Fatalf("expected a notice after n on a non-managed row")
+		}
+		if h := lipgloss.Height(mn.View()); h > mn.height {
+			t.Fatalf("with notice at %dx%d: height %d exceeds terminal height %d", dim.w, dim.h, h, mn.height)
+		}
+	}
+}
+
+func TestListWindowsToCursorAndFits(t *testing.T) {
+	// A list far taller than the terminal must window to the cursor: the view fits the
+	// height, the selected (bottom) row is on-screen, and the off-window top has
+	// scrolled away.
+	list := make([]Agent, 40)
+	for i := range list {
+		id := fmt.Sprintf("sess%02d", i)
+		list[i] = Agent{SessionID: id, Title: fmt.Sprintf("row%02d", i), Status: StatusWorking, TmuxSession: id}
+	}
+	m := mustModel(t, list, nil, DefaultKeymap())
+	m.width, m.height = 80, 16
+
+	nm, _ := m.Update(key("G"))
+	m = nm.(model)
+	v := m.View()
+	if h := lipgloss.Height(v); h > m.height {
+		t.Fatalf("windowed view height %d exceeds terminal height %d:\n%s", h, m.height, v)
+	}
+	if !strings.Contains(v, "row39") {
+		t.Fatalf("the bottom row must be visible after G:\n%s", v)
+	}
+	if strings.Contains(v, "row00") {
+		t.Fatalf("the top row should have scrolled out of the window:\n%s", v)
+	}
+
+	// Back to the top brings the first row into view and pushes the bottom out.
+	nm, _ = m.Update(key("g"))
+	m = nm.(model)
+	nm, _ = m.Update(key("g"))
+	m = nm.(model)
+	v = m.View()
+	if !strings.Contains(v, "row00") {
+		t.Fatalf("the top row must be visible after gg:\n%s", v)
+	}
+	if strings.Contains(v, "row39") {
+		t.Fatalf("the bottom row should be out of the window after gg:\n%s", v)
+	}
+}
+
+func TestNoticeIsNotable(t *testing.T) {
+	// Feedback must be impossible to miss: an error/rejection carries the ✗ glyph, a
+	// neutral confirmation the • glyph (so it reads without color, not the faint help
+	// line that made the rejection look like nothing happened).
+	m := mustModel(t, agentsN(2), nil, DefaultKeymap())
+	m.orch = &fakeOrch{}
+	m.width, m.height = 100, 20
+
+	// n on a non-managed row → error notice with ✗.
+	nm, _ := m.Update(key("n"))
+	mn := nm.(model)
+	if mn.noticeLevel != noticeError || !strings.Contains(mn.View(), errGlyph) {
+		t.Fatalf("an error notice should render the %q glyph:\n%s", errGlyph, mn.View())
+	}
+
+	// A neutral info notice (e.g. delete cancelled) uses • instead.
+	mn.setInfo("delete cancelled")
+	v := mn.View()
+	if !strings.Contains(v, infoGlyph) || strings.Contains(v, errGlyph) {
+		t.Fatalf("an info notice should render %q (not %q):\n%s", infoGlyph, errGlyph, v)
+	}
+}
+
+func TestNoticeAutoDismissAndClearOnMove(t *testing.T) {
+	m := mustModel(t, agentsN(3), nil, DefaultKeymap())
+	m.orch = &fakeOrch{}
+	m.width, m.height = 100, 20
+
+	// n on a non-managed row sets an error notice and arms an auto-dismiss timer.
+	nm, cmd := m.Update(key("n"))
+	m = nm.(model)
+	if m.notice == "" {
+		t.Fatal("expected an error notice after n on a non-managed row")
+	}
+	if cmd == nil {
+		t.Fatal("a fresh notice should arm an auto-dismiss command")
+	}
+	gen := m.noticeGen
+
+	// A stale expiry (an older generation) must not clear the current notice.
+	nm, _ = m.Update(noticeExpireMsg{gen - 1})
+	m = nm.(model)
+	if m.notice == "" {
+		t.Fatal("a stale-generation expiry must not clear a newer notice")
+	}
+
+	// The matching expiry dismisses it.
+	nm, _ = m.Update(noticeExpireMsg{gen})
+	m = nm.(model)
+	if m.notice != "" {
+		t.Fatalf("the matching expiry should dismiss the notice, got %q", m.notice)
+	}
+
+	// Re-arm a notice, then move the cursor: it clears at once and the move still happens.
+	nm, _ = m.Update(key("n"))
+	m = nm.(model)
+	if m.notice == "" {
+		t.Fatal("precondition: notice re-armed")
+	}
+	nm, _ = m.Update(key("j"))
+	m = nm.(model)
+	if m.notice != "" {
+		t.Fatalf("moving the cursor should clear the notice, got %q", m.notice)
+	}
+	if m.cursor != 1 {
+		t.Fatalf("the move should still happen (cursor 1), got %d", m.cursor)
+	}
+}
+
 func TestViewEmptyState(t *testing.T) {
 	m := mustModel(t, nil, nil, DefaultKeymap())
 	if !strings.Contains(m.View(), "No agents") {
