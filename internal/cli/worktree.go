@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -11,42 +10,27 @@ import (
 )
 
 func newWorktreeCmd() *cobra.Command {
-	var root string
-
 	cmd := &cobra.Command{
 		Use:   "worktree",
-		Short: "Manage repos as <root>/<repo>/main plus sibling worktrees",
-	}
-	cmd.PersistentFlags().StringVar(&root, "root", "", "managed repositories root (defaults to config worktree.root or ~/code)")
-
-	resolveRoot := func() (string, error) {
-		if root != "" {
-			return root, nil
-		}
-		cfg, err := loadConfig()
-		if err != nil {
-			return "", err
-		}
-		if cfg.Worktree.Root != "" {
-			return cfg.Worktree.Root, nil
-		}
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		return filepath.Join(home, "code"), nil
+		Short: "Manage repos as <repo>/<default-branch> plus sibling worktrees, anywhere on disk",
 	}
 
 	clone := &cobra.Command{
-		Use:   "clone <url>",
-		Short: "Clone a repository into <root>/<repo>/main",
-		Args:  cobra.ExactArgs(1),
+		Use:   "clone <url> [parent]",
+		Short: "Clone a repository into <parent>/<repo>/<default-branch> (parent defaults to the current directory)",
+		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := resolveRoot()
-			if err != nil {
-				return err
+			parent := ""
+			if len(args) == 2 {
+				parent = args[1]
+			} else {
+				cwd, err := os.Getwd()
+				if err != nil {
+					return err
+				}
+				parent = cwd
 			}
-			mainDir, existed, err := worktree.Clone(r, args[0])
+			dir, existed, err := worktree.Clone(parent, args[0])
 			if err != nil {
 				return err
 			}
@@ -54,25 +38,25 @@ func newWorktreeCmd() *cobra.Command {
 			if existed {
 				verb = "Already cloned"
 			}
-			fmt.Printf("%s %s  %s\n", okMark.Render("✓"), verb, hintStyle.Render(mainDir))
+			fmt.Printf("%s %s  %s\n", okMark.Render("✓"), verb, hintStyle.Render(dir))
 			return nil
 		},
 	}
 
 	add := &cobra.Command{
-		Use:   "add <repo> <name> [branch]",
-		Short: "Add a sibling worktree <root>/<repo>/<name>",
-		Args:  cobra.RangeArgs(2, 3),
+		Use:   "add <name> [branch]",
+		Short: "Add a sibling worktree from inside a managed repo",
+		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := resolveRoot()
+			cwd, err := os.Getwd()
 			if err != nil {
 				return err
 			}
 			branch := ""
-			if len(args) == 3 {
-				branch = args[2]
+			if len(args) == 2 {
+				branch = args[1]
 			}
-			dir, err := worktree.Add(r, args[0], args[1], branch)
+			dir, err := worktree.Add(cwd, args[0], branch)
 			if err != nil {
 				return err
 			}

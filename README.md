@@ -29,8 +29,9 @@ bird's-eye draws on ideas/visuals/concepts from these projects:
   their status (needs-attention / working / idle / done), so you know which need
   you. It **updates live** as sessions change, shows a **preview** of the selected
   session's terminal, and navigates with **vim-native, configurable** keys.
-- **`be worktree`** — clone a repo into `<root>/<repo>/main` and spin up sibling
-  worktrees, each surfaced as a session candidate.
+- **`be worktree`** — clone a repo into `<parent>/<repo>/<default-branch>` (anywhere on
+  disk) and spin up sibling worktrees from inside it; worktrees discovered under
+  optional configured roots are surfaced as session candidates.
 - **Modular providers** — add a new way to create sessions by implementing one
   small Go interface.
 
@@ -63,8 +64,8 @@ any compatible machine and run it; no Go toolchain required.
 ```sh
 be                    # open the picker (same as `be list`)
 be agents             # agent status view
-be worktree clone <url>
-be worktree add <repo> <name> [branch]
+be worktree clone <url> [parent]   # → <parent-or-cwd>/<repo>/<default-branch>
+be worktree add <name> [branch]    # run from inside the repo; new sibling worktree
 ```
 
 ### Recommended tmux popup keybinding
@@ -119,7 +120,10 @@ use_zoxide = true
 roots = ["~/projects", "~/work"]
 
 [worktree]
-root = "~/code"                       # managed repos live here
+# Optional discovery paths scanned for managed repos (each a <repo>/<default-branch>
+# container of git worktrees). Worktrees can live anywhere; these only feed the picker.
+# Omit or leave empty to list none.
+roots = ["~/code", "~/work"]
 
 [agents]
 stale_after  = "5m"                   # status older than this shows as "unknown"

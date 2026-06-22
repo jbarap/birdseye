@@ -11,21 +11,22 @@ const Type = "worktree"
 
 // Provider surfaces managed repositories' worktrees as session candidates.
 type Provider struct {
-	root string
+	roots []string
 }
 
-// NewProvider returns a Provider listing worktrees under root.
-func NewProvider(root string) *Provider { return &Provider{root: root} }
+// NewProvider returns a Provider listing worktrees discovered under roots. When roots
+// is empty it yields no candidates.
+func NewProvider(roots []string) *Provider { return &Provider{roots: roots} }
 
 // Type returns the provider's source tag.
 func (p *Provider) Type() string { return Type }
 
 // Candidates returns one create candidate per managed worktree directory.
 func (p *Provider) Candidates() ([]provider.Candidate, error) {
-	if p.root == "" {
+	if len(p.roots) == 0 {
 		return nil, nil
 	}
-	managed, err := List(p.root)
+	managed, err := List(p.roots...)
 	if err != nil {
 		return nil, err
 	}

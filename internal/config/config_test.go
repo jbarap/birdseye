@@ -78,6 +78,44 @@ quit = ["q"]
 	}
 }
 
+func TestLoadParsesWorktreeRoots(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	body := `
+[worktree]
+roots = ["~/code", "/work/repos"]
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadFrom(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Worktree.Roots) != 2 || cfg.Worktree.Roots[0] != "~/code" {
+		t.Fatalf("worktree.roots not parsed: %v", cfg.Worktree.Roots)
+	}
+}
+
+func TestLoadRejectsLegacyWorktreeRoot(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	body := `
+[worktree]
+root = "~/code"
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadFrom(path)
+	if err == nil {
+		t.Fatal("expected the retired [worktree] root key to be rejected")
+	}
+	if !contains(err.Error(), "roots") {
+		t.Fatalf("error should point to the new roots key, got %q", err.Error())
+	}
+}
+
 func TestLoadMalformedReportsFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")

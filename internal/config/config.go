@@ -47,11 +47,13 @@ type Dir struct {
 	Roots []string `toml:"roots"`
 }
 
-// Worktree configures the git-worktree provider and command.
+// Worktree configures the git-worktree provider.
 type Worktree struct {
-	// Root is the directory under which managed repositories live, each as
-	// <root>/<repo>/main plus sibling worktrees.
-	Root string `toml:"root"`
+	// Roots are optional discovery directories scanned for managed repositories
+	// (each a <repo>/ container of git worktrees). It replaces the former single
+	// `root`; when empty the provider yields no candidates. Worktrees can live
+	// anywhere — these roots only feed the picker.
+	Roots []string `toml:"roots"`
 }
 
 // Agents configures the agent view. Agent state is now reclaimed by process
@@ -120,8 +122,16 @@ func LoadFrom(path string) (Config, error) {
 		}
 		return Default(), fmt.Errorf("reading config %s: %w", path, err)
 	}
-	if _, err := toml.Decode(string(data), &cfg); err != nil {
+	md, err := toml.Decode(string(data), &cfg)
+	if err != nil {
 		return Default(), fmt.Errorf("invalid config %s: %w", path, err)
+	}
+	// The single `[worktree] root` key was replaced by `roots` (a list of discovery
+	// paths). Fail loudly rather than silently ignoring an old config.
+	for _, key := range md.Undecoded() {
+		if key.String() == "worktree.root" {
+			return Default(), fmt.Errorf("invalid config %s: [worktree] root is no longer supported; use a list, e.g. roots = [\"~/code\"]", path)
+		}
 	}
 	return cfg, nil
 }
