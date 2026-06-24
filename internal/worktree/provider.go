@@ -7,9 +7,9 @@ import (
 )
 
 // Type is the provider's source tag.
-const Type = "worktree"
+const Type = "repo"
 
-// Provider surfaces managed repositories' worktrees as session candidates.
+// Provider surfaces discovered repositories as session candidates — one per repo.
 type Provider struct {
 	roots []string
 }
@@ -21,7 +21,8 @@ func NewProvider(roots []string) *Provider { return &Provider{roots: roots} }
 // Type returns the provider's source tag.
 func (p *Provider) Type() string { return Type }
 
-// Candidates returns one create candidate per managed worktree directory.
+// Candidates returns one create candidate per discovered repository, opening a session at
+// the repo's primary worktree.
 func (p *Provider) Candidates() ([]provider.Candidate, error) {
 	if len(p.roots) == 0 {
 		return nil, nil
@@ -32,29 +33,27 @@ func (p *Provider) Candidates() ([]provider.Candidate, error) {
 	}
 	var out []provider.Candidate
 	for _, m := range managed {
-		for _, d := range m.Dirs {
-			name := sessionName(m.Repo, d.Name)
-			path := d.Path
-			out = append(out, provider.Candidate{
-				Name:  name,
-				Label: m.Repo + "/" + d.Name,
-				Type:  Type,
-				Kind:  provider.KindCreate,
-				Dir:   path,
-				Action: func(b provider.Backend) error {
-					if err := b.Ensure(name, path); err != nil {
-						return err
-					}
-					return b.Connect(name)
-				},
-			})
-		}
+		name := sessionName(m.Repo)
+		path := m.Path
+		out = append(out, provider.Candidate{
+			Name:  name,
+			Label: m.Repo,
+			Type:  Type,
+			Kind:  provider.KindCreate,
+			Dir:   path,
+			Action: func(b provider.Backend) error {
+				if err := b.Ensure(name, path); err != nil {
+					return err
+				}
+				return b.Connect(name)
+			},
+		})
 	}
 	return out, nil
 }
 
-// sessionName builds a tmux-safe session name from repo and worktree names.
-func sessionName(repo, wt string) string {
+// sessionName builds a tmux-safe session name from a repo name.
+func sessionName(repo string) string {
 	r := strings.NewReplacer(".", "_", ":", "_", " ", "_", "/", "-")
-	return r.Replace(repo + "-" + wt)
+	return r.Replace(repo)
 }

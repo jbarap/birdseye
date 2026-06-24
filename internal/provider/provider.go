@@ -42,7 +42,7 @@ type Candidate struct {
 	// Label is the human-facing display text.
 	Label string
 	// Type is the source tag used for grouping, labeling, and config keys
-	// (e.g. "tmux", "tmuxp", "dir", "worktree").
+	// (e.g. "tmux", "tmuxp", "dir", "repo").
 	Type string
 	// Kind records whether selecting this attaches or creates.
 	Kind Kind

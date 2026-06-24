@@ -29,7 +29,7 @@ Defined in `internal/theme`. Each color carries a 24-bit hex and a 256-color fal
 | `Blue` | `#4ea8ff` | tmux/sessions type color; agents **idle** status |
 | `Coral` | `#ff7a6b` | tmuxp template type color (and only that — no longer the primary accent) |
 | `Gold` | `#f5c542` | dir type color; agents **working** status |
-| `Green` | `#4ec98a` | worktree / success; the picker "create" mark |
+| `Green` | `#4ec98a` | repo / success; the picker "create" mark |
 | `Red` | `#ff6b6b` | agents **needs-attention**; errors |
 | `Gray` | `#8a8a8a` | dim / unlisted; agents **done** and **unknown** |
 | `Border` | `#3a3a3a` | borders and info chrome |

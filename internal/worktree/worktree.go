@@ -4,8 +4,10 @@
 // — a repository and its worktrees are derived from `git worktree list` and the shared git
 // directory (`git rev-parse --git-common-dir`), not from any path convention — so any
 // on-disk layout is recognized, including worktrees a user or another tool created.
-// Worktrees discovered under optional configured roots are surfaced to the picker as
-// session candidates.
+// Repositories discovered under optional configured roots are surfaced to the picker as
+// one session candidate each (opening a repo lands on its primary worktree); the repo's
+// linked worktrees are managed as windows inside that session by the agents view, not as
+// separate top-level candidates.
 package worktree
 
 import (
@@ -20,16 +22,10 @@ import (
 // ErrGitMissing is returned when git is required but not on PATH.
 var ErrGitMissing = errors.New("git is required but was not found on PATH")
 
-// Managed is a repository and the worktrees it contains.
+// Managed is a discovered repository: its name and the primary worktree to open into.
 type Managed struct {
 	Repo string // repository folder name (the primary worktree's base name)
-	Dirs []Dir  // the primary worktree plus its linked worktrees
-}
-
-// Dir is one worktree directory.
-type Dir struct {
-	Name string // e.g. "main", "feature-login"
-	Path string // absolute path
+	Path string // absolute path of the primary worktree — where opening the repo lands
 }
 
 // Worktree is one entry in a repository's git worktree set.
@@ -157,9 +153,7 @@ func slugifyBranch(branch string) string {
 }
 
 // List returns the managed repositories discovered under the given roots. A repository is
-// a git clone found directly under a root; its worktrees are enumerated from git
-// (`git worktree list`), so they are recognized wherever they live — including the
-// grouped-sibling `<repo>.worktrees/<slug>` directories and worktrees other tools made.
+// a git clone found directly under a root, reported once with its primary worktree path.
 // Repositories are de-duplicated by their shared git dir, so a linked worktree that
 // happens to sit under a root does not produce a second entry.
 func List(roots ...string) ([]Managed, error) {
@@ -193,11 +187,8 @@ func List(roots ...string) ([]Managed, error) {
 			if err != nil || len(wts) == 0 {
 				continue
 			}
-			var dirs []Dir
-			for _, w := range wts {
-				dirs = append(dirs, Dir{Name: filepath.Base(w.Path), Path: w.Path})
-			}
-			out = append(out, Managed{Repo: filepath.Base(primaryPath(wts)), Dirs: dirs})
+			primary := primaryPath(wts)
+			out = append(out, Managed{Repo: filepath.Base(primary), Path: primary})
 		}
 	}
 	return out, nil

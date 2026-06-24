@@ -89,7 +89,7 @@ directory, with the session named after the directory.
 
 The system SHALL expose the provider registry's session candidates non-interactively via
 `be sessions --json`, serializing the same candidates the interactive fzf picker draws —
-running sessions, templates, directory roots, and worktrees — over the **same** registry,
+running sessions, templates, directory roots, and repositories — over the **same** registry,
 with no duplication of provider logic. Each emitted candidate SHALL carry the fields a
 client needs to act on it, including its name, label, type, kind (attach vs create), and
 the directory it would be rooted in (where applicable), so the output can feed

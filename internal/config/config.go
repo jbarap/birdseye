@@ -28,10 +28,10 @@ type Config struct {
 	// type to "" to hide its icon.
 	Icons map[string]string `toml:"icons"`
 
-	Tmuxp    Tmuxp    `toml:"tmuxp"`
-	Dir      Dir      `toml:"dir"`
-	Worktree Worktree `toml:"worktree"`
-	Agents   Agents   `toml:"agents"`
+	Tmuxp  Tmuxp  `toml:"tmuxp"`
+	Dir    Dir    `toml:"dir"`
+	Repo   Repo   `toml:"repo"`
+	Agents Agents `toml:"agents"`
 }
 
 // Tmuxp configures the tmuxp templates provider.
@@ -49,12 +49,11 @@ type Dir struct {
 	Roots []string `toml:"roots"`
 }
 
-// Worktree configures the git-worktree provider.
-type Worktree struct {
-	// Roots are optional discovery directories scanned for managed repositories
-	// (each a <repo>/ container of git worktrees). It replaces the former single
-	// `root`; when empty the provider yields no candidates. Worktrees can live
-	// anywhere — these roots only feed the picker.
+// Repo configures the repository session provider.
+type Repo struct {
+	// Roots are optional discovery directories scanned for git repositories. Each
+	// repository found directly under a root becomes one picker candidate that opens a
+	// session at its primary worktree; when empty the provider yields no candidates.
 	Roots []string `toml:"roots"`
 }
 
@@ -106,18 +105,18 @@ func (a Agents) AgentCommand() string {
 func Default() Config {
 	return Config{
 		Providers: map[string]bool{},
-		Order:     []string{"tmux", "tmuxp", "dir", "worktree"},
+		Order:     []string{"tmux", "tmuxp", "dir", "repo"},
 		Labels: map[string]string{
-			"tmux":     "session",
-			"tmuxp":    "template",
-			"dir":      "dir",
-			"worktree": "worktree",
+			"tmux":  "session",
+			"tmuxp": "template",
+			"dir":   "dir",
+			"repo":  "repo",
 		},
 		Icons: map[string]string{
-			"tmux":     "", // oct-terminal
-			"tmuxp":    "󰏭", // md-pencil_box_outline
-			"dir":      "", // cod-folder
-			"worktree": "󰘬", // md-source_branch
+			"tmux":  "", // oct-terminal
+			"tmuxp": "󰏭", // md-pencil_box_outline
+			"dir":   "", // cod-folder
+			"repo":  "󰘬", // md-source_branch
 		},
 		Dir: Dir{UseZoxide: true},
 	}
@@ -158,11 +157,11 @@ func LoadFrom(path string) (Config, error) {
 	if err != nil {
 		return Default(), fmt.Errorf("invalid config %s: %w", path, err)
 	}
-	// The single `[worktree] root` key was replaced by `roots` (a list of discovery
-	// paths). Fail loudly rather than silently ignoring an old config.
+	// The provider's config moved from `[worktree]` (and its earlier single `root` key)
+	// to `[repo] roots`. Fail loudly rather than silently ignoring an old config.
 	for _, key := range md.Undecoded() {
-		if key.String() == "worktree.root" {
-			return Default(), fmt.Errorf("invalid config %s: [worktree] root is no longer supported; use a list, e.g. roots = [\"~/code\"]", path)
+		if strings.HasPrefix(key.String(), "worktree.") {
+			return Default(), fmt.Errorf("invalid config %s: the [worktree] section has been renamed; use [repo] with a roots list, e.g. roots = [\"~/code\"]", path)
 		}
 	}
 	cfg.expandPaths()
@@ -178,8 +177,8 @@ func (c *Config) expandPaths() {
 	for i, p := range c.Dir.Roots {
 		c.Dir.Roots[i] = expandTilde(p)
 	}
-	for i, p := range c.Worktree.Roots {
-		c.Worktree.Roots[i] = expandTilde(p)
+	for i, p := range c.Repo.Roots {
+		c.Repo.Roots[i] = expandTilde(p)
 	}
 }
 

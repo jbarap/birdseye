@@ -68,7 +68,7 @@ dir = "~/.tmuxp"
 [dir]
 roots = ["~/code", "~", "/abs/path", "relative/path"]
 
-[worktree]
+[repo]
 roots = ["~/projects/open_source"]
 `
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
@@ -87,8 +87,8 @@ roots = ["~/projects/open_source"]
 			t.Errorf("dir.roots[%d] = %q, want %q", i, cfg.Dir.Roots[i], w)
 		}
 	}
-	if want := filepath.Join(home, "projects/open_source"); cfg.Worktree.Roots[0] != want {
-		t.Errorf("worktree.roots[0] = %q, want %q", cfg.Worktree.Roots[0], want)
+	if want := filepath.Join(home, "projects/open_source"); cfg.Repo.Roots[0] != want {
+		t.Errorf("repo.roots[0] = %q, want %q", cfg.Repo.Roots[0], want)
 	}
 }
 
@@ -116,11 +116,11 @@ quit = ["q"]
 	}
 }
 
-func TestLoadParsesWorktreeRoots(t *testing.T) {
+func TestLoadParsesRepoRoots(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
 	body := `
-[worktree]
+[repo]
 roots = ["~/code", "/work/repos"]
 `
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
@@ -132,27 +132,27 @@ roots = ["~/code", "/work/repos"]
 	}
 	home, _ := os.UserHomeDir()
 	wantFirst := filepath.Join(home, "code")
-	if len(cfg.Worktree.Roots) != 2 || cfg.Worktree.Roots[0] != wantFirst || cfg.Worktree.Roots[1] != "/work/repos" {
-		t.Fatalf("worktree.roots not parsed/expanded: %v", cfg.Worktree.Roots)
+	if len(cfg.Repo.Roots) != 2 || cfg.Repo.Roots[0] != wantFirst || cfg.Repo.Roots[1] != "/work/repos" {
+		t.Fatalf("repo.roots not parsed/expanded: %v", cfg.Repo.Roots)
 	}
 }
 
-func TestLoadRejectsLegacyWorktreeRoot(t *testing.T) {
+func TestLoadRejectsLegacyWorktreeSection(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
 	body := `
 [worktree]
-root = "~/code"
+roots = ["~/code"]
 `
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	_, err := LoadFrom(path)
 	if err == nil {
-		t.Fatal("expected the retired [worktree] root key to be rejected")
+		t.Fatal("expected the retired [worktree] section to be rejected")
 	}
-	if !contains(err.Error(), "roots") {
-		t.Fatalf("error should point to the new roots key, got %q", err.Error())
+	if !contains(err.Error(), "repo") {
+		t.Fatalf("error should point to the new [repo] section, got %q", err.Error())
 	}
 }
 

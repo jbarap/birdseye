@@ -55,33 +55,42 @@ checks that branch out; an explicit branch argument is used as given.
   exists under `<repo>.worktrees/`
 - **THEN** the system declines to overwrite it and reports the conflict
 
-### Requirement: Worktrees as session candidates
+### Requirement: Repositories as session candidates
 
-The system SHALL expose worktrees discovered under an optional, configurable list of
-search paths (`[worktree] roots`) as session-provider candidates, so selecting one opens
-a tmux session rooted in that worktree directory. Discovery SHALL find git repositories
-under the configured roots and enumerate each repository's worktrees from git
-(`git worktree list`), rather than matching a `<repo>/<default-branch>` path shape. There
-is no single mandatory root; when no roots are configured the provider yields no
-candidates and worktrees remain usable through the CLI.
+The system SHALL expose git repositories discovered under an optional, configurable list
+of search paths (`[repo] roots`) as session-provider candidates — **one candidate per
+repository** — so selecting one opens a tmux session rooted in that repository's primary
+worktree. A repository's linked worktrees SHALL NOT appear as separate top-level
+candidates; under the sessions-represent-repos model they are managed as windows within
+the repository's session by the agent view. Discovery SHALL find git repositories directly
+under the configured roots, deriving each repository's primary worktree from git, rather
+than matching a `<repo>/<default-branch>` path shape. There is no single mandatory root;
+when no roots are configured the provider yields no candidates and repositories remain
+usable through the CLI.
 
-#### Scenario: Worktrees appear in picker
+#### Scenario: Repositories appear in picker
 
 - **WHEN** one or more `roots` are configured, each containing git repositories, and the
   provider is enabled
-- **THEN** the picker lists each repository's worktrees (enumerated from git) as
-  create/attach candidates, regardless of their on-disk layout
+- **THEN** the picker lists one create candidate per repository, regardless of its on-disk
+  layout, each opening a session at that repository's primary worktree
+
+#### Scenario: Linked worktrees are not separate candidates
+
+- **WHEN** a discovered repository has additional linked worktrees
+- **THEN** the picker still lists only the single repository candidate, not one entry per
+  worktree
 
 #### Scenario: No roots configured
 
-- **WHEN** the worktree provider is enabled but no `roots` are configured
+- **WHEN** the repository provider is enabled but no `roots` are configured
 - **THEN** the provider yields no candidates and does not error
 
-#### Scenario: Selecting a worktree opens its session
+#### Scenario: Selecting a repository opens its session
 
-- **WHEN** the user selects a worktree candidate
-- **THEN** the system ensures a tmux session rooted in that worktree directory and
-  connects to it via the tmux backend
+- **WHEN** the user selects a repository candidate
+- **THEN** the system ensures a tmux session rooted in the repository's primary worktree
+  and connects to it via the tmux backend
 
 ### Requirement: Git availability
 

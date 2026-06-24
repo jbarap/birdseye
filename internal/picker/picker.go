@@ -77,7 +77,7 @@ func colorOf(typ string) theme.Color {
 		return theme.Coral
 	case "dir":
 		return theme.Gold
-	case "worktree":
+	case "repo":
 		return theme.Green
 	default:
 		return theme.Gray

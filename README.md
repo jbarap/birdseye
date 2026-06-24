@@ -202,27 +202,27 @@ built-in defaults apply when absent. Example:
 
 ```toml
 # Display order of candidate types in the picker.
-order = ["tmux", "tmuxp", "dir", "worktree"]
+order = ["tmux", "tmuxp", "dir", "repo"]
 
 # Per-type display labels.
 [labels]
-tmux     = "session"
-tmuxp    = "template"
-dir      = "dir"
-worktree = "worktree"
+tmux  = "session"
+tmuxp = "template"
+dir   = "dir"
+repo  = "repo"
 
 # Per-type icons shown in the picker. Defaults are Nerd Font glyphs; override
 # with your own text/emoji, or set a type to "" to hide its icon. (Requires a
 # Nerd Font for the defaults to render.)
 [icons]
-tmux     = ""
-tmuxp    = "󰏭"
-dir      = ""
-worktree = "󰘬"
+tmux  = ""
+tmuxp = "󰏭"
+dir   = ""
+repo  = "󰘬"
 
 # Enable/disable providers by type (omit a type to leave it enabled).
 [providers]
-worktree = false
+repo = false
 
 [tmuxp]
 # dir = "/custom/tmuxp/config/dir"   # defaults to tmuxp's own config dir
@@ -231,9 +231,9 @@ worktree = false
 use_zoxide = true
 roots = ["~/projects", "~/work"]
 
-[worktree]
-# Optional discovery paths scanned for git repos. Each repo's worktrees are enumerated
-# from git (so they can live anywhere); these roots only feed the picker.
+[repo]
+# Optional discovery paths scanned for git repos. Each repo found directly under a root
+# becomes one `repo` picker candidate that opens a session at the repo's primary worktree.
 # Omit or leave empty to list none.
 roots = ["~/code", "~/work"]
 

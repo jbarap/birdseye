@@ -92,13 +92,13 @@ func TestListGitNative(t *testing.T) {
 	requireGitBinary(t)
 	root := t.TempDir()
 
-	// alpha: a clone with a grouped-sibling worktree.
+	// alpha: a clone with a grouped-sibling worktree — still reported once, at its primary.
 	alpha := filepath.Join(root, "alpha")
 	gitInit(t, alpha, "main")
 	gitCommit(t, alpha)
 	mustGit(t, alpha, "worktree", "add", filepath.Join(root, "alpha.worktrees", "feat"))
 
-	// solo: a clone with no extra worktrees — still a valid managed repo.
+	// solo: a clone with no extra worktrees.
 	solo := filepath.Join(root, "solo")
 	gitInit(t, solo, "main")
 	gitCommit(t, solo)
@@ -107,15 +107,18 @@ func TestListGitNative(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(got) != 2 {
+		t.Fatalf("expected one entry per repo (alpha, solo), got %+v", got)
+	}
 	byRepo := map[string]Managed{}
 	for _, m := range got {
 		byRepo[m.Repo] = m
 	}
-	if m, ok := byRepo["alpha"]; !ok || len(m.Dirs) != 2 {
-		t.Fatalf("expected alpha with 2 worktrees (primary + feat), got %+v (all=%+v)", byRepo["alpha"], got)
+	if m, ok := byRepo["alpha"]; !ok || filepath.Base(m.Path) != "alpha" {
+		t.Fatalf("expected alpha reported once at its primary worktree (base alpha, not feat), got %+v", byRepo["alpha"])
 	}
-	if m, ok := byRepo["solo"]; !ok || len(m.Dirs) != 1 || m.Dirs[0].Name != "solo" {
-		t.Fatalf("expected solo as a single-worktree managed repo, got %+v", byRepo["solo"])
+	if m, ok := byRepo["solo"]; !ok || filepath.Base(m.Path) != "solo" {
+		t.Fatalf("expected solo reported once at its primary worktree, got %+v", byRepo["solo"])
 	}
 }
 
@@ -165,15 +168,14 @@ func TestProviderCandidatesFromRoots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cands) != 2 {
-		t.Fatalf("expected 2 candidates, got %d", len(cands))
+	if len(cands) != 1 {
+		t.Fatalf("expected one candidate per repo, got %d", len(cands))
 	}
-	var names []string
-	for _, c := range cands {
-		names = append(names, c.Name)
+	if cands[0].Name != "alpha" || cands[0].Label != "alpha" {
+		t.Fatalf("expected a single alpha repo candidate, got %+v", cands[0])
 	}
-	if !containsStr(names, "alpha-wt1") {
-		t.Fatalf("expected an alpha-wt1 candidate, got %v", names)
+	if cands[0].Type != Type {
+		t.Fatalf("expected candidate type %q, got %q", Type, cands[0].Type)
 	}
 }
 
@@ -237,15 +239,6 @@ func mustMkdir(t *testing.T, p string) {
 	if err := os.MkdirAll(p, 0o755); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func containsStr(ss []string, want string) bool {
-	for _, s := range ss {
-		if s == want {
-			return true
-		}
-	}
-	return false
 }
 
 func requireGitBinary(t *testing.T) {
