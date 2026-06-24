@@ -25,7 +25,7 @@ aliases that route to the hooks tier, so existing instructions keep working.
 ### Requirement: Two independent opt-in tiers
 
 The install command SHALL expose two independent tiers selected by `--hooks` and
-`--workflows`: **hooks** (agent status detection) and **workflows** (bird's-eye-authored
+`--workflows`: **hooks** (agent status detection) and **workflows** (birdseye-authored
 skills/commands). Passing a flag SHALL install that tier; passing both SHALL install both.
 The tiers SHALL be independent — installing or removing one SHALL NOT require or affect the
 other. No tier SHALL ever be installed implicitly.
@@ -78,7 +78,7 @@ The hooks tier SHALL install and uninstall the agent's status hooks with the exi
 safety guarantees: it SHALL preserve all unrelated configuration and hooks, support a
 user-supplied settings path, record a backup before changing the settings file, operate
 idempotently, refuse to modify malformed settings, and on uninstall remove only the entries
-bird's-eye added.
+birdseye added.
 
 #### Scenario: Hooks install preserves existing config
 
@@ -95,12 +95,12 @@ bird's-eye added.
 #### Scenario: Hooks uninstall removes only its own entries
 
 - **WHEN** the user uninstalls the hooks tier
-- **THEN** only bird's-eye's hook entries are removed and all other configuration remains
+- **THEN** only birdseye's hook entries are removed and all other configuration remains
 
 ### Requirement: Workflows tier ships removable artifacts
 
-The workflows tier SHALL write bird's-eye-authored skill/command artifacts — shipped
-embedded in the binary — into the agent's configuration in a bird's-eye-namespaced
+The workflows tier SHALL write birdseye-authored skill/command artifacts — shipped
+embedded in the binary — into the agent's configuration in a birdseye-namespaced
 location, so they can be removed without touching the user's own skills. Install SHALL be
 idempotent (rewriting only changed artifacts) and SHALL back up or refuse to clobber a
 user-modified artifact rather than silently overwrite it. The artifacts SHALL be removable
@@ -111,7 +111,7 @@ SHALL include at least an orchestrator workflow and QA and PR workflows that com
 #### Scenario: Workflows install writes namespaced artifacts
 
 - **WHEN** the user installs the workflows tier
-- **THEN** the embedded skill/command artifacts are written into a bird's-eye-namespaced
+- **THEN** the embedded skill/command artifacts are written into a birdseye-namespaced
   location in the agent's config
 
 #### Scenario: Workflows install is idempotent
@@ -120,10 +120,10 @@ SHALL include at least an orchestrator workflow and QA and PR workflows that com
   unchanged
 - **THEN** the tool reports no change and does not rewrite unchanged artifacts
 
-#### Scenario: Workflows uninstall removes only bird's-eye artifacts
+#### Scenario: Workflows uninstall removes only birdseye artifacts
 
 - **WHEN** the user uninstalls the workflows tier
-- **THEN** only bird's-eye's artifacts are removed and the user's own skills are left intact
+- **THEN** only birdseye's artifacts are removed and the user's own skills are left intact
 
 #### Scenario: Removing workflows breaks nothing core
 
@@ -134,7 +134,7 @@ SHALL include at least an orchestrator workflow and QA and PR workflows that com
 
 `be agents uninstall <type>` SHALL accept the same `--hooks` / `--workflows` selection as
 install (with a checklist of currently-installed tiers when no flag is given in a terminal)
-and SHALL remove only bird's-eye's entries and artifacts for the chosen tiers.
+and SHALL remove only birdseye's entries and artifacts for the chosen tiers.
 
 #### Scenario: Uninstall a single tier
 

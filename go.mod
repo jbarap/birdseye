@@ -1,4 +1,4 @@
-module github.com/jbarap/birds-eye
+module github.com/jbarap/birdseye
 
 go 1.24.0
 

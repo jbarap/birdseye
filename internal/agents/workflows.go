@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 )
 
-// workflowFS holds the bird's-eye-authored workflow artifacts (skills/commands that
+// workflowFS holds the birdseye-authored workflow artifacts (skills/commands that
 // compose the `be agents` verbs), shipped *with* the binary so install needs no network
 // and the content matches the binary version. They are opinion, not core: the binary,
 // the verbs, and the hooks tier all work whether or not these are installed.
@@ -29,14 +29,14 @@ func workflowRoot(agentType string) (string, error) {
 }
 
 // workflowFile is one shipped artifact: its path relative to the agent config root
-// (e.g. skills/birds-eye-orchestrator/SKILL.md) and its embedded content.
+// (e.g. skills/birdseye-orchestrator/SKILL.md) and its embedded content.
 type workflowFile struct {
 	rel  string
 	data []byte
 }
 
 // shippedWorkflows reads the embedded artifacts for an agent type. Every artifact lives
-// under a bird's-eye-namespaced directory (skills/birds-eye-*), so uninstall can remove
+// under a birdseye-namespaced directory (skills/birdseye-*), so uninstall can remove
 // exactly the tool's files without touching the user's own skills.
 func shippedWorkflows(agentType string) ([]workflowFile, error) {
 	root, err := workflowRoot(agentType)
@@ -103,7 +103,7 @@ func InstallWorkflows(agentType, dst string) (changed bool, err error) {
 	return changed, nil
 }
 
-// UninstallWorkflows removes only the artifacts bird's-eye ships for agentType from dst,
+// UninstallWorkflows removes only the artifacts birdseye ships for agentType from dst,
 // then prunes any now-empty namespaced directories, leaving the user's own skills
 // intact. It is idempotent and reports whether anything was removed.
 func UninstallWorkflows(agentType, dst string) (changed bool, err error) {

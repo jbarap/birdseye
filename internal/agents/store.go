@@ -32,7 +32,7 @@ func StateDir() (string, error) {
 		}
 		base = filepath.Join(home, ".local", "state")
 	}
-	return filepath.Join(base, "birds-eye", "agents"), nil
+	return filepath.Join(base, "birdseye", "agents"), nil
 }
 
 // sanitize makes a session id safe as a file name.

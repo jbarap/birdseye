@@ -1,4 +1,4 @@
-// Package cli wires the bird's-eye commands together: it builds the provider
+// Package cli wires the birdseye commands together: it builds the provider
 // registry from config and tool availability, and routes the picker, agents,
 // worktree, and hook commands.
 package cli
@@ -11,16 +11,16 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
-	"github.com/jbarap/birds-eye/internal/config"
-	"github.com/jbarap/birds-eye/internal/picker"
-	"github.com/jbarap/birds-eye/internal/provider"
-	"github.com/jbarap/birds-eye/internal/providers/dir"
-	"github.com/jbarap/birds-eye/internal/providers/tmuxp"
-	"github.com/jbarap/birds-eye/internal/providers/tmuxsess"
-	"github.com/jbarap/birds-eye/internal/theme"
-	"github.com/jbarap/birds-eye/internal/tmux"
-	"github.com/jbarap/birds-eye/internal/tools"
-	"github.com/jbarap/birds-eye/internal/worktree"
+	"github.com/jbarap/birdseye/internal/config"
+	"github.com/jbarap/birdseye/internal/picker"
+	"github.com/jbarap/birdseye/internal/provider"
+	"github.com/jbarap/birdseye/internal/providers/dir"
+	"github.com/jbarap/birdseye/internal/providers/tmuxp"
+	"github.com/jbarap/birdseye/internal/providers/tmuxsess"
+	"github.com/jbarap/birdseye/internal/theme"
+	"github.com/jbarap/birdseye/internal/tmux"
+	"github.com/jbarap/birdseye/internal/tools"
+	"github.com/jbarap/birdseye/internal/worktree"
 )
 
 // Shared output styles. lipgloss auto-disables color when the target stream is
@@ -39,7 +39,7 @@ var (
 func Execute(version string) error {
 	root := &cobra.Command{
 		Use:           "be",
-		Short:         "bird's-eye — a live view over your tmux agent sessions",
+		Short:         "birdseye — a live view over your tmux agent sessions",
 		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,

@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jbarap/birds-eye/internal/config"
-	"github.com/jbarap/birds-eye/internal/provider"
+	"github.com/jbarap/birdseye/internal/config"
+	"github.com/jbarap/birdseye/internal/provider"
 )
 
 func TestOrderByType(t *testing.T) {

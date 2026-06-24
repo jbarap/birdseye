@@ -1,11 +1,11 @@
-// Package tools centralizes discovery of the external binaries bird's-eye drives.
+// Package tools centralizes discovery of the external binaries birdseye drives.
 // It probes PATH once so the rest of the program can branch on availability
 // instead of repeatedly shelling out.
 package tools
 
 import "os/exec"
 
-// Names of the external tools bird's-eye knows about.
+// Names of the external tools birdseye knows about.
 const (
 	Tmux   = "tmux"
 	Tmuxp  = "tmuxp"

@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/jbarap/birds-eye/internal/agents"
+	"github.com/jbarap/birdseye/internal/agents"
 )
 
 // newHookCmd is the parent for agent status hooks. Each agent type is a
@@ -59,10 +59,10 @@ func newClaudeHookCmd() *cobra.Command {
 				return err
 			}
 			if changed {
-				fmt.Printf("Installed bird's-eye hooks into %s\n", path)
+				fmt.Printf("Installed birdseye hooks into %s\n", path)
 				fmt.Printf("(a backup of the previous file is at %s.bak)\n", path)
 			} else {
-				fmt.Printf("bird's-eye hooks already up to date in %s\n", path)
+				fmt.Printf("birdseye hooks already up to date in %s\n", path)
 			}
 			fmt.Printf("Events: %v\n", agents.ManagedEvents)
 			return nil
@@ -75,7 +75,7 @@ func newClaudeHookCmd() *cobra.Command {
 
 	uninstall := &cobra.Command{
 		Use:        "uninstall",
-		Short:      "Remove only bird's-eye's hooks from your Claude settings",
+		Short:      "Remove only birdseye's hooks from your Claude settings",
 		Hidden:     true,
 		Deprecated: "use `be agents uninstall claude --hooks`",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -88,9 +88,9 @@ func newClaudeHookCmd() *cobra.Command {
 				return err
 			}
 			if changed {
-				fmt.Printf("Removed bird's-eye hooks from %s\n", path)
+				fmt.Printf("Removed birdseye hooks from %s\n", path)
 			} else {
-				fmt.Printf("No bird's-eye hooks found in %s\n", path)
+				fmt.Printf("No birdseye hooks found in %s\n", path)
 			}
 			return nil
 		},

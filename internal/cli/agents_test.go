@@ -3,9 +3,9 @@ package cli
 import (
 	"testing"
 
-	"github.com/jbarap/birds-eye/internal/agents"
-	"github.com/jbarap/birds-eye/internal/fleet"
-	"github.com/jbarap/birds-eye/internal/tmux"
+	"github.com/jbarap/birdseye/internal/agents"
+	"github.com/jbarap/birdseye/internal/fleet"
+	"github.com/jbarap/birdseye/internal/tmux"
 )
 
 // TestRemoveTargetsWindowByPaneID guards a recurring fragility: a tmux window index

@@ -72,7 +72,7 @@ existing invocations keep working.
 ### Requirement: Configuration loading
 
 The system SHALL load configuration from a user config file (under the platform config
-directory, e.g. `~/.config/birds-eye/`), applying built-in defaults when the file or
+directory, e.g. `~/.config/birdseye/`), applying built-in defaults when the file or
 individual keys are absent, and SHALL fail with a clear message on malformed config.
 
 #### Scenario: Defaults when no config present

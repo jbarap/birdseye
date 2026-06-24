@@ -1,12 +1,12 @@
 ---
-name: birds-eye-qa
-description: Run a QA pass on a coding agent's work using bird's-eye's `be agents` verbs — spawn a dedicated reviewer agent on the same branch's worktree (or a fresh one), have it run tests/lint/build and review the diff, and report findings back. Use when the user wants an independent quality check of work an agent produced.
+name: birdseye-qa
+description: Run a QA pass on a coding agent's work using birdseye's `be agents` verbs — spawn a dedicated reviewer agent on the same branch's worktree (or a fresh one), have it run tests/lint/build and review the diff, and report findings back. Use when the user wants an independent quality check of work an agent produced.
 ---
 
-# bird's-eye QA workflow
+# birdseye QA workflow
 
 You run an **independent** quality pass on work produced in a git worktree, using a
-separate agent so the reviewer's context is clean. Composed entirely from bird's-eye's
+separate agent so the reviewer's context is clean. Composed entirely from birdseye's
 stable headless verbs.
 
 ## The verbs you compose

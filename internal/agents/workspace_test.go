@@ -41,24 +41,22 @@ func rowsByKind(rows []Row) map[RowKind]int {
 
 func TestWorkspaceRecognizesManagedRepo(t *testing.T) {
 	// proj: primary clone (no agent → anchor), feat worktree (agent), spike worktree
-	// (window, no agent → slot), plus an incidental agent in /tmp.
+	// (window, no agent → slot). Every pane is a worktree of the one repo, so the
+	// session is managed.
 	const gd = "/code/proj/.git"
 	src := &fakeSource{list: []Agent{
 		{SessionID: "feat-agent", TmuxSession: "proj", TmuxWindow: "1", TmuxPane: "%2", Title: "feat", Status: StatusWorking},
-		{SessionID: "tmp-agent", TmuxSession: "proj", TmuxWindow: "3", TmuxPane: "%4", Title: "scratch", Status: StatusNeedsAttention},
 	}}
 	panes := fakePanes{list: []PaneInfo{
 		{Session: "proj", WindowIndex: "0", PaneID: "%1", StartPath: "/code/proj"},
 		{Session: "proj", WindowIndex: "1", PaneID: "%2", StartPath: "/code/proj.worktrees/feat"},
 		{Session: "proj", WindowIndex: "2", PaneID: "%3", StartPath: "/code/proj.worktrees/spike"},
-		{Session: "proj", WindowIndex: "3", PaneID: "%4", StartPath: "/tmp"},
 	}}
 	repos := &fakeRepos{
 		m: map[string]RepoInfo{
 			"/code/proj":                 repoAt(gd, "proj", "/code/proj", "proj", true),
 			"/code/proj.worktrees/feat":  repoAt(gd, "proj", "/code/proj.worktrees/feat", "feat", false),
 			"/code/proj.worktrees/spike": repoAt(gd, "proj", "/code/proj.worktrees/spike", "spike", false),
-			// /tmp is not a worktree → not present.
 		},
 		wts: map[string][]WorktreeInfo{
 			gd: {
@@ -80,11 +78,7 @@ func TestWorkspaceRecognizesManagedRepo(t *testing.T) {
 	}
 	byName := map[string]Row{}
 	for _, r := range rows {
-		key := r.Worktree
-		if r.Kind == RowAgent && r.Worktree == "" {
-			key = "incidental:" + r.SessionID
-		}
-		byName[key] = r
+		byName[r.Worktree] = r
 	}
 	if r := byName["proj"]; r.Kind != RowAnchor || !r.Managed {
 		t.Fatalf("the primary worktree should be the anchor, got %+v", r)
@@ -95,9 +89,70 @@ func TestWorkspaceRecognizesManagedRepo(t *testing.T) {
 	if r := byName["spike"]; r.Kind != RowSlot || r.Dir != "/code/proj.worktrees/spike" {
 		t.Fatalf("spike should be a slot, got %+v", r)
 	}
-	inc := byName["incidental:tmp-agent"]
-	if inc.Kind != RowAgent || inc.Worktree != "" || !inc.Managed {
-		t.Fatalf("tmp agent should be an incidental managed row, got %+v", inc)
+}
+
+func TestWorkspaceNonGitPaneDisqualifies(t *testing.T) {
+	// A session whose panes are mostly worktrees but include one non-git pane is not
+	// managed: it renders as plain agent rows, with no anchor/slot.
+	const gd = "/code/proj/.git"
+	src := &fakeSource{list: []Agent{
+		{SessionID: "feat-agent", TmuxSession: "proj", TmuxWindow: "1", TmuxPane: "%2", Title: "feat", Status: StatusWorking},
+		{SessionID: "tmp-agent", TmuxSession: "proj", TmuxWindow: "2", TmuxPane: "%3", Title: "scratch", Status: StatusIdle},
+	}}
+	panes := fakePanes{list: []PaneInfo{
+		{Session: "proj", WindowIndex: "0", PaneID: "%1", StartPath: "/code/proj"},
+		{Session: "proj", WindowIndex: "1", PaneID: "%2", StartPath: "/code/proj.worktrees/feat"},
+		{Session: "proj", WindowIndex: "2", PaneID: "%3", StartPath: "/tmp"}, // not a worktree
+	}}
+	repos := &fakeRepos{
+		m: map[string]RepoInfo{
+			"/code/proj":                repoAt(gd, "proj", "/code/proj", "proj", true),
+			"/code/proj.worktrees/feat": repoAt(gd, "proj", "/code/proj.worktrees/feat", "feat", false),
+		},
+		wts: map[string][]WorktreeInfo{gd: {
+			{Path: "/code/proj", Name: "proj", IsPrimary: true},
+			{Path: "/code/proj.worktrees/feat", Name: "feat"},
+		}},
+	}
+	rows, err := NewWorkspace(src, panes, repos).Rows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := rowsByKind(rows)
+	if counts[RowAnchor] != 0 || counts[RowSlot] != 0 {
+		t.Fatalf("a non-git pane should disqualify the session (no anchor/slot), got %+v rows=%+v", counts, rows)
+	}
+	for _, r := range rows {
+		if r.Managed {
+			t.Fatalf("a disqualified session should yield plain (unmanaged) rows, got %+v", r)
+		}
+	}
+}
+
+func TestWorkspaceForeignRepoPaneDisqualifies(t *testing.T) {
+	// A session with panes resolving to two different repositories is not managed.
+	const gdA, gdB = "/code/a/.git", "/code/b/.git"
+	src := &fakeSource{list: nil}
+	panes := fakePanes{list: []PaneInfo{
+		{Session: "mix", WindowIndex: "0", PaneID: "%1", StartPath: "/code/a"},
+		{Session: "mix", WindowIndex: "1", PaneID: "%2", StartPath: "/code/b"},
+	}}
+	repos := &fakeRepos{
+		m: map[string]RepoInfo{
+			"/code/a": repoAt(gdA, "a", "/code/a", "a", true),
+			"/code/b": repoAt(gdB, "b", "/code/b", "b", true),
+		},
+		wts: map[string][]WorktreeInfo{
+			gdA: {{Path: "/code/a", Name: "a", IsPrimary: true}},
+			gdB: {{Path: "/code/b", Name: "b", IsPrimary: true}},
+		},
+	}
+	rows, err := NewWorkspace(src, panes, repos).Rows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts := rowsByKind(rows); counts[RowAnchor] != 0 || counts[RowSlot] != 0 {
+		t.Fatalf("a two-repo session must not be managed, got %+v rows=%+v", counts, rows)
 	}
 }
 

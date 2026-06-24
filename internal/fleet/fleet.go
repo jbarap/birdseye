@@ -3,7 +3,7 @@
 // so neither holds private powers. It composes the tmux and worktree primitives
 // into the work lifecycle (list, status, spawn, close, delete, jump, send) and
 // derives durable `repo/worktree` handles from git and tmux on every call — never
-// from persisted state, so an agent bird's-eye did not spawn is addressable for
+// from persisted state, so an agent birdseye did not spawn is addressable for
 // free.
 package fleet
 
@@ -13,10 +13,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/jbarap/birds-eye/internal/agents"
-	"github.com/jbarap/birds-eye/internal/providers/dir"
-	"github.com/jbarap/birds-eye/internal/tmux"
-	"github.com/jbarap/birds-eye/internal/worktree"
+	"github.com/jbarap/birdseye/internal/agents"
+	"github.com/jbarap/birdseye/internal/providers/dir"
+	"github.com/jbarap/birdseye/internal/tmux"
+	"github.com/jbarap/birdseye/internal/worktree"
 )
 
 // Fleet performs the work-lifecycle operations over a tmux client and the git
@@ -87,7 +87,7 @@ func (f *Fleet) rows() ([]agents.Row, error) {
 func kindOf(r agents.Row) string {
 	switch {
 	case r.Kind == agents.RowAnchor:
-		return "anchor"
+		return "base"
 	case r.Kind == agents.RowSlot:
 		return "slot"
 	case r.Worktree != "":

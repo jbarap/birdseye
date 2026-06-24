@@ -1,27 +1,4 @@
-# agents-cli Specification
-
-## Purpose
-TBD - created by archiving change agents-headless-cli. Update Purpose after archive.
-## Requirements
-### Requirement: Headless agent verbs
-
-The system SHALL expose agent lifecycle operations as headless `be agents` subcommands —
-`list`, `status`, `spawn`, `send`, `jump`, `close`, and `delete` — usable by any client
-that can run a shell, with no interactive UI required. These verbs and the `be dash` TUI
-SHALL resolve to the **same** underlying operations, so an operation performed through a
-verb is identical to the corresponding action performed in the dash (lifecycle parity).
-
-#### Scenario: Verbs are available headlessly
-
-- **WHEN** a script or another process runs `be agents <verb> …` in a non-interactive
-  shell
-- **THEN** the verb executes and returns its result without launching the TUI
-
-#### Scenario: Verb and dash operations are the same
-
-- **WHEN** the same lifecycle operation is invoked through a `be agents` verb and through
-  the corresponding `be dash` action
-- **THEN** both go through one shared operation layer and produce the same effect
+## MODIFIED Requirements
 
 ### Requirement: Durable derived addressing
 
@@ -65,34 +42,6 @@ verb SHALL fail and list the disambiguating paths rather than act on a guess.
 - **WHEN** a handle could resolve to two repositories sharing a basename in the active set
 - **THEN** the verb exits non-zero and lists the candidate paths instead of acting on
   either
-
-### Requirement: Directory-based spawn
-
-The system SHALL provide `be agents spawn <dir>` that takes any directory on disk,
-resolves it to its repository, ensures-or-reuses that repository's tmux session, creates a
-sibling worktree (for a `--branch`, applying the grouped-sibling layout), opens a tmux
-window rooted in the new worktree, and starts the configured agent command — optionally
-seeding it with `--prompt`. `spawn` SHALL be independently usable without any pre-existing
-tmux state, and SHALL print the new worktree's handle. If the repository's session already
-exists it SHALL be reused, not duplicated.
-
-#### Scenario: Spawn from a bare directory
-
-- **WHEN** a client runs `be agents spawn <dir> --branch <b>` and no tmux session exists
-  for that repository
-- **THEN** the system creates the repository's session, adds a sibling worktree for
-  `<b>`, opens a window rooted there, starts the agent, and prints the new handle
-
-#### Scenario: Spawn reuses an existing session
-
-- **WHEN** the repository for `<dir>` already has a tmux session
-- **THEN** `spawn` adds the worktree and window into that existing session rather than
-  creating a duplicate
-
-#### Scenario: Spawn seeds an initial prompt
-
-- **WHEN** a client runs `be agents spawn <dir> --branch <b> --prompt <p>`
-- **THEN** the started agent receives `<p>` as its initial input
 
 ### Requirement: Data verbs emit a stable JSON contract
 
@@ -160,23 +109,3 @@ NOT be removed unless `--force` is given. A base (primary-worktree) handle SHALL
 - **WHEN** a client runs `be agents delete <repo>` against a base (primary) worktree
 - **THEN** the system refuses and exits non-zero, because git cannot remove a primary
   worktree
-
-### Requirement: jump and best-effort send
-
-The system SHALL provide `be agents jump <handle>` that connects the caller's tmux client
-to the work's session/window/pane, and `be agents send <handle> <input>` that dispatches
-input to the work's agent via tmux. `send` SHALL be **best-effort**: because tmux
-`send-keys` has no readiness signal, the verb SHALL report what it dispatched, not confirm
-receipt, and clients needing confirmation SHALL poll `status`.
-
-#### Scenario: jump connects to the work's pane
-
-- **WHEN** a user runs `be agents jump <handle>` from inside tmux
-- **THEN** the tmux client switches to that work's session/window/pane
-
-#### Scenario: send dispatches input best-effort
-
-- **WHEN** a client runs `be agents send <handle> <input>`
-- **THEN** the system dispatches `<input>` to the work's agent and reports it as sent,
-  without guaranteeing the agent was ready to receive it
-

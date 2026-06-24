@@ -1,8 +1,8 @@
-# bird's-eye — working notes
+# birdseye — working notes
 
 ## Design language
 
-bird's-eye has a single visual language documented in [DESIGN.md](DESIGN.md). Read it before
+birdseye has a single visual language documented in [DESIGN.md](DESIGN.md). Read it before
 touching any UI surface (the picker, the agents view, CLI chrome).
 
 Key rules:

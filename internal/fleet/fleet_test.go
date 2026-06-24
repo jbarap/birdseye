@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jbarap/birds-eye/internal/agents"
-	"github.com/jbarap/birds-eye/internal/tmux"
+	"github.com/jbarap/birdseye/internal/agents"
+	"github.com/jbarap/birdseye/internal/tmux"
 )
 
 type fakeSource struct{ list []agents.Agent }
@@ -44,19 +44,21 @@ func fakeClient() *tmux.Client {
 	}, false)
 }
 
-// projFleet builds a fleet over a managed `proj` repo: a primary worktree (anchor, no
-// agent), a `feat` worktree with a live agent, a windowless `spike` slot, and an
-// incidental agent in /tmp.
+// projFleet builds a fleet over a managed `proj` repo — a primary worktree (base, no
+// agent), a `feat` worktree with a live agent, and a windowless `spike` slot — plus a
+// separate plain `misc` session holding an incidental agent in /tmp (addressed by pane
+// id). The incidental agent lives in its own session because a non-worktree pane would
+// disqualify the managed `proj` session from recognition.
 func projFleet() *Fleet {
 	const gd = "/code/proj/.git"
 	src := fakeSource{list: []agents.Agent{
 		{SessionID: "feat-agent", TmuxSession: "proj", TmuxWindow: "1", TmuxPane: "%2", Title: "feat", Status: agents.StatusWorking},
-		{SessionID: "tmp-agent", TmuxSession: "proj", TmuxWindow: "3", TmuxPane: "%4", Title: "scratch", Status: agents.StatusNeedsAttention},
+		{SessionID: "tmp-agent", TmuxSession: "misc", TmuxWindow: "0", TmuxPane: "%4", Title: "scratch", Status: agents.StatusNeedsAttention},
 	}}
 	panes := fakePanes{list: []agents.PaneInfo{
 		{Session: "proj", WindowIndex: "0", PaneID: "%1", StartPath: "/code/proj"},
 		{Session: "proj", WindowIndex: "1", PaneID: "%2", StartPath: "/code/proj.worktrees/feat"},
-		{Session: "proj", WindowIndex: "3", PaneID: "%4", StartPath: "/tmp"},
+		{Session: "misc", WindowIndex: "0", PaneID: "%4", StartPath: "/tmp"},
 	}}
 	repos := fakeRepos{
 		m: map[string]agents.RepoInfo{
@@ -88,8 +90,8 @@ func TestHandlesAndKinds(t *testing.T) {
 		byHandle[r.Handle] = r
 	}
 
-	if r, ok := byHandle["proj"]; !ok || r.Kind != "anchor" {
-		t.Fatalf("expected `proj` anchor record, got %+v", r)
+	if r, ok := byHandle["proj"]; !ok || r.Kind != "base" {
+		t.Fatalf("expected `proj` base record, got %+v", r)
 	}
 	if r, ok := byHandle["proj/feat"]; !ok || r.Kind != "worktree" || r.Status != string(agents.StatusWorking) {
 		t.Fatalf("expected `proj/feat` worktree-agent record, got %+v", r)
@@ -106,7 +108,7 @@ func TestHandlesAndKinds(t *testing.T) {
 		handle, wantKind, wantDir string
 		primary                   bool
 	}{
-		{"proj", "anchor", "/code/proj", true},
+		{"proj", "base", "/code/proj", true},
 		{"proj/feat", "worktree", "/code/proj.worktrees/feat", false},
 		{"proj/spike", "slot", "/code/proj.worktrees/spike", false},
 		{"%4", "agent", "", false},

@@ -1,4 +1,4 @@
-// Package config loads bird's-eye configuration from a TOML file under the
+// Package config loads birdseye configuration from a TOML file under the
 // platform config directory, applying built-in defaults for absent keys.
 package config
 
@@ -129,7 +129,7 @@ func Path() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "birds-eye", "config.toml"), nil
+	return filepath.Join(dir, "birdseye", "config.toml"), nil
 }
 
 // Load reads the config from the default path, returning defaults when the file

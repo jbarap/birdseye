@@ -1,7 +1,5 @@
 package agents
 
-import "strconv"
-
 // PaneInfo is one tmux pane the reconciler classifies. It mirrors the tmux backend's
 // pane enumeration without this package importing tmux (cli adapts the two).
 type PaneInfo struct {
@@ -147,15 +145,6 @@ func (w *Workspace) Rows() ([]Row, error) {
 			continue // not a managed repo; its agents fall through to the plain pass
 		}
 		rows = append(rows, w.managedRows(sess, bySession[sess], repo, byPane, claimed)...)
-		// Incidental agents in this managed session (windows that are not worktrees of it).
-		for _, a := range agents {
-			if a.TmuxSession == sess && !claimed[a.SessionID] {
-				r := agentRow(a)
-				r.Managed = true
-				rows = append(rows, r)
-				claimed[a.SessionID] = true
-			}
-		}
 	}
 
 	// Everything left: plain sessions, ungrouped agents, or agents without a pane match.
@@ -168,25 +157,25 @@ func (w *Workspace) Rows() ([]Row, error) {
 }
 
 // managedRepoOf decides whether a session is a managed repo and, if so, which repository
-// it is. A session is managed iff at least one of its windows started inside a git
-// worktree. When more than one repo is present, the primary-worktree window wins; failing
-// that, the lowest-window-index worktree window. ok=false means the session is plain.
+// it is. A session is managed iff *every* one of its panes resolves to a git worktree and
+// all of them share one repository (the same git-common-dir). Any pane that is not inside
+// a git worktree, or that belongs to a different repository, disqualifies the whole
+// session — it renders as plain. The returned RepoInfo identifies that single repository;
+// its primary worktree is the anchor. ok=false means the session is plain.
 func (w *Workspace) managedRepoOf(panes []PaneInfo) (RepoInfo, bool) {
 	var chosen RepoInfo
-	chosenWin := ""
 	found := false
 	for _, p := range panes {
 		info := w.lookup(p.StartPath)
 		if info == nil {
+			return RepoInfo{}, false // a non-git pane disqualifies the session
+		}
+		if !found {
+			chosen, found = *info, true
 			continue
 		}
-		switch {
-		case !found:
-			chosen, chosenWin, found = *info, p.WindowIndex, true
-		case info.IsPrimary && !chosen.IsPrimary:
-			chosen, chosenWin = *info, p.WindowIndex
-		case info.IsPrimary == chosen.IsPrimary && lessWindow(p.WindowIndex, chosenWin):
-			chosen, chosenWin = *info, p.WindowIndex
+		if info.GitDir != chosen.GitDir {
+			return RepoInfo{}, false // panes span two repositories → not one managed repo
 		}
 	}
 	return chosen, found
@@ -254,14 +243,4 @@ func (w *Workspace) managedRows(sess string, panes []PaneInfo, repo RepoInfo, by
 		}
 	}
 	return out
-}
-
-// lessWindow compares tmux window indices numerically when possible (so "2" < "10").
-func lessWindow(a, b string) bool {
-	ai, aerr := strconv.Atoi(a)
-	bi, berr := strconv.Atoi(b)
-	if aerr == nil && berr == nil {
-		return ai < bi
-	}
-	return a < b
 }

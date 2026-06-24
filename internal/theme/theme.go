@@ -1,4 +1,4 @@
-// Package theme is the single source of truth for bird's-eye's colors. Each
+// Package theme is the single source of truth for birdseye's colors. Each
 // color carries a 24-bit hex value and a nearest xterm-256 fallback so callers
 // can render truecolor when the terminal supports it and degrade otherwise.
 //

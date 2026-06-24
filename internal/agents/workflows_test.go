@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// shippedRels is the set of artifact paths bird's-eye ships for claude, relative to the
+// shippedRels is the set of artifact paths birdseye ships for claude, relative to the
 // config root — used to assert install/uninstall touch exactly these.
 func shippedRels(t *testing.T) []string {
 	t.Helper()
@@ -25,7 +25,7 @@ func shippedRels(t *testing.T) []string {
 }
 
 // TestWorkflowsNamespacedAndComplete checks the shipped artifacts live under the
-// bird's-eye namespace and include the orchestrator, QA, and PR skills.
+// birdseye namespace and include the orchestrator, QA, and PR skills.
 func TestWorkflowsNamespacedAndComplete(t *testing.T) {
 	rels := shippedRels(t)
 	want := map[string]bool{"orchestrator": false, "qa": false, "pr": false}
@@ -34,11 +34,11 @@ func TestWorkflowsNamespacedAndComplete(t *testing.T) {
 			t.Fatalf("artifact %q is not under skills/<namespaced-dir>/", rel)
 		}
 		dir := filepath.Base(filepath.Dir(rel))
-		if len(dir) < len("birds-eye-") || dir[:len("birds-eye-")] != "birds-eye-" {
-			t.Fatalf("artifact dir %q is not bird's-eye-namespaced", dir)
+		if len(dir) < len("birdseye-") || dir[:len("birdseye-")] != "birdseye-" {
+			t.Fatalf("artifact dir %q is not birdseye-namespaced", dir)
 		}
 		for k := range want {
-			if dir == "birds-eye-"+k {
+			if dir == "birdseye-"+k {
 				want[k] = true
 			}
 		}
@@ -103,7 +103,7 @@ func TestInstallWorkflowsBacksUpModified(t *testing.T) {
 	}
 }
 
-// TestUninstallWorkflowsRemovesOnlyOurs checks uninstall removes the bird's-eye artifacts
+// TestUninstallWorkflowsRemovesOnlyOurs checks uninstall removes the birdseye artifacts
 // and prunes their namespaced dirs, while leaving a user's own skill — and the shared
 // skills/ directory — intact.
 func TestUninstallWorkflowsRemovesOnlyOurs(t *testing.T) {

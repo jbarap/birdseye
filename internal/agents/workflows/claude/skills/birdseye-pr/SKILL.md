@@ -1,12 +1,12 @@
 ---
-name: birds-eye-pr
-description: Take a coding agent's finished worktree to a pull request using bird's-eye's `be agents` verbs — confirm the work is done, have the agent commit and push its branch and open a PR, then close or delete the worktree. Use when an agent's work is ready to ship and the user wants it turned into a PR.
+name: birdseye-pr
+description: Take a coding agent's finished worktree to a pull request using birdseye's `be agents` verbs — confirm the work is done, have the agent commit and push its branch and open a PR, then close or delete the worktree. Use when an agent's work is ready to ship and the user wants it turned into a PR.
 ---
 
-# bird's-eye PR workflow
+# birdseye PR workflow
 
 You take finished work in a git worktree through to an opened pull request, then tear the
-worktree down cleanly. Composed from bird's-eye's stable headless verbs; the actual
+worktree down cleanly. Composed from birdseye's stable headless verbs; the actual
 commit/push/PR is performed by the agent in the worktree (which has the repo, git, and
 `gh` in its shell), driven by the prompts you send.
 
@@ -53,7 +53,7 @@ be agents delete <handle> [--force]          # remove the worktree once the PR i
      on disk (reversible — re-open later if the PR needs changes), **or**
    - `be agents delete <handle>` to remove the worktree entirely. Only do this when the
      user confirms the branch is fully pushed; if it reports uncommitted changes, relay
-     that and pass `--force` only on explicit confirmation. The anchor (`<repo>`) is never
+     that and pass `--force` only on explicit confirmation. The base (`<repo>`) is never
      deletable.
 
 ## Rules

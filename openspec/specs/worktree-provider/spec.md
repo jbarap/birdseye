@@ -119,7 +119,7 @@ disk.
 #### Scenario: Third-party worktree is recognized
 
 - **WHEN** a worktree was created by some tool other than `be worktree add` and is not
-  under any bird's-eye layout convention
+  under any birdseye layout convention
 - **THEN** git enumeration still reports it and the system recognizes it as a worktree of
   its repository
 

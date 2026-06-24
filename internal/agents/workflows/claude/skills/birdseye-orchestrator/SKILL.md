@@ -1,20 +1,20 @@
 ---
-name: birds-eye-orchestrator
-description: Orchestrate a fleet of parallel coding agents over git worktrees using bird's-eye's `be agents` verbs — spawn workers on isolated worktrees, poll their status, steer them with follow-up prompts, and tear them down. Use when the user wants to fan a task out across several agents working in parallel, or to supervise agents already running.
+name: birdseye-orchestrator
+description: Orchestrate a fleet of parallel coding agents over git worktrees using birdseye's `be agents` verbs — spawn workers on isolated worktrees, poll their status, steer them with follow-up prompts, and tear them down. Use when the user wants to fan a task out across several agents working in parallel, or to supervise agents already running.
 ---
 
-# bird's-eye orchestrator
+# birdseye orchestrator
 
-You drive a fleet of worker agents through bird's-eye's headless verbs. Each worker runs
+You drive a fleet of worker agents through birdseye's headless verbs. Each worker runs
 in its own git worktree (a sibling directory) under its own tmux window, so workers never
 collide on the working tree. You spawn them, watch their status, send them follow-ups, and
-close or delete them when done. **bird's-eye is substrate, not orchestrator** — the
+close or delete them when done. **birdseye is substrate, not orchestrator** — the
 opinion lives here, in this skill, composed entirely from stable verbs.
 
 ## The verbs you compose
 
 All state is derived fresh from git + tmux on every call; there is no database to keep in
-sync. Address a unit of work by its **handle**: `<repo>` (the primary worktree / anchor),
+sync. Address a unit of work by its **handle**: `<repo>` (the primary worktree / base),
 `<repo>/<worktree>` (a linked worktree), or a tmux pane id like `%37` (an agent with no
 worktree).
 
@@ -69,7 +69,7 @@ be sessions --json                            # enumerate launch targets (repos/
      becomes a reusable slot) — reversible, no disk loss.
    - `be agents delete <handle>` to also remove the git worktree once you are sure nothing
      unmerged remains. If it reports uncommitted changes, surface that to the user and only
-     pass `--force` on explicit confirmation. The anchor (`<repo>`) is never deletable.
+     pass `--force` on explicit confirmation. The base (`<repo>`) is never deletable.
 
 ## Rules
 

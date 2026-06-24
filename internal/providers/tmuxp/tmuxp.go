@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/jbarap/birds-eye/internal/provider"
+	"github.com/jbarap/birdseye/internal/provider"
 )
 
 // Type is the provider's source tag.
@@ -174,7 +174,7 @@ func listTemplates(override string) ([]string, error) {
 }
 
 func loadTemplate(name string) error {
-	// -d loads the session detached so bird's-eye controls the connect step.
+	// -d loads the session detached so birdseye controls the connect step.
 	cmd := exec.Command("tmuxp", "load", "-d", name)
 	cmd.Stderr = os.Stderr
 	return cmd.Run()

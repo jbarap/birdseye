@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-// ManagedEvents are the Claude Code hook events bird's-eye installs so that
+// ManagedEvents are the Claude Code hook events birdseye installs so that
 // `be agents` can show live status.
 var ManagedEvents = []string{
 	"SessionStart",
@@ -40,7 +40,7 @@ func DefaultSettingsPath() (string, error) {
 	return filepath.Join(dir, "settings.json"), nil
 }
 
-// HooksInstalled reports whether any bird's-eye hook entry is present in the settings
+// HooksInstalled reports whether any birdseye hook entry is present in the settings
 // file at path — a non-destructive check for the uninstall checklist. A missing file
 // reports false; a malformed file is an error (mirroring the install refusal).
 func HooksInstalled(path string) (bool, error) {
@@ -63,7 +63,7 @@ func HooksInstalled(path string) (bool, error) {
 	return false, nil
 }
 
-// InstallHooks merges bird's-eye's hook commands into the Claude settings file
+// InstallHooks merges birdseye's hook commands into the Claude settings file
 // at path, preserving every other key and any unrelated hooks. command is the
 // program invocation used in the hook (e.g. the absolute path to the be
 // binary). It is idempotent and reports whether the file changed.
@@ -75,7 +75,7 @@ func InstallHooks(path, command string) (changed bool, err error) {
 	hooks := asObject(settings["hooks"])
 	for _, event := range ManagedEvents {
 		groups := asArray(hooks[event])
-		// Drop any stale bird's-eye entries first so a changed command path is
+		// Drop any stale birdseye entries first so a changed command path is
 		// refreshed rather than duplicated.
 		groups, _ = stripOurHooks(groups)
 		groups = append(groups, ourGroup(command, event))
@@ -85,7 +85,7 @@ func InstallHooks(path, command string) (changed bool, err error) {
 	return saveIfChanged(path, settings, before)
 }
 
-// UninstallHooks removes only bird's-eye's hook entries from the settings file
+// UninstallHooks removes only birdseye's hook entries from the settings file
 // at path, leaving every other key and unrelated hook intact. It is idempotent
 // and reports whether the file changed.
 func UninstallHooks(path string) (changed bool, err error) {
@@ -125,7 +125,7 @@ func ourGroup(command, event string) map[string]any {
 	}
 }
 
-// stripOurHooks removes bird's-eye command entries from each group, dropping a
+// stripOurHooks removes birdseye command entries from each group, dropping a
 // group once it has no hooks left. User hooks sharing a group are preserved.
 func stripOurHooks(groups []any) (out []any, removed bool) {
 	for _, g := range groups {
@@ -152,7 +152,7 @@ func stripOurHooks(groups []any) (out []any, removed bool) {
 	return out, removed
 }
 
-// isOurCommand reports whether a hook command string is a bird's-eye hook call,
+// isOurCommand reports whether a hook command string is a birdseye hook call,
 // matching both `be hook X` and `/abs/path/be hook X`.
 func isOurCommand(cmd string) bool {
 	fields := strings.Fields(cmd)

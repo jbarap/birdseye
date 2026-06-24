@@ -528,38 +528,53 @@ the repository's shared git directory (`git rev-parse --git-common-dir`), its **
 set** (`git worktree list`), its default branch, and dirtiness. Recognition SHALL be
 **git-native**: a window's start path is classified by resolving it to a git worktree and
 its repository, not by matching a `<repo>/<default-branch>` path shape, so any on-disk
-layout is recognized — including worktrees a user or another tool created. A session
-SHALL be recognized as a managed repo iff at least one of its windows started inside a
-git worktree of a repository. A repository's **anchor** SHALL be its git **primary
-worktree** (the worktree git refuses to remove), independent of which branch is checked
-out there; the window started in that primary worktree SHALL be the canonical anchor
-window. Windows started in other worktrees of the same repository (same
-`git-common-dir`) SHALL be that repo's **managed worktrees**. The per-tick path
-classification SHALL be cheap (a cache lookup); git SHALL be consulted only on a cache
-miss or when performing an action, never per tick for every window.
+layout is recognized — including worktrees a user or another tool created. A session SHALL
+be recognized as a managed repo **iff every one of its panes resolves to a git worktree of
+one and the same repository** (the same `git-common-dir`); a session with any pane that is
+not inside a git worktree, or that belongs to a different repository, SHALL NOT be managed
+and SHALL render exactly as a plain session. A repository's **anchor** SHALL be its git
+**primary worktree** (the worktree git refuses to remove), independent of which branch is
+checked out there; the window started in that primary worktree SHALL be the canonical
+anchor window. Windows started in other worktrees of the same repository SHALL be that
+repo's **managed worktrees**. The per-tick path classification SHALL be cheap (a cache
+lookup); git SHALL be consulted only on a cache miss or when performing an action, never
+per tick for every window.
 
-#### Scenario: Session with a primary-worktree window is recognized
+#### Scenario: Single-repo session is recognized
 
-- **WHEN** a tmux session has a window whose start path is a repository's git primary
-  worktree
-- **THEN** the view recognizes that session as a managed repo anchored on that window
+- **WHEN** every pane of a tmux session resolves to a worktree of one repository, and one
+  of those panes is that repository's git primary worktree
+- **THEN** the view recognizes that session as a managed repo anchored on the
+  primary-worktree window
 
 #### Scenario: Anchor is the primary worktree regardless of branch
 
-- **WHEN** a repository's primary worktree has a non-default branch checked out
+- **WHEN** a managed session's primary worktree has a non-default branch checked out
 - **THEN** the view still treats that primary worktree's window as the anchor, because
   the anchor is defined by git's primary worktree, not by the branch name
 
-#### Scenario: No worktree window means not managed
+#### Scenario: A non-git pane disqualifies the session
 
-- **WHEN** a session has no window started inside any git worktree of a recognized
-  repository
+- **WHEN** a session has one or more panes inside a repository's worktrees but also a pane
+  that is not inside any git worktree
+- **THEN** the session is not recognized as managed and renders exactly as a plain session
+
+#### Scenario: A foreign-repo pane disqualifies the session
+
+- **WHEN** a session has panes resolving to two different repositories (distinct
+  `git-common-dir`)
+- **THEN** the session is not recognized as managed and renders exactly as a plain
+  session, because a managed session is a single repository's worktree set
+
+#### Scenario: No worktree pane means not managed
+
+- **WHEN** a session has no pane started inside any git worktree
 - **THEN** the session is not recognized as managed and renders exactly as a plain
   session
 
 #### Scenario: Recognition uses start path, not current directory
 
-- **WHEN** a window of a managed worktree is `cd`-ed elsewhere
+- **WHEN** a pane of a managed worktree is `cd`-ed elsewhere
 - **THEN** recognition is unchanged because it is based on the pane's start path
 
 #### Scenario: Recognition is re-derived, not stored
@@ -570,10 +585,11 @@ miss or when performing an action, never per tick for every window.
 
 #### Scenario: Third-party worktree is recognized
 
-- **WHEN** a window started in a worktree created by a tool other than `be worktree add`,
-  belonging to a recognized repository
-- **THEN** the view classifies it as a managed worktree of that repository, because
-  recognition reads the git worktree set rather than a bird's-eye path convention
+- **WHEN** every pane of a session resolves to worktrees of one repository, and one such
+  worktree was created by a tool other than `be worktree add`
+- **THEN** the view classifies the session as managed and that worktree as a managed
+  worktree of the repository, because recognition reads the git worktree set rather than a
+  birdseye path convention
 
 ### Requirement: Managed-repo presentation
 
@@ -588,9 +604,9 @@ and a worktree with **no open tmux window** SHALL still render as a row showing 
 `◌ slot` indicator (a spawn target). A worktree row's pinned status gutter SHALL show its
 agent's status when the worktree's window has a live agent, and an `◌ slot` indicator
 (glyph plus short label) when it has no agent or no window, so an empty or windowless
-worktree is visibly a spawn target without relying on color. Agent-ness and worktree-ness
-SHALL be independent: an incidental window in a managed session that has a live agent but
-is not a worktree SHALL render as an ordinary agent row, unchanged from a plain session.
+worktree is visibly a spawn target without relying on color. Because a managed session
+contains only worktree windows of its one repository, every window in it maps to a
+worktree row; there are no incidental non-worktree agent rows within a managed session.
 The `◌ slot` and `⌂ base` glyphs SHALL be defined in the shared theme package.
 
 #### Scenario: Managed session bar carries an indicator
@@ -620,12 +636,6 @@ The `◌ slot` and `⌂ base` glyphs SHALL be defined in the shared theme packag
 - **WHEN** a repository's git worktree set contains a worktree with no open tmux window
 - **THEN** the view still renders a row for it showing `◌ slot`, so the worktree is a
   visible spawn target rather than vanishing from the view
-
-#### Scenario: Incidental agent in a managed session is unchanged
-
-- **WHEN** a managed session contains a window with a live agent that is not a worktree
-  of the repo
-- **THEN** that window renders as an ordinary agent row, the same as in a plain session
 
 ### Requirement: Create a session from the agents view
 

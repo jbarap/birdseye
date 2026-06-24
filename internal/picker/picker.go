@@ -12,9 +12,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/jbarap/birds-eye/internal/config"
-	"github.com/jbarap/birds-eye/internal/provider"
-	"github.com/jbarap/birds-eye/internal/theme"
+	"github.com/jbarap/birdseye/internal/config"
+	"github.com/jbarap/birdseye/internal/provider"
+	"github.com/jbarap/birdseye/internal/theme"
 )
 
 var (

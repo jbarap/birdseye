@@ -2,7 +2,7 @@
 // sessions, surfaced as attach candidates.
 package tmuxsess
 
-import "github.com/jbarap/birds-eye/internal/provider"
+import "github.com/jbarap/birdseye/internal/provider"
 
 // Type is the provider's source tag.
 const Type = "tmux"

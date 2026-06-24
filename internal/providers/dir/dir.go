@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/jbarap/birds-eye/internal/provider"
+	"github.com/jbarap/birdseye/internal/provider"
 )
 
 // Type is the provider's source tag.

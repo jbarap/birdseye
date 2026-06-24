@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/jbarap/birds-eye/internal/worktree"
+	"github.com/jbarap/birdseye/internal/worktree"
 )
 
 func newWorktreeCmd() *cobra.Command {

@@ -10,14 +10,14 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/jbarap/birds-eye/internal/agents"
-	"github.com/jbarap/birds-eye/internal/config"
-	"github.com/jbarap/birds-eye/internal/fleet"
-	"github.com/jbarap/birds-eye/internal/picker"
-	"github.com/jbarap/birds-eye/internal/provider"
-	"github.com/jbarap/birds-eye/internal/tmux"
-	"github.com/jbarap/birds-eye/internal/tools"
-	"github.com/jbarap/birds-eye/internal/worktree"
+	"github.com/jbarap/birdseye/internal/agents"
+	"github.com/jbarap/birdseye/internal/config"
+	"github.com/jbarap/birdseye/internal/fleet"
+	"github.com/jbarap/birdseye/internal/picker"
+	"github.com/jbarap/birdseye/internal/provider"
+	"github.com/jbarap/birdseye/internal/tmux"
+	"github.com/jbarap/birdseye/internal/tools"
+	"github.com/jbarap/birdseye/internal/worktree"
 )
 
 // newAgentsCmd builds the `be agents` headless verb namespace. These verbs and the

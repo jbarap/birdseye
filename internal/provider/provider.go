@@ -1,4 +1,4 @@
-// Package provider defines the extension seam of bird's-eye: a small interface
+// Package provider defines the extension seam of birdseye: a small interface
 // any session source implements to contribute candidates, plus a registry that
 // aggregates them. The picker and CLI depend only on these types, never on a
 // concrete provider, so new sources drop in without touching them.

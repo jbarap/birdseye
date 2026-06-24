@@ -10,7 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/jbarap/birds-eye/internal/theme"
+	"github.com/jbarap/birdseye/internal/theme"
 )
 
 // defaultRefresh is the fallback live-refresh interval when none is configured.
@@ -43,7 +43,7 @@ const (
 	anchorWord   = "base"
 	slotGlyph    = "◌" // a managed worktree with no agent (a spawn target)
 	slotWord     = "slot"
-	managedGlyph = "\U000f02a2" // 󰊢 md-git: the managed-repo indicator
+	managedGlyph = "\U000f160e" // 󱘎 the managed-repo indicator
 	errGlyph     = "✗"          // a rejected/failed action (notice, red)
 	infoGlyph    = "•"          // a neutral confirmation (notice, accent)
 )

@@ -9,8 +9,8 @@ import (
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 
-	"github.com/jbarap/birds-eye/internal/agents"
-	"github.com/jbarap/birds-eye/internal/theme"
+	"github.com/jbarap/birdseye/internal/agents"
+	"github.com/jbarap/birdseye/internal/theme"
 )
 
 // supportedAgentTypes are the integration types `be agents install`/`uninstall` accept.
@@ -24,8 +24,8 @@ type tier struct {
 }
 
 var installTiers = []tier{
-	{"hooks", "status detection — let bird's-eye see each agent's live status"},
-	{"workflows", "bird's-eye-authored skills (orchestrator, QA, PR) that compose `be agents`"},
+	{"hooks", "status detection — let birdseye see each agent's live status"},
+	{"workflows", "birdseye-authored skills (orchestrator, QA, PR) that compose `be agents`"},
 }
 
 // newAgentsInstallCmd builds `be agents install <type>`: two independent opt-in tiers
@@ -37,7 +37,7 @@ func newAgentsInstallCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "install <type>",
 		Short: "Install an agent integration (hooks and/or workflows); opt-in per tier",
-		Long: "Install the bird's-eye integration for an agent type (e.g. claude) in two\n" +
+		Long: "Install the birdseye integration for an agent type (e.g. claude) in two\n" +
 			"independent, opt-in tiers: --hooks (status detection) and --workflows\n" +
 			"(skills that compose the be agents verbs). With no tier flag in a terminal a\n" +
 			"checklist is shown; in a non-terminal the flags are required.",
@@ -75,14 +75,14 @@ func newAgentsInstallCmd() *cobra.Command {
 }
 
 // newAgentsUninstallCmd builds `be agents uninstall <type>`: symmetric tier-scoped
-// removal that touches only what bird's-eye wrote. With no flag in a TTY it offers a
+// removal that touches only what birdseye wrote. With no flag in a TTY it offers a
 // checklist of the currently-installed tiers.
 func newAgentsUninstallCmd() *cobra.Command {
 	var hooks, workflows bool
 	var settingsPath string
 	cmd := &cobra.Command{
 		Use:   "uninstall <type>",
-		Short: "Remove an agent integration tier (hooks and/or workflows); removes only bird's-eye's own entries",
+		Short: "Remove an agent integration tier (hooks and/or workflows); removes only birdseye's own entries",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			t := args[0]
@@ -146,7 +146,7 @@ func selectUninstallTiers(agentType string, hooks, workflows bool, settingsPath 
 		return false, false, err
 	}
 	if !installed["hooks"] && !installed["workflows"] {
-		fmt.Println("No bird's-eye integration is installed; nothing to remove.")
+		fmt.Println("No birdseye integration is installed; nothing to remove.")
 		return false, false, nil
 	}
 	sel, err := runChecklist("Which tiers to uninstall?", installTiers, installed)
@@ -204,9 +204,9 @@ func installHooksTier(agentType, settingsPath, command string) error {
 		return err
 	}
 	if changed {
-		fmt.Printf("Installed bird's-eye hooks into %s (backup at %s.bak)\n", path, path)
+		fmt.Printf("Installed birdseye hooks into %s (backup at %s.bak)\n", path, path)
 	} else {
-		fmt.Printf("bird's-eye hooks already up to date in %s\n", path)
+		fmt.Printf("birdseye hooks already up to date in %s\n", path)
 	}
 	fmt.Printf("Events: %v\n", agents.ManagedEvents)
 	return nil
@@ -222,9 +222,9 @@ func uninstallHooksTier(agentType, settingsPath string) error {
 		return err
 	}
 	if changed {
-		fmt.Printf("Removed bird's-eye hooks from %s\n", path)
+		fmt.Printf("Removed birdseye hooks from %s\n", path)
 	} else {
-		fmt.Printf("No bird's-eye hooks found in %s\n", path)
+		fmt.Printf("No birdseye hooks found in %s\n", path)
 	}
 	return nil
 }
@@ -239,9 +239,9 @@ func installWorkflowsTier(agentType string) error {
 		return err
 	}
 	if changed {
-		fmt.Printf("Installed bird's-eye workflow skills into %s/skills (birds-eye-*)\n", dir)
+		fmt.Printf("Installed birdseye workflow skills into %s/skills (birdseye-*)\n", dir)
 	} else {
-		fmt.Printf("bird's-eye workflow skills already up to date in %s/skills\n", dir)
+		fmt.Printf("birdseye workflow skills already up to date in %s/skills\n", dir)
 	}
 	return nil
 }
@@ -256,9 +256,9 @@ func uninstallWorkflowsTier(agentType string) error {
 		return err
 	}
 	if changed {
-		fmt.Printf("Removed bird's-eye workflow skills from %s/skills\n", dir)
+		fmt.Printf("Removed birdseye workflow skills from %s/skills\n", dir)
 	} else {
-		fmt.Printf("No bird's-eye workflow skills found in %s/skills\n", dir)
+		fmt.Printf("No birdseye workflow skills found in %s/skills\n", dir)
 	}
 	return nil
 }

@@ -1,10 +1,10 @@
-# bird's-eye (`be`)
+# birdseye (`be`)
 
 > One place to launch, watch, and steer agent work across all your repos.
 
 SHAMELESSLY VIBE CODED.
 
-A lightweight, hackable bird's-eye view over your tmux sessions — and the AI
+A lightweight, hackable birdseye view over your tmux sessions — and the AI
 agents running inside them. `be` blends *existing* sessions with *ways to create
 new ones* into one fuzzy picker, and gives you an at-a-glance triage view of your
 agents.
@@ -14,13 +14,13 @@ provider interface.
 
 ## Prior art / references
 
-bird's-eye draws on ideas/visuals/concepts from these projects:
+birdseye draws on ideas/visuals/concepts from these projects:
 
 - [sesh](https://github.com/joshmedeski/sesh) — smart tmux session manager and picker.
 - [tmux-agent-status](https://github.com/samleeney/tmux-agent-status) — surfacing AI agent status in tmux.
 - [superset](https://github.com/superset-sh/superset) — a workspace over agent sessions.
 - [tsm](https://github.com/adibhanna/tsm) — terminal session manager; its minimal, titled panels
-  shaped bird's-eye's panel chrome.
+  shaped birdseye's panel chrome.
 
 ## Features
 
@@ -36,12 +36,12 @@ bird's-eye draws on ideas/visuals/concepts from these projects:
   `--json`. Work is addressed by a derived `repo/worktree` handle (a worktreeless agent
   by its tmux pane id). The dash and these verbs share one operation layer, so they
   always behave identically. `be agents install claude` adds the opt-in Claude Code
-  integration (status hooks and/or bird's-eye's orchestrator/QA/PR skills).
+  integration (status hooks and/or birdseye's orchestrator/QA/PR skills).
 - **One fuzzy picker** (`be sessions`) over running tmux sessions, `tmuxp` templates,
   `zoxide`/directory roots, and git worktrees — attach to what exists or create
   what doesn't. `be sessions --json` enumerates the same candidates non-interactively.
 - **`be worktree`** — spin up grouped-sibling worktrees from inside a repo
-  (`git clone` the repo yourself; bird's-eye recognizes any clone). Worktrees live at
+  (`git clone` the repo yourself; birdseye recognizes any clone). Worktrees live at
   `<repo>.worktrees/<branch-slug>` beside the clone, and worktrees discovered under
   optional configured roots are surfaced as session candidates.
 - **Modular providers** — add a new way to create sessions by implementing one
@@ -97,8 +97,8 @@ be agents delete <repo>/<worktree> [--force]        # also `git worktree remove`
 
 A **work handle** is derived from git on every call, so it survives session/window
 renames, tmux restarts, and an agent respawning: `<repo>` addresses a repository's
-primary worktree (its anchor), `<repo>/<worktree>` a linked worktree, and a worktreeless
-agent its tmux pane id (e.g. `%5`). Because handles are derived, an agent bird's-eye
+primary worktree (its base), `<repo>/<worktree>` a linked worktree, and a worktreeless
+agent its tmux pane id (e.g. `%5`). Because handles are derived, an agent birdseye
 never spawned is addressable with no import step. When two repos in view share a basename
 the handle is ambiguous and the verb refuses with the disambiguating paths rather than
 guessing.
@@ -122,19 +122,22 @@ All of these keys are configurable (see `[agents.keys]` below).
 
 ### Managed repos (agent orchestration)
 
-bird's-eye *recognizes* — it never takes over — the common worktree-per-agent layout,
-in both `be dash` and the `be agents` verbs. Recognition is **git-native**: a tmux session is a **managed repo** when one of its
-windows started inside any git worktree of a repository, identified by its shared git
-directory (`git rev-parse --git-common-dir`). No path convention is required, so worktrees
-recognize wherever they live — including ones another tool created. bird's-eye owns no
-state for this: every refresh it re-derives the picture from tmux + git, so an
-unrecognized session looks and behaves exactly as before.
+birdseye *recognizes* — it never takes over — the common worktree-per-agent layout,
+in both `be dash` and the `be agents` verbs. Recognition is **git-native** and
+**whole-session**: a tmux session is a **managed repo** only when *every* pane started
+inside a git worktree of **one and the same** repository, identified by its shared git
+directory (`git rev-parse --git-common-dir`). A single pane outside a git worktree, or in a
+different repo, drops the session back to a plain one — so a managed repo is always exactly
+one repository's worktree set, and your ordinary dev sessions are never mistaken for it. No
+path convention is required, so worktrees recognize wherever they live — including ones
+another tool created. birdseye owns no state for this: every refresh it re-derives the
+picture from tmux + git, so an unrecognized session looks and behaves exactly as before.
 
 In a managed repo the view shows, beside live agents:
 
-- a `󰘬` indicator and worktree count on the session bar,
+- a `󱘎` indicator and worktree count on the session bar,
 - a `⌂ base` row for the repo's **primary worktree** (git's main worktree, whatever branch
-  it has checked out — git itself refuses to remove it, so the anchor can't be deleted),
+  it has checked out — git itself refuses to remove it, so the base can't be deleted),
 - a `◌ slot` row for each worktree with no agent — a spawn target — **including worktrees
   with no open tmux window**, since the set is enumerated from `git worktree list`.
 
@@ -149,14 +152,13 @@ Two actions become available (configurable, see `[agents.keys]`):
 - **`dd` — close**: closes the row's tmux window and nothing else — **instant, no
   confirmation, no filesystem effect**. Under the sibling-worktree layout the worktree
   survives and the row drops to a `◌ slot`, so closing is reversible (re-open a window in
-  it). On a windowless slot it's a no-op. Closing the anchor's window ends the session if
+  it). On a windowless slot it's a no-op. Closing the base's window ends the session if
   it was the last. Identical in effect to `be agents close`.
 - **`dD` — delete**: closes the window **and** runs `git worktree remove`, behind a
   centered popup confirmation (consistent with the new-agent modal — never the old inline
   `(y/n)` line). A dirty worktree folds a force-remove choice into the same popup,
-  defaulting to cancel. An incidental agent (one not in a worktree) is just closed; the
-  repo anchor is refused, since git won't remove a primary worktree. Identical in effect
-  to `be agents delete`.
+  defaulting to cancel. The repo base is refused, since git won't remove a primary
+  worktree. Identical in effect to `be agents delete`.
 
 Safety lives in the **key**, not the dialog: `dd` can never touch disk regardless of how
 fast you confirm, and only the irreversible `dD` prompts.
@@ -175,7 +177,7 @@ up automatically.
 
 A freshly created worktree is a directory Claude Code hasn't seen, so by default it
 opens with *"Quick safety check: Is this a project you created or one you trust?"* and,
-on each action, a permission prompt. Neither is a bird's-eye behavior — both come from
+on each action, a permission prompt. Neither is a birdseye behavior — both come from
 Claude Code — but two settings make `n` prompt-free without weakening anything by hand:
 
 - **Trust once, inherit everywhere.** Claude Code records folder trust per directory and
@@ -195,7 +197,7 @@ in its own directory.
 
 ## Configuration
 
-Config lives at `~/.config/birds-eye/config.toml` (TOML). All keys are optional;
+Config lives at `~/.config/birdseye/config.toml` (TOML). All keys are optional;
 built-in defaults apply when absent. Example:
 
 ```toml
@@ -261,14 +263,14 @@ quit      = ["q", "esc", "ctrl+c"]
 
 ## Claude Code integration (`be agents install`)
 
-bird's-eye ships its Claude Code integration as **two independent, opt-in tiers** — you
+birdseye ships its Claude Code integration as **two independent, opt-in tiers** — you
 choose what (if anything) to install, and the binary itself stays un-opinionated:
 
 - **hooks** — status detection. Agent status shown in `be dash` and reported by `be
   agents` comes from state Claude Code hooks write; status is never inferred from pane
   contents. (The view polls that state to refresh live, and the preview pane reads
   terminal output for display only; neither affects status.)
-- **workflows** — bird's-eye-authored **skills** (orchestrator, QA, PR) that compose the
+- **workflows** — birdseye-authored **skills** (orchestrator, QA, PR) that compose the
   `be agents` verbs into opinionated playbooks. These are removable artifacts, never code
   in the binary.
 
@@ -297,14 +299,14 @@ The two tiers are independent and the workflows tier is **removable by construct
 Uninstalling the workflow skills — or never installing them — leaves the `be` binary, every
 `be agents` verb, and the hooks tier fully functional; the skills only *compose* the verbs,
 they are never required by them. The hooks tier is likewise independent: removing it does
-not touch the skills. Both removals touch only what bird's-eye wrote.
+not touch the skills. Both removals touch only what birdseye wrote.
 
 ### Hooks tier details
 
 The hooks install is **safe**: it preserves every other key and any unrelated hooks you
 already have, refuses to touch a malformed file, writes a `.bak` backup before
 changing anything, and is idempotent. Uninstall removes only the entries
-bird's-eye added. By default the installed hook calls the absolute path of the
+birdseye added. By default the installed hook calls the absolute path of the
 `be` binary you ran (robust against PATH differences in Claude's hook
 environment); override with `--command`. The workflows tier mirrors this safety for its
 files: re-install rewrites only changed artifacts and backs up a hand-edited one to `.bak`
@@ -327,7 +329,7 @@ these events in your Claude settings:
 ```
 
 `be hook claude record <event>` (invoked by those hooks) reads the hook payload on stdin and records state under
-`$XDG_STATE_HOME/birds-eye/agents/` (one file per session). The default
+`$XDG_STATE_HOME/birdseye/agents/` (one file per session). The default
 event→status mapping:
 
 | Hook event                                                       | Status           |
@@ -339,7 +341,7 @@ event→status mapping:
 | `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`  | working          |
 
 `Notification` is split by its message: Claude's periodic idle nudge maps to **idle**, while a
-permission/approval prompt — or any message bird's-eye doesn't recognize — maps to
+permission/approval prompt — or any message birdseye doesn't recognize — maps to
 **needs-attention**, so an unfamiliar notification still surfaces to you.
 
 Status not refreshed within `agents.stale_after` is shown as **unknown**.
