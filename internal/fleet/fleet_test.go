@@ -165,6 +165,49 @@ func TestPrimaryWorktreeWithAgentAddressesAsBase(t *testing.T) {
 	}
 }
 
+// TestOpenNamesWindowAfterWorktree checks the window a re-opened row lands in is named
+// after the worktree it holds — the slot by its worktree name, the base by the repo name —
+// rather than inheriting tmux's process-derived default.
+func TestOpenNamesWindowAfterWorktree(t *testing.T) {
+	const gd = "/code/proj/.git"
+	var calls []string
+	runner := func(args ...string) (string, error) {
+		calls = append(calls, strings.Join(args, " "))
+		if len(args) > 0 && args[0] == "list-sessions" {
+			return "proj\t$1\n", nil
+		}
+		return "", nil
+	}
+	repos := fakeRepos{m: map[string]agents.RepoInfo{
+		"/code/proj":                 repoAt(gd, "proj", "/code/proj", "proj", true),
+		"/code/proj.worktrees/spike": repoAt(gd, "proj", "/code/proj.worktrees/spike", "spike", false),
+	}}
+	f := New(tmux.NewWithRunner(runner, false), "claude", fakeSource{}, fakePanes{}, repos)
+
+	called := func(substr string) bool {
+		for _, c := range calls {
+			if strings.HasPrefix(c, "new-window") && strings.Contains(c, substr) {
+				return true
+			}
+		}
+		return false
+	}
+
+	if _, err := f.Open(Target{Handle: "proj/spike", Dir: "/code/proj.worktrees/spike", Session: "proj"}); err != nil {
+		t.Fatal(err)
+	}
+	if !called("-n spike") {
+		t.Fatalf("slot window should be named after the worktree, calls=%v", calls)
+	}
+
+	if _, err := f.OpenShell(Target{Handle: "proj", Dir: "/code/proj", Session: "proj", IsPrimary: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !called("-n proj") {
+		t.Fatalf("base window should be named after the repo, calls=%v", calls)
+	}
+}
+
 // TestRecordJSONShape pins the stable field names another agent codes against.
 func TestRecordJSONShape(t *testing.T) {
 	f := projFleet()

@@ -42,7 +42,8 @@ func (p *Provider) Candidates() ([]provider.Candidate, error) {
 			Kind:  provider.KindCreate,
 			Dir:   path,
 			Action: func(b provider.Backend) error {
-				if err := b.Ensure(name, path); err != nil {
+				// Name the base window after the repo, not the running shell.
+				if err := b.Ensure(name, path, m.Repo); err != nil {
 					return err
 				}
 				return b.Connect(name)

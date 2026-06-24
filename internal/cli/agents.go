@@ -468,5 +468,5 @@ func (o orchestrator) NewSession() (string, error) {
 // agents view into the new session.
 type ensureOnly struct{ b provider.Backend }
 
-func (e ensureOnly) Ensure(name, dir string) error { return e.b.Ensure(name, dir) }
-func (e ensureOnly) Connect(string) error          { return nil }
+func (e ensureOnly) Ensure(name, dir, window string) error { return e.b.Ensure(name, dir, window) }
+func (e ensureOnly) Connect(string) error                  { return nil }

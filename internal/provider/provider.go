@@ -27,8 +27,9 @@ func (k Kind) String() string {
 // backend directly and no import cycle forms; the tmux client implements it.
 type Backend interface {
 	// Ensure creates a detached session named name rooted at dir if one does
-	// not already exist, and is a no-op when it does.
-	Ensure(name, dir string) error
+	// not already exist, and is a no-op when it does. window names the session's
+	// initial window (the one holding dir); empty leaves tmux's default.
+	Ensure(name, dir, window string) error
 	// Connect attaches to (outside tmux) or switches the client to (inside
 	// tmux) the named session.
 	Connect(name string) error

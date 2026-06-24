@@ -246,7 +246,7 @@ func (f *Fleet) Spawn(repoDir, session, branch, name, prompt string) (string, er
 	if session == "" {
 		session = dir.SessionName(info.Repo)
 	}
-	if err := f.client.Ensure(session, primary); err != nil {
+	if err := f.client.Ensure(session, primary, info.Repo); err != nil {
 		return "", err
 	}
 	wtDir, err := worktree.Add(repoDir, name, branch)
@@ -257,7 +257,8 @@ func (f *Fleet) Spawn(repoDir, session, branch, name, prompt string) (string, er
 	if prompt != "" {
 		command = command + " " + shellQuote(prompt)
 	}
-	if _, err := f.client.NewWindow(session, wtDir, command); err != nil {
+	// Name the agent's window after the worktree it holds.
+	if _, err := f.client.NewWindow(session, wtDir, filepath.Base(wtDir), command); err != nil {
 		return "", err
 	}
 	return info.Repo + "/" + filepath.Base(wtDir), nil
@@ -297,10 +298,11 @@ func (f *Fleet) openWindow(t Target, command string) (string, error) {
 	if session == "" {
 		session = dir.SessionName(info.Repo)
 	}
-	if err := f.client.Ensure(session, filepath.Dir(info.GitDir)); err != nil {
+	if err := f.client.Ensure(session, filepath.Dir(info.GitDir), info.Repo); err != nil {
 		return "", err
 	}
-	if _, err := f.client.NewWindow(session, t.Dir, command); err != nil {
+	// Name the window after the worktree it holds (the repo name for the base).
+	if _, err := f.client.NewWindow(session, t.Dir, filepath.Base(t.Dir), command); err != nil {
 		return "", err
 	}
 	return info.Repo + "/" + filepath.Base(t.Dir), nil

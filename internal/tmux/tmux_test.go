@@ -40,11 +40,11 @@ func TestEnsureCreatesWhenAbsent(t *testing.T) {
 	rec.errs["has-session -t =proj"] = errors.New("no session") // absent
 	c := NewWithRunner(rec.run, false)
 
-	if err := c.Ensure("proj", "/tmp/proj"); err != nil {
+	if err := c.Ensure("proj", "/tmp/proj", "proj"); err != nil {
 		t.Fatal(err)
 	}
-	if !rec.called("new-session -d -s proj -c /tmp/proj") {
-		t.Fatalf("expected new-session call, calls=%v", rec.calls)
+	if !rec.called("new-session -d -s proj -c /tmp/proj -n proj") {
+		t.Fatalf("expected new-session naming window 0, calls=%v", rec.calls)
 	}
 }
 
@@ -53,7 +53,7 @@ func TestEnsureReusesWhenPresent(t *testing.T) {
 	rec.replies["has-session -t =proj"] = "" // present (no error)
 	c := NewWithRunner(rec.run, false)
 
-	if err := c.Ensure("proj", "/tmp/proj"); err != nil {
+	if err := c.Ensure("proj", "/tmp/proj", "proj"); err != nil {
 		t.Fatal(err)
 	}
 	if rec.called("new-session") {
@@ -199,12 +199,16 @@ func TestListPanesNoServerIsEmpty(t *testing.T) {
 
 func TestLifecycleOps(t *testing.T) {
 	rec := newRecorder()
-	rec.replies["new-window -d -P -F #{window_id} -t proj: -c /tmp/wt"] = "@7\n"
+	rec.replies["new-window -d -P -F #{window_id} -t proj: -c /tmp/wt -n wt"] = "@7\n"
 	c := NewWithRunner(rec.run, false)
 
-	id, err := c.NewWindow("proj", "/tmp/wt", "claude --permission-mode=auto")
+	id, err := c.NewWindow("proj", "/tmp/wt", "wt", "claude --permission-mode=auto")
 	if err != nil || id != "@7" {
 		t.Fatalf("NewWindow = (%q,%v), want (@7,nil)", id, err)
+	}
+	// The window is named after the worktree it holds, not the running process.
+	if !rec.called("new-window -d -P -F #{window_id} -t proj: -c /tmp/wt -n wt") {
+		t.Fatalf("expected new-window named after the worktree, calls=%v", rec.calls)
 	}
 	// The agent command runs inside the window's shell (via send-keys), not as tmux's
 	// bare child, so per-directory env (direnv, profile) loads as in a real pane.

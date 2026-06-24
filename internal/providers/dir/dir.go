@@ -52,7 +52,8 @@ func (p *Provider) Candidates() ([]provider.Candidate, error) {
 			return
 		}
 		seen[path] = true
-		name := SessionName(filepath.Base(path))
+		base := filepath.Base(path)
+		name := SessionName(base)
 		dir := path
 		out = append(out, provider.Candidate{
 			Name:  name,
@@ -61,7 +62,8 @@ func (p *Provider) Candidates() ([]provider.Candidate, error) {
 			Kind:  provider.KindCreate,
 			Dir:   dir,
 			Action: func(b provider.Backend) error {
-				if err := b.Ensure(name, dir); err != nil {
+				// Name the initial window after the directory, not the running shell.
+				if err := b.Ensure(name, dir, base); err != nil {
 					return err
 				}
 				return b.Connect(name)

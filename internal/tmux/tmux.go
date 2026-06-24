@@ -93,8 +93,12 @@ func (c *Client) HasSession(name string) (bool, error) {
 }
 
 // Ensure creates a detached session named name rooted at dir when absent, and
-// is a no-op when the session already exists.
-func (c *Client) Ensure(name, dir string) error {
+// is a no-op when the session already exists. window names the session's initial
+// window (window 0) — the one holding the session root, e.g. a repo base — so it
+// reads as the repo rather than the running shell; empty leaves tmux's default.
+// Naming it explicitly also disables tmux automatic-rename for that window, so the
+// name sticks.
+func (c *Client) Ensure(name, dir, window string) error {
 	exists, err := c.HasSession(name)
 	if err != nil {
 		return err
@@ -105,6 +109,9 @@ func (c *Client) Ensure(name, dir string) error {
 	args := []string{"new-session", "-d", "-s", name}
 	if dir != "" {
 		args = append(args, "-c", dir)
+	}
+	if window != "" {
+		args = append(args, "-n", window)
 	}
 	_, err = c.run(args...)
 	return err
@@ -191,16 +198,22 @@ func (c *Client) ListPanes() ([]Pane, error) {
 }
 
 // NewWindow creates a detached window in session rooted at dir and returns its window
-// id (e.g. "@7"). When command is non-empty it is typed into the window's shell via
-// send-keys, so the agent runs *inside the user's interactive shell* — loading their
-// normal per-directory environment (direnv, shell profile, PATH) exactly as opening a
-// pane there would. Handing the command to tmux as the window's bare child process
-// instead would bypass all of that, so an env-derived setting (e.g. a direnv-selected
-// CLAUDE_CONFIG_DIR) would be wrong. command may be empty to leave a plain shell.
-func (c *Client) NewWindow(session, dir, command string) (string, error) {
+// id (e.g. "@7"). name sets the window name (e.g. the worktree it holds) so it reads as
+// the work rather than the running process; empty leaves tmux's default. Naming it also
+// disables tmux automatic-rename for that window, so the name sticks. When command is
+// non-empty it is typed into the window's shell via send-keys, so the agent runs *inside
+// the user's interactive shell* — loading their normal per-directory environment (direnv,
+// shell profile, PATH) exactly as opening a pane there would. Handing the command to tmux
+// as the window's bare child process instead would bypass all of that, so an env-derived
+// setting (e.g. a direnv-selected CLAUDE_CONFIG_DIR) would be wrong. command may be empty
+// to leave a plain shell.
+func (c *Client) NewWindow(session, dir, name, command string) (string, error) {
 	args := []string{"new-window", "-d", "-P", "-F", "#{window_id}", "-t", session + ":"}
 	if dir != "" {
 		args = append(args, "-c", dir)
+	}
+	if name != "" {
+		args = append(args, "-n", name)
 	}
 	out, err := c.run(args...)
 	if err != nil {
