@@ -247,6 +247,46 @@ func TestWorkspaceSecondPrimaryWindowDoesNotDuplicate(t *testing.T) {
 	}
 }
 
+// TestWorkspacePrimaryWorktreeCarriesIsPrimary pins the first-class primary fact: the base
+// row is IsPrimary, a slot is not, and — critically — a recognized agent running in the
+// primary worktree is a RowAgent that is *still* IsPrimary. Kind follows agent presence;
+// IsPrimary does not, so the lifecycle guards stay correct in that case.
+func TestWorkspacePrimaryWorktreeCarriesIsPrimary(t *testing.T) {
+	const gd = "/code/proj/.git"
+	src := &fakeSource{list: []Agent{
+		// An agent the user started in the primary worktree's own window (recognition).
+		{SessionID: "base-agent", TmuxSession: "proj", TmuxWindow: "0", TmuxPane: "%1", Title: "proj", Status: StatusWorking},
+	}}
+	panes := fakePanes{list: []PaneInfo{
+		{Session: "proj", WindowIndex: "0", PaneID: "%1", StartPath: "/code/proj"},
+		{Session: "proj", WindowIndex: "1", PaneID: "%2", StartPath: "/code/proj.worktrees/spike"},
+	}}
+	repos := &fakeRepos{
+		m: map[string]RepoInfo{
+			"/code/proj":                 repoAt(gd, "proj", "/code/proj", "proj", true),
+			"/code/proj.worktrees/spike": repoAt(gd, "proj", "/code/proj.worktrees/spike", "spike", false),
+		},
+		wts: map[string][]WorktreeInfo{gd: {
+			{Path: "/code/proj", Name: "proj", IsPrimary: true},
+			{Path: "/code/proj.worktrees/spike", Name: "spike"},
+		}},
+	}
+	rows, err := NewWorkspace(src, panes, repos).Rows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]Row{}
+	for _, r := range rows {
+		byName[r.Worktree] = r
+	}
+	if r := byName["proj"]; r.Kind != RowAgent || !r.IsPrimary {
+		t.Fatalf("an agent in the primary worktree should be a RowAgent that is still IsPrimary, got %+v", r)
+	}
+	if r := byName["spike"]; r.Kind != RowSlot || r.IsPrimary {
+		t.Fatalf("a slot must not be IsPrimary, got %+v", r)
+	}
+}
+
 func TestWorkspaceCachesGitLookups(t *testing.T) {
 	const gd = "/code/proj/.git"
 	src := &fakeSource{list: nil}

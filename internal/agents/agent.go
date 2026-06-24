@@ -104,6 +104,13 @@ type Row struct {
 	Repo string
 	// Branch is the worktree's checked-out branch for managed rows; empty otherwise.
 	Branch string
+	// IsPrimary reports whether this row's worktree is git's primary worktree (the repo
+	// base), independent of whether an agent runs in it. It is the first-class fact the
+	// lifecycle guards key on — git refuses to remove a primary worktree, so it can never
+	// be deleted and Enter opens a shell rather than spawning. Kind (anchor vs agent)
+	// follows agent presence and so cannot carry this on its own: a recognized agent in
+	// the base is a RowAgent that is still IsPrimary.
+	IsPrimary bool
 	// GitDir is the repository's shared git common dir — its identity across all its
 	// worktrees — used to detect when two repos sharing a basename make a handle
 	// ambiguous. Empty for incidental agents.
@@ -122,10 +129,21 @@ type Row struct {
 }
 
 // isManagedWorktree reports whether the row is a removable managed worktree (not the
-// anchor): deleting it also runs `git worktree remove`. An incidental agent — a window
-// with no worktree — is only closed. This mirrors the orchestrator's own delete logic.
+// primary): deleting it also runs `git worktree remove`. An incidental agent — a window
+// with no worktree — is only closed, and the primary worktree is never removable. This
+// mirrors the orchestrator's own delete logic.
 func (r Row) isManagedWorktree() bool {
-	return r.Worktree != "" && r.Kind != RowAnchor && r.Dir != ""
+	return r.Worktree != "" && !r.IsPrimary && r.Dir != ""
+}
+
+// hasWindow reports whether the row has a live tmux window or pane of its own.
+func (r Row) hasWindow() bool { return r.TmuxWindow != "" || r.TmuxPane != "" }
+
+// isWindowlessStructural reports whether the row is a base or slot with no live window —
+// a worktree on disk with no terminal attached. Capturing its session would surface an
+// unrelated window, so it previews nothing and reads as a dormant state, not a failure.
+func (r Row) isWindowlessStructural() bool {
+	return !r.hasWindow() && (r.Kind == RowAnchor || r.Kind == RowSlot)
 }
 
 // RowSource yields the rows the agents view renders. The plain agents view uses an

@@ -96,14 +96,25 @@ A managed repo's section bar additionally carries a source-control indicator (`�
 worktree count, so recognition reads from a glyph and a word, never color. Within the repo
 the base pins first and slots sort last, while live worktrees keep the status ordering.
 
-**Action feedback** (a rejected action, an error, a confirm) is *notable*, never the faint
-help line — otherwise a no-op looks like nothing happened. It renders on a fixed line below
-the list, bold and color-coded, paired with a glyph so it reads without color: a rejection or
-failure is `✗` in `Red`, a neutral confirmation (e.g. *delete cancelled*) is `•` in the
-accent, and a destructive confirm prompt is bold `Red` with its `(y/n)`. The line is always a
-single row, so it fits the same height budget the list and preview share. A notice is
-*transient*: it auto-dismisses after a few seconds, and clears the moment the cursor moves —
-feedback that is acknowledged should get out of the way, never linger as stale state.
+**Action feedback** (a rejected action, an error, a confirmation) is *notable*, never the
+faint help line — otherwise a no-op looks like nothing happened. It renders on a fixed line
+below the list, bold and color-coded, paired with a glyph so it reads without color: a
+rejection or failure is `✗` in `Red`, a neutral confirmation (e.g. *delete cancelled*) is `•`
+in the accent. Even an action with nothing to do still speaks — closing an empty slot reports
+*nothing to close* rather than swallowing the key. The line is always a single row, so it fits
+the same height budget the list and preview share. A notice is *transient*: it auto-dismisses
+after a few seconds, and clears the moment the cursor moves — feedback that is acknowledged
+should get out of the way, never linger as stale state.
+
+A **destructive confirmation** is not a status line but a centered modal whose frame is tinted
+a warning hue, so the caution registers before any text is read: `Gold` for a plain delete, the
+more severe `Red` for the dirty-worktree force-remove (which discards uncommitted changes). Its
+prompt *wraps* to the modal width (a popup, unlike the single-row status line, so a long
+worktree name is never sheared). The `cancel`/`confirm` choices are **selectable buttons**
+defaulting to `cancel`: `←/→`/`h`/`l`/`tab` move between them and `⏎` activates the highlighted
+one, while the `y`/`n` shortcuts still fire directly. The selected button carries the tool-wide
+selection treatment (accent `CursorGlyph`, accent text, `RowHL` background); each button's
+hotkey letter stays accented on both sides so the shortcut reads without relying on selection.
 
 ## Layout philosophy
 
@@ -196,7 +207,12 @@ verbs call it directly, so the dash's `dd` (close) and `dD` (delete) are the *sa
 operations as `be agents close` and `be agents delete` — neither face holds a power the
 other lacks. Teardown safety is a property of the *key*, not a dialog: `dd` closes a window
 only (reversible — the worktree persists as a slot) and acts instantly, while only the
-irreversible `dD` (which also runs `git worktree remove`) confirms. Addressing follows the durability
+irreversible `dD` (which also runs `git worktree remove`) confirms. That reversibility is
+realized, not nominal: `⏎` on a windowless row gives it a window of its own and attaches —
+an agent for a slot (a *spawn target*, started in its existing worktree with no re-`add`), a
+plain shell for the base (agentless by design) — the inverse of the `dd` that closed it.
+(`⏎` on a windowed row jumps to it as usual; a windowless row has no window to jump to, so
+the key would otherwise land on an unrelated window in the session.) Addressing follows the durability
 tiers literally: a unit of work is named by its git worktree (`<repo>` for the base,
 `<repo>/<worktree>` for a linked one), derived from `git-common-dir` + `git worktree list`
 on every call; a worktreeless agent is named by its tmux pane id (`%id`); the agent process

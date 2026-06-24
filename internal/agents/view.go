@@ -110,6 +110,13 @@ func cursorGlyphStyle(accent lipgloss.Color) lipgloss.Style {
 // draws). An over-long title is truncated; a panel too narrow for any title keeps its
 // plain top border.
 func panelTitle(box, title string, accent lipgloss.Color) string {
+	return panelTitleBordered(box, title, accent, lipColor(theme.Border))
+}
+
+// panelTitleBordered is panelTitle with the top-border runes drawn in a caller-chosen
+// color rather than the default theme.Border. The confirm modals use it to tint the
+// whole frame (a warning hue), so the rebuilt title line matches the body's border.
+func panelTitleBordered(box, title string, titleColor, borderColor lipgloss.Color) string {
 	lines := strings.Split(box, "\n")
 	if len(lines) == 0 {
 		return box
@@ -126,8 +133,8 @@ func panelTitle(box, title string, accent lipgloss.Color) string {
 		trail = 1
 	}
 	rb := lipgloss.RoundedBorder()
-	bc := lipgloss.NewStyle().Foreground(lipColor(theme.Border))
-	tc := lipgloss.NewStyle().Foreground(accent).Bold(true)
+	bc := lipgloss.NewStyle().Foreground(borderColor)
+	tc := lipgloss.NewStyle().Foreground(titleColor).Bold(true)
 	lines[0] = bc.Render(rb.TopLeft+strings.Repeat(rb.Top, lead)) +
 		tc.Render(label) +
 		bc.Render(strings.Repeat(rb.Top, trail)+rb.TopRight)
@@ -239,6 +246,7 @@ type model struct {
 	worktreeEdited bool        // the user edited the worktree field, so stop auto-deriving it
 	focusField     formField   // which new-agent field has focus (fieldBranch / fieldWorktree)
 	target         Row         // the row the active modal acts on (new-agent repo / delete confirm)
+	confirmChoice  int         // selected button in a confirm modal: 0 cancel (safe default), 1 confirm
 	notice         string      // transient status line (feedback from actions)
 	noticeLevel    noticeLevel // how to style the notice (error vs neutral info)
 	noticeGen      int         // bumped each time a notice is set, so a stale auto-dismiss no-ops
@@ -520,8 +528,10 @@ func (m model) firstRowOfSession(key string) (Row, bool) {
 	return Row{}, false
 }
 
-// refreshPreview captures the selected row's pane preview, caching the result. Any row
-// with a tmux location (agent, anchor, or slot) can be previewed.
+// refreshPreview captures the selected row's pane preview, caching the result. A row is
+// previewed by its own pane/window; a structural row (a base or slot) with no live window
+// of its own shows nothing — capturing its session would surface an unrelated window
+// (e.g. a sibling worktree's), which reads as if the empty slot were running something.
 func (m *model) refreshPreview() {
 	if m.prev == nil {
 		m.preview = ""
@@ -529,6 +539,10 @@ func (m *model) refreshPreview() {
 	}
 	r, ok := m.currentRow()
 	if !ok || r.TmuxSession == "" {
+		m.preview = ""
+		return
+	}
+	if r.isWindowlessStructural() {
 		m.preview = ""
 		return
 	}
@@ -617,6 +631,13 @@ func (m model) applyAction(a Action) (tea.Model, tea.Cmd) {
 		return m.startDelete()
 	case ActionSelect:
 		if r, ok := m.currentRow(); ok {
+			// A windowless base or slot has no window to jump to; jumping would land on
+			// an unrelated window in the session. Instead Enter wakes it — gives it a
+			// window of its own and attaches (wake picks a shell for the base, an agent
+			// for a slot) — the inverse of the `dd` that closed it.
+			if m.orch != nil && r.isWindowlessStructural() {
+				return m.wake(r)
+			}
 			m.chosen = &r
 		}
 		return m, tea.Quit
@@ -928,10 +949,12 @@ func (m model) newAgentModal() string {
 	return panelTitle(box, "new agent", m.accent)
 }
 
-// confirmModal renders the delete confirmation as a centered popup, consistent with the
-// new-agent modal (DESIGN.md's single modal style) and replacing the old inline (y/n)
-// line. modeConfirmDelete asks before removing a worktree; modeConfirmForce folds the
-// dirty-worktree force choice into the same popup, defaulting to cancel.
+// confirmModal renders a destructive-action confirmation as a centered popup (DESIGN.md's
+// single modal style). The frame is tinted a warning hue so it reads as a caution before
+// any color is parsed: Gold for a plain delete, the more severe Red for the dirty-worktree
+// force escalation. The prompt wraps to the modal width (it is a popup, not the
+// single-row status line, so a long worktree name no longer gets sheared off), and the
+// y/n choices render as selectable buttons defaulting to cancel.
 func (m model) confirmModal() string {
 	width := clamp(m.width/2, 32, 52)
 	if m.width > 0 && width > m.width-4 {
@@ -939,23 +962,43 @@ func (m model) confirmModal() string {
 	}
 	inner := width - 2 // inside the border's left/right padding (frameStyle pads 0,1)
 
-	text := lipgloss.NewStyle().Foreground(lipColor(theme.Text))
-	hint := lipgloss.NewStyle().Faint(true)
+	wrap := lipgloss.NewStyle().Width(inner)
+	text := wrap.Foreground(lipColor(theme.Text))
 
-	var title, prompt, choices string
+	var title, prompt, confirmLabel string
+	var warn lipgloss.Color
 	switch m.mode {
 	case modeConfirmForce:
-		title = "force delete"
-		prompt = lipgloss.NewStyle().Foreground(lipColor(theme.Red)).Render(
-			truncate(fmt.Sprintf("worktree %q has uncommitted changes.", m.target.Worktree), inner))
-		choices = hint.Render("y force-remove (discards changes)   n cancel")
+		title, warn = "force delete", lipColor(theme.Red)
+		prompt = wrap.Foreground(warn).Render(
+			fmt.Sprintf("worktree %q has uncommitted changes. Force-remove and discard them?", m.target.Worktree))
+		confirmLabel = "discard & remove"
 	default:
-		title = "delete"
-		prompt = text.Render(truncate(m.deletePrompt(), inner))
-		choices = hint.Render("y confirm   n cancel")
+		title, warn = "delete", lipColor(theme.Gold) // Gold is the warning hue here (context-scoped, like its dir/working uses)
+		prompt = text.Render(m.deletePrompt())
+		confirmLabel = "confirm"
 	}
-	box := frameStyle.Width(width).Render(strings.Join([]string{prompt, "", choices}, "\n"))
-	return panelTitle(box, title, m.accent)
+
+	choices := confirmButtons(m.confirmChoice, confirmLabel, m.accent)
+	box := frameStyle.BorderForeground(warn).Width(width).Render(strings.Join([]string{prompt, "", choices}, "\n"))
+	return panelTitleBordered(box, title, warn, warn)
+}
+
+// confirmButtons renders the cancel/confirm pair for a confirm modal. The selected button
+// carries the tool-wide selection treatment (the accent cursor glyph, accent text, RowHL
+// background); the other stays faint. Each button's hotkey letter (n/y) is bold-accented in
+// both so the shortcut reads even on the unselected side — never color alone, per DESIGN.md.
+func confirmButtons(selected int, confirmLabel string, accent lipgloss.Color) string {
+	hotkey := lipgloss.NewStyle().Foreground(accent).Bold(true)
+	faint := lipgloss.NewStyle().Faint(true)
+	button := func(idx int, key, label string) string {
+		if idx == selected {
+			sel := lipgloss.NewStyle().Foreground(accent).Background(rowHL).Bold(true)
+			return sel.Render(theme.CursorGlyph + " " + key + " " + label + " ")
+		}
+		return faint.Render("  ") + hotkey.Render(key) + " " + label + faint.Render(" ")
+	}
+	return button(0, "n", "cancel") + "   " + button(1, "y", confirmLabel)
 }
 
 // formField renders one input line of the new-agent form. The focused field is accented
@@ -1357,13 +1400,34 @@ func (m model) renderPreview(list string) string {
 
 	lines := previewLines(m.preview, inner, w)
 	if len(lines) == 0 {
-		lines = []string{placeholderStyle.Render("(no preview available)")}
+		lines = strings.Split(m.previewPlaceholder(), "\n")
 	}
 	// w is the text width; lipgloss Width includes the frame's horizontal
 	// padding, so set Width(w+2) to keep the text area exactly w. Otherwise
 	// each w-wide line wraps, inflating the frame height past the terminal.
 	box := frameStyle.Width(w + 2).Height(inner).Render(strings.Join(lines, "\n"))
 	return panelTitle(box, "preview", m.accent)
+}
+
+// previewPlaceholder is shown when the preview pane has nothing to capture. A windowless
+// base or slot is not a failed capture — it's a worktree with no open window — so it reads
+// as an accented, actionable notice (an accent glyph + words, never color alone per
+// DESIGN.md) that says what the row is and how to wake it, rather than the faint
+// "(no preview available)" reserved for a real window that simply produced no output.
+func (m model) previewPlaceholder() string {
+	r, ok := m.currentRow()
+	if ok && r.isWindowlessStructural() {
+		head := lipgloss.NewStyle().Foreground(m.accent).Bold(true)
+		hint := lipgloss.NewStyle().Foreground(m.accent)
+		// Match what ⏎ (wake) will do: a shell for the base, an agent for a slot.
+		if r.IsPrimary {
+			return head.Render(anchorGlyph+" No window to preview.") + "\n" +
+				hint.Render("⏎ opens a shell here.")
+		}
+		return head.Render(slotGlyph+" No window to preview.") + "\n" +
+			hint.Render("⏎ spawns an agent here.")
+	}
+	return placeholderStyle.Render("(no preview available)")
 }
 
 // previewLines turns captured pane text into at most h display lines of width w.

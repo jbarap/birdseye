@@ -127,6 +127,44 @@ func TestHandlesAndKinds(t *testing.T) {
 	}
 }
 
+// TestPrimaryWorktreeWithAgentAddressesAsBase guards the conflation fix end-to-end: a
+// recognized agent in the primary worktree must still address as `<repo>` and resolve as a
+// primary (base), so `be agents delete` refuses it cleanly instead of `proj/proj` slipping
+// through to a git error.
+func TestPrimaryWorktreeWithAgentAddressesAsBase(t *testing.T) {
+	const gd = "/code/proj/.git"
+	src := fakeSource{list: []agents.Agent{
+		{SessionID: "base-agent", TmuxSession: "proj", TmuxWindow: "0", TmuxPane: "%1", Title: "proj", Status: agents.StatusWorking},
+	}}
+	panes := fakePanes{list: []agents.PaneInfo{
+		{Session: "proj", WindowIndex: "0", PaneID: "%1", StartPath: "/code/proj"},
+	}}
+	repos := fakeRepos{
+		m:   map[string]agents.RepoInfo{"/code/proj": repoAt(gd, "proj", "/code/proj", "proj", true)},
+		wts: map[string][]agents.WorktreeInfo{gd: {{Path: "/code/proj", Name: "proj", Branch: "main", IsPrimary: true}}},
+	}
+	f := New(fakeClient(), "claude", src, panes, repos)
+
+	recs, err := f.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != 1 || recs[0].Handle != "proj" || recs[0].Kind != "base" {
+		t.Fatalf("an agent in the primary worktree should address as the `proj` base, got %+v", recs)
+	}
+
+	got, err := f.Resolve("proj")
+	if err != nil {
+		t.Fatalf("resolve proj: %v", err)
+	}
+	if !got.IsPrimary {
+		t.Fatalf("the resolved base must be IsPrimary, got %+v", got)
+	}
+	if err := f.Delete(got, false); err == nil {
+		t.Fatal("deleting the primary worktree must be refused")
+	}
+}
+
 // TestRecordJSONShape pins the stable field names another agent codes against.
 func TestRecordJSONShape(t *testing.T) {
 	f := projFleet()

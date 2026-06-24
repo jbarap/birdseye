@@ -83,10 +83,11 @@ func (f *Fleet) rows() ([]agents.Row, error) {
 	return agents.NewWorkspace(f.src, f.panes, f.repos).Rows()
 }
 
-// kindOf maps a reconciled row to the contract's kind vocabulary.
+// kindOf maps a reconciled row to the contract's kind vocabulary. The primary worktree is
+// the base whether or not an agent runs in it, so it keys on IsPrimary, not Kind.
 func kindOf(r agents.Row) string {
 	switch {
-	case r.Kind == agents.RowAnchor:
+	case r.IsPrimary:
 		return "base"
 	case r.Kind == agents.RowSlot:
 		return "slot"
@@ -97,11 +98,12 @@ func kindOf(r agents.Row) string {
 	}
 }
 
-// handleOf derives a row's address: `<repo>` for an anchor, `<repo>/<worktree>`
-// for a linked worktree, the tmux pane id for a worktreeless agent.
+// handleOf derives a row's address: `<repo>` for the primary worktree (base),
+// `<repo>/<worktree>` for a linked worktree, the tmux pane id for a worktreeless agent.
+// The base keys on IsPrimary so a recognized agent in it still addresses as `<repo>`.
 func handleOf(r agents.Row) string {
 	switch {
-	case r.Kind == agents.RowAnchor:
+	case r.IsPrimary:
 		return r.Repo
 	case r.Worktree != "" && r.Repo != "":
 		return r.Repo + "/" + r.Worktree
@@ -221,7 +223,7 @@ func targetFromRow(r agents.Row) Target {
 		Pane:      r.TmuxPane,
 		Status:    statusString(r),
 		Kind:      kindOf(r),
-		IsPrimary: r.Kind == agents.RowAnchor,
+		IsPrimary: r.IsPrimary,
 	}
 }
 
@@ -259,6 +261,49 @@ func (f *Fleet) Spawn(repoDir, session, branch, name, prompt string) (string, er
 		return "", err
 	}
 	return info.Repo + "/" + filepath.Base(wtDir), nil
+}
+
+// Open starts an agent in an existing worktree — a windowless slot left behind when a
+// window was closed with `dd`. It is Spawn minus worktree.Add: the directory must already
+// exist, so re-opening a slot is identical to a fresh spawn minus the checkout. A primary
+// worktree is refused — the base is not a spawn slot (use OpenShell for it).
+func (f *Fleet) Open(t Target) (string, error) {
+	if t.IsPrimary {
+		return "", fmt.Errorf("%q is a primary worktree, not a slot", t.Handle)
+	}
+	return f.openWindow(t, f.command)
+}
+
+// OpenShell opens a plain (agentless) window in an existing worktree, returning the
+// `repo/worktree` handle. It re-gives the repo base a window after `dd` closed it — the
+// base is agentless by design, so it gets a shell, not the agent command. Unlike Open it
+// allows a primary worktree.
+func (f *Fleet) OpenShell(t Target) (string, error) {
+	return f.openWindow(t, "")
+}
+
+// openWindow resolves the worktree's repository, ensures (reuses) the tmux session, opens a
+// window rooted at the worktree running command (empty for a plain shell), and returns the
+// `repo/worktree` handle. The directory must already exist; it adds no worktree.
+func (f *Fleet) openWindow(t Target, command string) (string, error) {
+	if t.Dir == "" {
+		return "", fmt.Errorf("no worktree to open")
+	}
+	info, ok := f.repos.Resolve(t.Dir)
+	if !ok {
+		return "", fmt.Errorf("not a git repository: %s", t.Dir)
+	}
+	session := t.Session
+	if session == "" {
+		session = dir.SessionName(info.Repo)
+	}
+	if err := f.client.Ensure(session, filepath.Dir(info.GitDir)); err != nil {
+		return "", err
+	}
+	if _, err := f.client.NewWindow(session, t.Dir, command); err != nil {
+		return "", err
+	}
+	return info.Repo + "/" + filepath.Base(t.Dir), nil
 }
 
 // Close tears down a unit of work's tmux window and leaves the worktree on disk

@@ -49,6 +49,10 @@ func key(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyDown}
 	case "up":
 		return tea.KeyMsg{Type: tea.KeyUp}
+	case "left":
+		return tea.KeyMsg{Type: tea.KeyLeft}
+	case "right":
+		return tea.KeyMsg{Type: tea.KeyRight}
 	case "enter":
 		return tea.KeyMsg{Type: tea.KeyEnter}
 	case "esc":
@@ -230,6 +234,63 @@ func TestPreviewFollowsCursorAndRefresh(t *testing.T) {
 	m = send(m, tickMsg(time.Now()))
 	if m.preview != "B updated" {
 		t.Fatalf("preview should refresh with tick, got %q", m.preview)
+	}
+}
+
+// TestWindowlessStructuralRowShowsNoPreview pins the rule that a base or slot with no
+// live window of its own previews nothing — capturing its session would surface a sibling
+// worktree's window and read as if the empty slot were running something. The previewer is
+// primed with output for the slot's id to prove the gate, not the capture, suppresses it.
+func TestWindowlessStructuralRowShowsNoPreview(t *testing.T) {
+	prev := &fakePreviewer{out: map[string]string{
+		"slot:proj:spike": "a sibling window's output",
+		"anchor:proj":     "the active window's output",
+	}}
+	rows := []Row{
+		{Kind: RowSlot, SessionID: "slot:proj:spike", TmuxSession: "proj", Worktree: "spike", Managed: true, Dir: "/d"},
+		{Kind: RowAnchor, SessionID: "anchor:proj", TmuxSession: "proj", Worktree: "main", Managed: true, Dir: "/d", IsPrimary: true},
+	}
+	m, err := newModel(fixedRows{rows}, prev, DefaultKeymap(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.preview != "" {
+		t.Fatalf("a windowless slot must show no preview, got %q", m.preview)
+	}
+	m = send(m, key("j")) // onto the windowless base
+	if m.preview != "" {
+		t.Fatalf("a windowless base must show no preview, got %q", m.preview)
+	}
+}
+
+// TestPreviewPlaceholderByRowKind pins the empty-preview copy to the row: a windowless
+// slot or base reads as a dormant, actionable state (not a failed capture), while a real
+// window that produced nothing keeps the faint generic placeholder.
+func TestPreviewPlaceholderByRowKind(t *testing.T) {
+	cases := []struct {
+		name string
+		row  Row
+		want string // substring the placeholder must contain
+		deny string // substring it must not contain
+	}{
+		{"slot", Row{Kind: RowSlot, TmuxSession: "proj", Repo: "proj", Worktree: "spike", Dir: "/d"}, "spawns an agent", "no preview available"},
+		{"base", Row{Kind: RowAnchor, TmuxSession: "proj", Repo: "proj", Worktree: "main", Dir: "/d", IsPrimary: true}, "opens a shell", "no preview available"},
+		{"windowed agent, empty capture", Row{Kind: RowAgent, SessionID: "a", TmuxSession: "proj", TmuxWindow: "1", TmuxPane: "%1"}, "no preview available", "spawns an agent"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, err := newModel(fixedRows{[]Row{tc.row}}, &fakePreviewer{}, DefaultKeymap(), 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := m.previewPlaceholder()
+			if !strings.Contains(got, tc.want) {
+				t.Fatalf("placeholder %q should contain %q", got, tc.want)
+			}
+			if strings.Contains(got, tc.deny) {
+				t.Fatalf("placeholder %q should not contain %q", got, tc.deny)
+			}
+		})
 	}
 }
 

@@ -1,6 +1,10 @@
 package agents
 
-import "testing"
+import (
+	"errors"
+	"strings"
+	"testing"
+)
 
 type spawnCall struct {
 	repo   Row
@@ -16,6 +20,10 @@ type fakeOrch struct {
 	spawns      []spawnCall
 	closes      []Row
 	removes     []removeCall
+	opens       []Row
+	shellOpens  []Row
+	openErr     error  // when set, Open/OpenShell returns it
+	onOpen      func() // optional: simulate the worktree gaining a window after Open/OpenShell
 	dirty       bool   // when true, Remove(force=false) reports ErrWorktreeDirty
 	newSessions int    // count of NewSession calls
 	newSession  string // session name NewSession returns
@@ -23,6 +31,28 @@ type fakeOrch struct {
 
 func (f *fakeOrch) Spawn(repo Row, branch, name string) error {
 	f.spawns = append(f.spawns, spawnCall{repo, branch, name})
+	return nil
+}
+
+func (f *fakeOrch) Open(slot Row) error {
+	f.opens = append(f.opens, slot)
+	if f.openErr != nil {
+		return f.openErr
+	}
+	if f.onOpen != nil {
+		f.onOpen()
+	}
+	return nil
+}
+
+func (f *fakeOrch) OpenShell(r Row) error {
+	f.shellOpens = append(f.shellOpens, r)
+	if f.openErr != nil {
+		return f.openErr
+	}
+	if f.onOpen != nil {
+		f.onOpen()
+	}
 	return nil
 }
 
@@ -48,6 +78,12 @@ func (f *fakeOrch) NewSession() (string, error) {
 type fixedRows struct{ rows []Row }
 
 func (f fixedRows) Rows() ([]Row, error) { return f.rows, nil }
+
+// mutableRows is a RowSource whose rows can change between reloads, used to simulate a
+// slot gaining a window after Open.
+type mutableRows struct{ rows []Row }
+
+func (m *mutableRows) Rows() ([]Row, error) { return m.rows, nil }
 
 func modelWith(t *testing.T, orch Orchestrator, rows []Row) model {
 	t.Helper()
@@ -195,7 +231,8 @@ func TestCloseAndDeleteChords(t *testing.T) {
 }
 
 // TestCloseWindowlessSlotIsNoop checks the close action no-ops on a windowless slot:
-// there is no tmux window to close, so the orchestrator is never invoked.
+// there is no tmux window to close, so the orchestrator is never invoked — but the user
+// still gets feedback rather than a swallowed keystroke.
 func TestCloseWindowlessSlotIsNoop(t *testing.T) {
 	orch := &fakeOrch{}
 	m := modelWith(t, orch, []Row{{Kind: RowSlot, SessionID: "slot:proj:spike", TmuxSession: "proj", Worktree: "spike", Managed: true, Dir: "/d"}})
@@ -204,15 +241,151 @@ func TestCloseWindowlessSlotIsNoop(t *testing.T) {
 	if len(orch.closes) != 0 {
 		t.Fatalf("closing a windowless slot should be a no-op, got %+v", orch.closes)
 	}
+	if m.notice == "" || m.noticeLevel != noticeInfo {
+		t.Fatalf("a windowless-slot close should report feedback, notice=%q level=%v", m.notice, m.noticeLevel)
+	}
+	if strings.Contains(m.notice, "base") {
+		t.Fatalf("a slot close must not be phrased as the base, notice=%q", m.notice)
+	}
+}
+
+// TestCloseWindowlessBaseFeedback covers the bug where closing a base worktree's window
+// (when other worktrees keep the session alive) left a windowless base that a second `dd`
+// mislabeled as an empty slot — and wrongly suggested `dD`, which is blocked on the anchor.
+// A windowless base must read as the base, never as a removable slot.
+func TestCloseWindowlessBaseFeedback(t *testing.T) {
+	orch := &fakeOrch{}
+	m := modelWith(t, orch, []Row{{Kind: RowAnchor, SessionID: "anchor:proj", TmuxSession: "proj", Worktree: "main", Repo: "proj", Managed: true, Dir: "/d", IsPrimary: true}})
+	nm, _ := m.startClose()
+	m = nm.(model)
+	if len(orch.closes) != 0 {
+		t.Fatalf("a windowless base has no window to close, got %+v", orch.closes)
+	}
+	if m.notice == "" || m.noticeLevel != noticeInfo {
+		t.Fatalf("a windowless-base close should report feedback, notice=%q level=%v", m.notice, m.noticeLevel)
+	}
+	if strings.Contains(m.notice, "slot") || strings.Contains(m.notice, "dD") {
+		t.Fatalf("a base must not be called a slot nor suggest dD, notice=%q", m.notice)
+	}
+}
+
+// TestEnterOnWindowlessSlotSpawnsAndAttaches drives the slot spawn-target path: Enter on a
+// windowless slot opens an agent in its existing worktree (never recreating it), then
+// attaches to the now-windowed row rather than jumping to an unrelated window.
+func TestEnterOnWindowlessSlotSpawnsAndAttaches(t *testing.T) {
+	slot := Row{Kind: RowSlot, SessionID: "slot:proj:spike", TmuxSession: "proj", Repo: "proj", Worktree: "spike", Managed: true, Dir: "/d"}
+	src := &mutableRows{rows: []Row{slot}}
+	orch := &fakeOrch{onOpen: func() {
+		// Open spawned a window in the slot's worktree; the reload now sees it windowed.
+		windowed := slot
+		windowed.TmuxWindow, windowed.TmuxPane = "2", "%9"
+		src.rows = []Row{windowed}
+	}}
+	m, err := newModel(src, nil, DefaultKeymap(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.orch = orch
+
+	nm, cmd := m.applyAction(ActionSelect)
+	m = nm.(model)
+	if len(orch.opens) != 1 || orch.opens[0].Worktree != "spike" {
+		t.Fatalf("Enter on a windowless slot should Open it once, got %+v", orch.opens)
+	}
+	if len(orch.spawns) != 0 {
+		t.Fatalf("opening a slot must reuse it, not Spawn a new worktree, got %+v", orch.spawns)
+	}
+	if m.chosen == nil || m.chosen.TmuxPane != "%9" {
+		t.Fatalf("Enter should attach to the freshly-opened window, chosen=%+v", m.chosen)
+	}
+	if cmd == nil {
+		t.Fatal("attaching should return a quit command")
+	}
+}
+
+// TestEnterOnWindowlessBaseOpensShellAndAttaches covers the base path: Enter on a
+// windowless base opens a plain shell (never an agent) in the base worktree and attaches to
+// it, rather than dropping the user onto an unrelated agent's window in the session.
+func TestEnterOnWindowlessBaseOpensShellAndAttaches(t *testing.T) {
+	base := Row{Kind: RowAnchor, SessionID: "anchor:proj", TmuxSession: "proj", Repo: "proj", Worktree: "main", Managed: true, Dir: "/code/proj", IsPrimary: true}
+	src := &mutableRows{rows: []Row{base}}
+	orch := &fakeOrch{onOpen: func() {
+		windowed := base
+		windowed.TmuxWindow, windowed.TmuxPane = "1", "%3"
+		src.rows = []Row{windowed}
+	}}
+	m, err := newModel(src, nil, DefaultKeymap(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.orch = orch
+
+	nm, cmd := m.applyAction(ActionSelect)
+	m = nm.(model)
+	if len(orch.shellOpens) != 1 || orch.shellOpens[0].Dir != "/code/proj" {
+		t.Fatalf("Enter on a windowless base should OpenShell it once, got %+v", orch.shellOpens)
+	}
+	if len(orch.opens) != 0 || len(orch.spawns) != 0 {
+		t.Fatalf("the base must get a shell, not an agent, opens=%+v spawns=%+v", orch.opens, orch.spawns)
+	}
+	if m.chosen == nil || m.chosen.TmuxPane != "%3" {
+		t.Fatalf("Enter should attach to the freshly-opened base window, chosen=%+v", m.chosen)
+	}
+	if cmd == nil {
+		t.Fatal("attaching should return a quit command")
+	}
+}
+
+// TestEnterOnWindowlessSlotOpenError keeps the view alive on failure: a failed Open reports
+// the error and attaches to nothing.
+func TestEnterOnWindowlessSlotOpenError(t *testing.T) {
+	slot := Row{Kind: RowSlot, SessionID: "slot:proj:spike", TmuxSession: "proj", Repo: "proj", Worktree: "spike", Managed: true, Dir: "/d"}
+	orch := &fakeOrch{openErr: errors.New("boom")}
+	m := modelWith(t, orch, []Row{slot})
+
+	nm, cmd := m.applyAction(ActionSelect)
+	m = nm.(model)
+	if m.chosen != nil {
+		t.Fatalf("a failed open must not attach, chosen=%+v", m.chosen)
+	}
+	if m.notice == "" || m.noticeLevel != noticeError {
+		t.Fatalf("a failed open should report an error notice, notice=%q level=%v", m.notice, m.noticeLevel)
+	}
+	if cmd != nil {
+		t.Fatal("a failed open should not quit")
+	}
 }
 
 func TestDeleteAnchorBlocked(t *testing.T) {
 	orch := &fakeOrch{}
-	m := modelWith(t, orch, []Row{{Kind: RowAnchor, SessionID: "anchor:proj", TmuxSession: "proj", Worktree: "main", Managed: true}})
+	m := modelWith(t, orch, []Row{{Kind: RowAnchor, SessionID: "anchor:proj", TmuxSession: "proj", Worktree: "main", Managed: true, IsPrimary: true}})
 	nm, _ := m.startDelete()
 	m = nm.(model)
+	if m.mode == modeConfirmDelete {
+		t.Fatal("deleting the base must not even open the confirm")
+	}
 	if len(orch.removes) != 0 {
 		t.Fatalf("the anchor must not be removable, removes=%v", orch.removes)
+	}
+}
+
+// TestDeletePrimaryWithAgentBlocked is the regression for the conflation bug: a recognized
+// agent running in the primary worktree is a RowAgent that is still IsPrimary, and must be
+// refused at the gate (cleanly) rather than slipping through to a git error.
+func TestDeletePrimaryWithAgentBlocked(t *testing.T) {
+	orch := &fakeOrch{}
+	primaryAgent := Row{Kind: RowAgent, SessionID: "a", TmuxSession: "proj", Repo: "proj", Worktree: "proj", Managed: true, Dir: "/code/proj", IsPrimary: true, TmuxWindow: "0", TmuxPane: "%1"}
+	m := modelWith(t, orch, []Row{primaryAgent})
+	nm, _ := m.startDelete()
+	m = nm.(model)
+	if m.mode == modeConfirmDelete {
+		t.Fatal("an agent in the base is still the base; delete must not open the confirm")
+	}
+	if m.notice == "" || m.noticeLevel != noticeError {
+		t.Fatalf("blocking the base delete should report why, notice=%q level=%v", m.notice, m.noticeLevel)
+	}
+	if len(orch.removes) != 0 {
+		t.Fatalf("the primary worktree must never be removed, removes=%v", orch.removes)
 	}
 }
 
@@ -250,6 +423,42 @@ func TestDeleteConfirmCancelDoesNothing(t *testing.T) {
 	m = nm.(model)
 	if m.mode != modeNormal || len(orch.removes) != 0 {
 		t.Fatalf("cancel must not remove anything, mode=%v removes=%v", m.mode, orch.removes)
+	}
+}
+
+// TestDeleteConfirmDefaultsToCancel verifies the selectable buttons start on cancel (the
+// safe default) and that ⏎ there cancels without removing anything.
+func TestDeleteConfirmDefaultsToCancel(t *testing.T) {
+	orch := &fakeOrch{dirty: false}
+	m := modelWith(t, orch, []Row{{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", Worktree: "feat", Managed: true, Dir: "/d"}})
+	nm, _ := m.startDelete()
+	m = nm.(model)
+	if m.confirmChoice != 0 {
+		t.Fatalf("confirm should default to cancel (0), got %d", m.confirmChoice)
+	}
+	nm, _ = m.handleConfirmKey(key("enter"))
+	m = nm.(model)
+	if m.mode != modeNormal || len(orch.removes) != 0 {
+		t.Fatalf("enter on the cancel button must not remove, mode=%v removes=%v", m.mode, orch.removes)
+	}
+}
+
+// TestDeleteConfirmSelectThenEnter moves the selection onto the confirm button and
+// activates it with ⏎ (no y keystroke), exercising the navigable-button path.
+func TestDeleteConfirmSelectThenEnter(t *testing.T) {
+	orch := &fakeOrch{dirty: false}
+	m := modelWith(t, orch, []Row{{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", Worktree: "feat", Managed: true, Dir: "/d"}})
+	nm, _ := m.startDelete()
+	m = nm.(model)
+	nm, _ = m.handleConfirmKey(key("right"))
+	m = nm.(model)
+	if m.confirmChoice != 1 {
+		t.Fatalf("right should move to the confirm button, got %d", m.confirmChoice)
+	}
+	nm, _ = m.handleConfirmKey(key("enter"))
+	m = nm.(model)
+	if m.mode != modeNormal || len(orch.removes) != 1 || orch.removes[0].force {
+		t.Fatalf("enter on confirm should Remove(force=false) once, mode=%v removes=%+v", m.mode, orch.removes)
 	}
 }
 

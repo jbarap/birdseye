@@ -20,6 +20,15 @@ type Orchestrator interface {
 	// the worktree name), opens a tmux window (in the row's session) rooted there, and
 	// starts the configured agent command.
 	Spawn(repo Row, branch, name string) error
+	// Open starts an agent in an existing windowless worktree (a slot): it opens a tmux
+	// window rooted at the slot's worktree and starts the configured agent command,
+	// adding no worktree (the directory already exists). It brings a dormant slot — a
+	// worktree whose window was closed with `dd` — back to life.
+	Open(slot Row) error
+	// OpenShell opens a plain (agentless) tmux window rooted at the row's worktree, adding
+	// no worktree. It re-gives the repo base a window after its window was closed with
+	// `dd` — the base is agentless by design, so it gets a shell, not an agent.
+	OpenShell(r Row) error
 	// Close tears down a row's tmux window only, leaving any managed worktree on disk
 	// (it then renders as a slot). It has no filesystem effect; the headless analog is
 	// `be agents close`.
@@ -89,6 +98,47 @@ func (m model) startNewAgent() (tea.Model, tea.Cmd) {
 	m.target = r
 	m.clearNotice()
 	return m, nil
+}
+
+// wake brings a windowless worktree row (a base or slot — see Row.isWindowlessStructural)
+// back to life and attaches to it. The base is agentless by design so it gets a plain
+// shell; a slot is a spawn target so it gets an agent. wake then reloads and selects the
+// now-windowed row. Resolving the attach target from the reloaded rows — rather than
+// trusting open to return coordinates — means it is the same reconciled row the rest of
+// the view uses. If the window can't be found after opening, it reports the action and
+// stays put rather than attaching to nothing.
+func (m model) wake(r Row) (tea.Model, tea.Cmd) {
+	if m.orch == nil {
+		return m, nil
+	}
+	open := m.orch.Open // a slot is a spawn target → an agent
+	if r.IsPrimary {
+		open = m.orch.OpenShell // the base is agentless → a plain shell
+	}
+	if err := open(r); err != nil {
+		m.setError("open: " + err.Error())
+		return m, nil
+	}
+	m.reloadAfterAction()
+	if w, ok := m.windowedRowForWorktree(r); ok {
+		m.chosen = &w
+		return m, tea.Quit
+	}
+	m.setInfo("opened a window")
+	return m, nil
+}
+
+// windowedRowForWorktree finds the now-windowed row for a just-opened worktree, identified
+// by its directory and session, so Enter can attach to the window wake created. The
+// worktree directory is the stable per-worktree identity (unique across a repo's slots and
+// its base), so it survives the row's kind changing from slot/base to windowed.
+func (m model) windowedRowForWorktree(src Row) (Row, bool) {
+	for _, r := range m.rows {
+		if src.Dir != "" && r.Dir == src.Dir && r.TmuxSession == src.TmuxSession && r.hasWindow() {
+			return r, true
+		}
+	}
+	return Row{}, false
 }
 
 // handleNewAgentKey drives the two-field new-agent form. Enter submits with the current
@@ -195,8 +245,12 @@ func (m model) startClose() (tea.Model, tea.Cmd) {
 	if !ok {
 		return m, nil
 	}
-	if r.TmuxWindow == "" && r.TmuxPane == "" {
-		return m, nil // a windowless slot: nothing to close
+	if !r.hasWindow() {
+		// Nothing to close. Say so rather than no-op silently, so the keystroke never
+		// looks like it was swallowed — and phrase it for what the row actually is: the
+		// repo base (which `dD` cannot remove) reads differently from an empty slot.
+		m.setInfo(nothingToCloseMsg(r))
+		return m, nil
 	}
 	if err := m.orch.Close(r); err != nil {
 		m.setError("close: " + err.Error())
@@ -207,9 +261,24 @@ func (m model) startClose() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// nothingToCloseMsg phrases the windowless-close feedback for what the row is. A managed
+// worktree slot can be torn down with `dD`, so its hint points there; the repo base has no
+// window and cannot be removed (`dD` is blocked on the anchor), so it must not suggest one.
+func nothingToCloseMsg(r Row) string {
+	switch {
+	case r.IsPrimary:
+		return "nothing to close — the repo base has no window"
+	case r.isManagedWorktree():
+		return "nothing to close — empty slot (dD removes the worktree)"
+	default:
+		return "nothing to close — no window here"
+	}
+}
+
 // startDelete opens a confirmation before any delete — a deliberate gate so an
-// accidental `dD` never removes a worktree. The anchor is never removable (git refuses
-// to remove a primary worktree). The actual removal happens in handleConfirmKey on "y".
+// accidental `dD` never removes a worktree. The primary worktree is never removable (git
+// refuses to remove it) — keyed on IsPrimary so a recognized agent in the base is refused
+// here, cleanly, rather than failing later in git. Removal happens in handleConfirmKey.
 func (m model) startDelete() (tea.Model, tea.Cmd) {
 	if m.orch == nil {
 		return m, nil
@@ -218,44 +287,52 @@ func (m model) startDelete() (tea.Model, tea.Cmd) {
 	if !ok {
 		return m, nil
 	}
-	if r.Kind == RowAnchor {
-		m.setError("the repo anchor cannot be deleted")
+	if r.IsPrimary {
+		m.setError("the repo base cannot be deleted — dd closes its window")
 		return m, nil
 	}
 	m.mode = modeConfirmDelete
 	m.target = r
+	m.confirmChoice = 0 // default to cancel, the safe choice
 	return m, nil
 }
 
-// handleConfirmKey resolves the delete confirmation: y removes, n/esc cancel (the
-// default). A dirty worktree declines the unforced remove and escalates to the force
-// confirmation rather than discarding changes silently.
+// handleConfirmKey resolves the delete confirmation. The two buttons (cancel / confirm)
+// are selectable: ←/→/h/l/tab move between them, ⏎ activates the highlighted one. The
+// y/n shortcuts still fire directly so muscle memory survives. A dirty worktree declines
+// the unforced remove and escalates to the force confirmation rather than discarding
+// changes silently.
 func (m model) handleConfirmKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch key.String() {
+	case "left", "right", "h", "l", "tab":
+		m.confirmChoice ^= 1
+		return m, nil
+	case "enter":
+		if m.confirmChoice == 0 {
+			return m.cancelConfirm()
+		}
+		fallthrough
 	case "y", "Y":
-		err := m.orch.Remove(m.target, false)
-		if errors.Is(err, ErrWorktreeDirty) {
-			m.mode = modeConfirmForce
-			return m, nil
-		}
-		m.mode = modeNormal
-		if err != nil {
-			m.setError("delete: " + err.Error())
-			return m, nil
-		}
-		m.clearNotice()
-		m.reloadAfterAction()
+		return m.runDelete(false)
 	case "n", "N", "esc", "ctrl+c", "q":
-		m.mode = modeNormal
-		m.setInfo("delete cancelled")
+		return m.cancelConfirm()
 	}
 	return m, nil
 }
 
-// handleConfirmForceKey resolves the dirty-worktree escalation: y forces removal
-// (discarding changes), n/esc cancel (the default).
+// handleConfirmForceKey resolves the dirty-worktree escalation, sharing the confirm
+// modal's selectable buttons. y/⏎-on-confirm forces removal (discarding changes); n/esc
+// cancel (the default).
 func (m model) handleConfirmForceKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch key.String() {
+	case "left", "right", "h", "l", "tab":
+		m.confirmChoice ^= 1
+		return m, nil
+	case "enter":
+		if m.confirmChoice == 0 {
+			return m.cancelConfirm()
+		}
+		fallthrough
 	case "y", "Y":
 		m.mode = modeNormal
 		if err := m.orch.Remove(m.target, true); err != nil {
@@ -264,9 +341,36 @@ func (m model) handleConfirmForceKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.clearNotice()
 			m.reloadAfterAction()
 		}
+		return m, nil
 	case "n", "N", "esc", "ctrl+c", "q":
-		m.mode = modeNormal
-		m.setInfo("delete cancelled")
+		return m.cancelConfirm()
 	}
+	return m, nil
+}
+
+// runDelete probes an unforced remove of the target; a dirty worktree escalates to the
+// force confirmation (resetting the button selection to its safe default) instead of
+// discarding changes. force is reserved for the escalated path in handleConfirmForceKey.
+func (m model) runDelete(force bool) (tea.Model, tea.Cmd) {
+	err := m.orch.Remove(m.target, force)
+	if errors.Is(err, ErrWorktreeDirty) {
+		m.mode = modeConfirmForce
+		m.confirmChoice = 0
+		return m, nil
+	}
+	m.mode = modeNormal
+	if err != nil {
+		m.setError("delete: " + err.Error())
+		return m, nil
+	}
+	m.clearNotice()
+	m.reloadAfterAction()
+	return m, nil
+}
+
+// cancelConfirm dismisses either confirm modal without acting, reporting the cancel.
+func (m model) cancelConfirm() (tea.Model, tea.Cmd) {
+	m.mode = modeNormal
+	m.setInfo("delete cancelled")
 	return m, nil
 }

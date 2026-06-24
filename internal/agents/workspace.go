@@ -218,13 +218,14 @@ func (w *Workspace) managedRows(sess string, panes []PaneInfo, repo RepoInfo, by
 			r := agentRow(agent)
 			r.Dir, r.Worktree, r.Managed = wt.Path, wt.Name, true
 			r.Repo, r.Branch, r.GitDir = repo.Repo, wt.Branch, repo.GitDir
+			r.IsPrimary = wt.IsPrimary // a recognized agent in the base is still primary
 			out = append(out, r)
 			claimed[agent.SessionID] = true
 		case wt.IsPrimary:
 			r := Row{
 				Kind: RowAnchor, SessionID: "anchor:" + sess,
 				TmuxSession: sess, Dir: wt.Path, Worktree: wt.Name, Managed: true,
-				Repo: repo.Repo, Branch: wt.Branch, GitDir: repo.GitDir,
+				Repo: repo.Repo, Branch: wt.Branch, GitDir: repo.GitDir, IsPrimary: true,
 			}
 			if hasWindow {
 				r.TmuxWindow, r.TmuxWindowName, r.TmuxPane = win.pane.WindowIndex, win.pane.WindowName, win.pane.PaneID

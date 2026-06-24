@@ -26,7 +26,7 @@ import (
 func newAgentsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "agents",
-		Short: "Headless agent fleet management (list, status, spawn, send, jump, close, delete)",
+		Short: "Headless agent fleet management (list, status, spawn, open, send, jump, close, delete)",
 		Long: "Drive the agent fleet from any shell. Units of work are addressed by a derived " +
 			"repo/worktree handle (a worktreeless agent by its tmux pane id); data verbs emit " +
 			"--json. The same operations back the be dash TUI.",
@@ -35,6 +35,7 @@ func newAgentsCmd() *cobra.Command {
 		newAgentsListCmd(),
 		newAgentsStatusCmd(),
 		newAgentsSpawnCmd(),
+		newAgentsOpenCmd(),
 		newAgentsCloseCmd(),
 		newAgentsDeleteCmd(),
 		newAgentsJumpCmd(),
@@ -134,6 +135,39 @@ func newAgentsSpawnCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&branch, "branch", "", "branch to check out in the new worktree (required)")
 	cmd.Flags().StringVar(&prompt, "prompt", "", "initial prompt to seed the agent with")
+	return cmd
+}
+
+func newAgentsOpenCmd() *cobra.Command {
+	var shell bool
+	cmd := &cobra.Command{
+		Use:   "open <handle>",
+		Short: "Start an agent in an existing worktree (a windowless slot), reusing it",
+		Long: "Start an agent in an existing worktree (a windowless slot), reusing it.\n" +
+			"With --shell, open a plain shell instead — the way to re-give the base a window.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			f, err := buildFleet()
+			if err != nil {
+				return err
+			}
+			t, err := f.Resolve(args[0])
+			if err != nil {
+				return err
+			}
+			open := f.Open
+			if shell {
+				open = f.OpenShell
+			}
+			handle, err := open(t)
+			if err != nil {
+				return err
+			}
+			fmt.Println(handle)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&shell, "shell", false, "open a plain shell instead of the agent (for the base)")
 	return cmd
 }
 
@@ -377,6 +411,20 @@ type orchestrator struct {
 // Spawn adds a worktree in the row's repo and starts the agent, via the shared fleet.
 func (o orchestrator) Spawn(repo agents.Row, branch, name string) error {
 	_, err := o.fleet.Spawn(repo.Dir, repo.TmuxSession, branch, name, "")
+	return err
+}
+
+// Open starts an agent in an existing windowless slot (its worktree already exists) via
+// the shared fleet, bringing a dormant worktree back to life without recreating it.
+func (o orchestrator) Open(slot agents.Row) error {
+	_, err := o.fleet.Open(fleet.FromRow(slot))
+	return err
+}
+
+// OpenShell opens a plain window in the row's worktree via the shared fleet, re-giving the
+// agentless base a window after `dd` closed it.
+func (o orchestrator) OpenShell(r agents.Row) error {
+	_, err := o.fleet.OpenShell(fleet.FromRow(r))
 	return err
 }
 
