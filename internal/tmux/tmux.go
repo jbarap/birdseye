@@ -224,6 +224,36 @@ func (c *Client) KillWindow(target string) error {
 	return err
 }
 
+// SendKeys dispatches text to the target (a pane id, window, or session:window) and
+// presses Enter, the same mechanism NewWindow uses to start a command. It is
+// best-effort: tmux send-keys has no readiness signal, so a client that needs delivery
+// confirmation must poll the agent's status rather than trust this returning nil.
+func (c *Client) SendKeys(target, text string) error {
+	_, err := c.run("send-keys", "-t", target, text, "Enter")
+	return err
+}
+
+// SessionIDs returns a map of session name to tmux session id (e.g. "work" -> "$3").
+// The id is tmux's own stable-within-a-server handle; clients use it to drop to raw
+// tmux. When no server is running it returns an empty map without error.
+func (c *Client) SessionIDs() (map[string]string, error) {
+	out, err := c.run("list-sessions", "-F", "#{session_name}\t#{session_id}")
+	if err != nil {
+		return map[string]string{}, nil
+	}
+	ids := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line == "" {
+			continue
+		}
+		f := strings.SplitN(line, "\t", 2)
+		if len(f) == 2 {
+			ids[f[0]] = f[1]
+		}
+	}
+	return ids, nil
+}
+
 // KillSession removes the named session.
 func (c *Client) KillSession(name string) error {
 	_, err := c.run("kill-session", "-t", "="+name)

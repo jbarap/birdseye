@@ -40,6 +40,7 @@ func (p *Provider) Candidates() ([]provider.Candidate, error) {
 				Label: m.Repo + "/" + d.Name,
 				Type:  Type,
 				Kind:  provider.KindCreate,
+				Dir:   path,
 				Action: func(b provider.Backend) error {
 					if err := b.Ensure(name, path); err != nil {
 						return err

@@ -7,55 +7,101 @@ import (
 	"testing"
 )
 
-func TestRepoNameFromURL(t *testing.T) {
-	cases := map[string]string{
-		"https://github.com/u/birds-eye.git": "birds-eye",
-		"https://github.com/u/birds-eye":     "birds-eye",
-		"git@github.com:u/foo.git":           "foo",
-		"git@github.com:u/foo":               "foo",
-		"/local/path/bar/":                   "bar",
+// TestAddGroupedSibling exercises the grouped-sibling creation policy and branch
+// handling over real git: a worktree lands at <repo>.worktrees/<branch-slug>, the
+// container is derived from git (not the checkout's parent), and branch handling covers
+// new / existing / slug-collision cases.
+func TestAddGroupedSibling(t *testing.T) {
+	requireGitBinary(t)
+	root := t.TempDir()
+	repo := filepath.Join(root, "myrepo")
+	gitInit(t, repo, "trunk")
+	gitCommit(t, repo)
+	mustGit(t, repo, "branch", "existing")
+
+	// add with no branch creates a new branch off the default branch, in a slug dir.
+	featDir, err := Add(repo, "feat", "")
+	if err != nil {
+		t.Fatalf("add feat: %v", err)
 	}
-	for url, want := range cases {
-		if got := RepoNameFromURL(url); got != want {
-			t.Errorf("RepoNameFromURL(%q) = %q, want %q", url, got, want)
-		}
+	if want := filepath.Join(root, "myrepo.worktrees", "feat"); featDir != want {
+		t.Fatalf("feat worktree at %q, want %q", featDir, want)
+	}
+	if got := branchOf(t, featDir); got != "feat" {
+		t.Fatalf("feat worktree on branch %q, want feat", got)
+	}
+
+	// a slashed branch slugifies into the directory name but keeps the branch as given.
+	loginDir, err := Add(repo, "feature/login", "")
+	if err != nil {
+		t.Fatalf("add feature/login: %v", err)
+	}
+	if want := filepath.Join(root, "myrepo.worktrees", "feature-login"); loginDir != want {
+		t.Fatalf("login worktree at %q, want %q", loginDir, want)
+	}
+	if got := branchOf(t, loginDir); got != "feature/login" {
+		t.Fatalf("login worktree on branch %q, want feature/login", got)
+	}
+
+	// a name matching an existing branch checks that branch out (no new branch).
+	exDir, err := Add(repo, "existing", "")
+	if err != nil {
+		t.Fatalf("add existing: %v", err)
+	}
+	if got := branchOf(t, exDir); got != "existing" {
+		t.Fatalf("worktree on branch %q, want existing", got)
+	}
+
+	// a slug collision is refused rather than overwritten.
+	if _, err := Add(repo, "feat", ""); err == nil {
+		t.Fatal("expected a slug collision to error")
+	}
+
+	// add outside a git worktree errors clearly.
+	if _, err := Add(t.TempDir(), "nope", ""); err == nil {
+		t.Fatal("expected add outside a repo to error")
 	}
 }
 
-// TestListRecognizesManagedReposByAnchor checks the recognition rule: a managed repo
-// is recognized by its anchor — a child directory named after the repo's default
-// branch (<repo>/main). A single anchored checkout is valid even with no siblings,
-// while a folder of unrelated clones, and a folder holding a project-named clone, must
-// NOT be read as worktrees — the regression that turned an ordinary projects directory
-// into bogus worktrees.
-func TestListRecognizesManagedReposByAnchor(t *testing.T) {
+// TestAddContainerFromGitNotCheckoutParent confirms the container is resolved from the
+// repository's shared git dir, so `add` from a worktree placed off in some other
+// directory still lands the new worktree under <repo>.worktrees/.
+func TestAddContainerFromGitNotCheckoutParent(t *testing.T) {
+	requireGitBinary(t)
+	root := t.TempDir()
+	repo := filepath.Join(root, "myrepo")
+	gitInit(t, repo, "main")
+	gitCommit(t, repo)
+
+	// A worktree placed somewhere unrelated to <repo>.worktrees/.
+	stray := filepath.Join(t.TempDir(), "stray")
+	mustGit(t, repo, "worktree", "add", stray)
+
+	got, err := Add(stray, "x", "")
+	if err != nil {
+		t.Fatalf("add from stray worktree: %v", err)
+	}
+	if want := filepath.Join(root, "myrepo.worktrees", "x"); got != want {
+		t.Fatalf("add resolved container from the checkout's parent (%q), want git-derived %q", got, want)
+	}
+}
+
+// TestListGitNative checks that discovery finds git repos directly under a root and
+// enumerates each repo's worktrees from git, wherever they live on disk.
+func TestListGitNative(t *testing.T) {
 	requireGitBinary(t)
 	root := t.TempDir()
 
-	// A genuine worktree set: alpha/main (anchor) + alpha/feat (linked worktree).
-	alphaMain := filepath.Join(root, "alpha", "main")
-	gitInit(t, alphaMain, "main")
-	gitCommit(t, alphaMain)
-	mustGit(t, alphaMain, "worktree", "add", filepath.Join(root, "alpha", "feat"))
+	// alpha: a clone with a grouped-sibling worktree.
+	alpha := filepath.Join(root, "alpha")
+	gitInit(t, alpha, "main")
+	gitCommit(t, alpha)
+	mustGit(t, alpha, "worktree", "add", filepath.Join(root, "alpha.worktrees", "feat"))
 
-	// A single-worktree managed repo: <repo>/main with no siblings is still valid —
-	// the default-branch checkout is its own anchor.
-	soloMain := filepath.Join(root, "gizmo", "main")
-	gitInit(t, soloMain, "main")
-	gitCommit(t, soloMain)
-
-	// A folder of unrelated clones side by side — no anchor, not one repo's worktrees.
-	for _, n := range []string{"red", "blue"} {
-		d := filepath.Join(root, "vendor", n)
-		gitInit(t, d, "main")
-		gitCommit(t, d)
-	}
-
-	// A folder holding a single project-named clone — the dir name (tax) is not the
-	// repo's default branch (main), so there is no anchor.
-	tax := filepath.Join(root, "docs", "tax")
-	gitInit(t, tax, "main")
-	gitCommit(t, tax)
+	// solo: a clone with no extra worktrees — still a valid managed repo.
+	solo := filepath.Join(root, "solo")
+	gitInit(t, solo, "main")
+	gitCommit(t, solo)
 
 	got, err := List(root)
 	if err != nil {
@@ -66,16 +112,10 @@ func TestListRecognizesManagedReposByAnchor(t *testing.T) {
 		byRepo[m.Repo] = m
 	}
 	if m, ok := byRepo["alpha"]; !ok || len(m.Dirs) != 2 {
-		t.Fatalf("expected alpha with 2 worktrees, got %+v (all=%+v)", byRepo["alpha"], got)
+		t.Fatalf("expected alpha with 2 worktrees (primary + feat), got %+v (all=%+v)", byRepo["alpha"], got)
 	}
-	if m, ok := byRepo["gizmo"]; !ok || len(m.Dirs) != 1 || m.Dirs[0].Name != "main" {
-		t.Fatalf("expected gizmo/main (a single anchored worktree), got %+v", byRepo["gizmo"])
-	}
-	if _, ok := byRepo["vendor"]; ok {
-		t.Fatal("a folder of unrelated clones must not be listed as a worktree set")
-	}
-	if _, ok := byRepo["docs"]; ok {
-		t.Fatal("a folder holding a project-named clone must not be listed")
+	if m, ok := byRepo["solo"]; !ok || len(m.Dirs) != 1 || m.Dirs[0].Name != "solo" {
+		t.Fatalf("expected solo as a single-worktree managed repo, got %+v", byRepo["solo"])
 	}
 }
 
@@ -86,13 +126,40 @@ func TestListNoRootsIsEmpty(t *testing.T) {
 	}
 }
 
+// TestListWorktreesPrimaryFlag checks the porcelain parse marks git's main worktree as
+// primary and reports the linked one as non-primary.
+func TestListWorktreesPrimaryFlag(t *testing.T) {
+	requireGitBinary(t)
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	gitInit(t, repo, "main")
+	gitCommit(t, repo)
+	mustGit(t, repo, "worktree", "add", filepath.Join(root, "repo.worktrees", "feat"))
+
+	wts, err := ListWorktrees(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(wts) != 2 {
+		t.Fatalf("expected 2 worktrees, got %+v", wts)
+	}
+	if !wts[0].IsPrimary {
+		t.Fatalf("first worktree should be primary, got %+v", wts[0])
+	}
+	for _, w := range wts[1:] {
+		if w.IsPrimary {
+			t.Fatalf("only the first worktree should be primary, got %+v", w)
+		}
+	}
+}
+
 func TestProviderCandidatesFromRoots(t *testing.T) {
 	requireGitBinary(t)
 	root := t.TempDir()
-	alphaMain := filepath.Join(root, "alpha", "main")
-	gitInit(t, alphaMain, "main")
-	gitCommit(t, alphaMain)
-	mustGit(t, alphaMain, "worktree", "add", filepath.Join(root, "alpha", "wt1"))
+	alpha := filepath.Join(root, "alpha")
+	gitInit(t, alpha, "main")
+	gitCommit(t, alpha)
+	mustGit(t, alpha, "worktree", "add", filepath.Join(root, "alpha.worktrees", "wt1"))
 
 	cands, err := NewProvider([]string{root}).Candidates()
 	if err != nil {
@@ -105,8 +172,8 @@ func TestProviderCandidatesFromRoots(t *testing.T) {
 	for _, c := range cands {
 		names = append(names, c.Name)
 	}
-	if !containsStr(names, "alpha-main") {
-		t.Fatalf("expected an alpha-main candidate, got %v", names)
+	if !containsStr(names, "alpha-wt1") {
+		t.Fatalf("expected an alpha-wt1 candidate, got %v", names)
 	}
 }
 
@@ -117,87 +184,12 @@ func TestProviderNoRootsYieldsNothing(t *testing.T) {
 	}
 }
 
-// TestCloneAddDefaultBranch is an end-to-end check over real git: it clones a source
-// repo whose default branch is "trunk" (not main), verifies the layout, and exercises
-// add's branch semantics (new branch, existing branch, duplicate).
-func TestCloneAddDefaultBranch(t *testing.T) {
-	requireGitBinary(t)
-
-	// A source repo with default branch "trunk" and an extra branch "existing".
-	srcParent := t.TempDir()
-	src := filepath.Join(srcParent, "myrepo")
-	gitInit(t, src, "trunk")
-	gitCommit(t, src)
-	mustGit(t, src, "branch", "existing")
-
-	// Clone places it at <parent>/myrepo/trunk.
-	parent := t.TempDir()
-	dir, existed, err := Clone(parent, src)
-	if err != nil {
-		t.Fatalf("clone: %v", err)
-	}
-	want := filepath.Join(parent, "myrepo", "trunk")
-	if dir != want || existed {
-		t.Fatalf("clone dir=%q existed=%v, want %q existed=false", dir, existed, want)
-	}
-	if !isGitWorktree(dir) {
-		t.Fatalf("cloned dir %q is not a git worktree", dir)
-	}
-
-	// Re-clone is a no-op reporting the existing layout.
-	if d2, existed2, err := Clone(parent, src); err != nil || d2 != want || !existed2 {
-		t.Fatalf("re-clone = (%q,%v,%v), want (%q,true,nil)", d2, existed2, err, want)
-	}
-
-	// defaultBranchOfRepo resolves origin/HEAD set up by clone.
-	if got := defaultBranchOfRepo(dir); got != "trunk" {
-		t.Fatalf("defaultBranchOfRepo = %q, want trunk", got)
-	}
-
-	// containerOf returns <parent>/myrepo and the worktree top level.
-	container, top, err := containerOf(dir)
-	if err != nil || container != filepath.Join(parent, "myrepo") || top != want {
-		t.Fatalf("containerOf = (%q,%q,%v)", container, top, err)
-	}
-
-	// add with no branch creates a new branch "feat" off the default branch.
-	featDir, err := Add(dir, "feat", "")
-	if err != nil {
-		t.Fatalf("add feat: %v", err)
-	}
-	if featDir != filepath.Join(parent, "myrepo", "feat") {
-		t.Fatalf("feat worktree at %q", featDir)
-	}
-	if got := branchOf(t, featDir); got != "feat" {
-		t.Fatalf("feat worktree on branch %q, want feat", got)
-	}
-
-	// add a name matching an existing branch checks that branch out (no new branch).
-	exDir, err := Add(dir, "existing", "")
-	if err != nil {
-		t.Fatalf("add existing: %v", err)
-	}
-	if got := branchOf(t, exDir); got != "existing" {
-		t.Fatalf("worktree on branch %q, want existing", got)
-	}
-
-	// add declines to overwrite an existing worktree dir.
-	if _, err := Add(dir, "feat", ""); err == nil {
-		t.Fatal("expected duplicate worktree to error")
-	}
-
-	// add outside a git worktree errors clearly.
-	if _, err := Add(t.TempDir(), "nope", ""); err == nil {
-		t.Fatal("expected add outside a repo to error")
-	}
-}
-
 // TestRemoveCleanAndDirty checks the dirty-guard: a clean worktree removes, a dirty one
 // is refused without force and removed with it.
 func TestRemoveCleanAndDirty(t *testing.T) {
 	requireGitBinary(t)
-	parent := t.TempDir()
-	src := filepath.Join(parent, "src")
+	root := t.TempDir()
+	src := filepath.Join(root, "src")
 	gitInit(t, src, "main")
 	gitCommit(t, src)
 

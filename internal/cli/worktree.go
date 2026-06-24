@@ -12,41 +12,20 @@ import (
 func newWorktreeCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "worktree",
-		Short: "Manage repos as <repo>/<default-branch> plus sibling worktrees, anywhere on disk",
-	}
-
-	clone := &cobra.Command{
-		Use:   "clone <url> [parent]",
-		Short: "Clone a repository into <parent>/<repo>/<default-branch> (parent defaults to the current directory)",
-		Args:  cobra.RangeArgs(1, 2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			parent := ""
-			if len(args) == 2 {
-				parent = args[1]
-			} else {
-				cwd, err := os.Getwd()
-				if err != nil {
-					return err
-				}
-				parent = cwd
-			}
-			dir, existed, err := worktree.Clone(parent, args[0])
-			if err != nil {
-				return err
-			}
-			verb := "Cloned"
-			if existed {
-				verb = "Already cloned"
-			}
-			fmt.Printf("%s %s  %s\n", okMark.Render("✓"), verb, hintStyle.Render(dir))
-			return nil
-		},
+		Short: "Manage a repo's grouped-sibling worktrees, anywhere on disk",
+		Long: "Manage git worktrees under the grouped-sibling layout: a repository is a plain " +
+			"clone at <path>/<repo>, and its worktrees live as grouped siblings under " +
+			"<path>/<repo>.worktrees/<branch-slug>. Clone a repo with `git clone` directly; " +
+			"there is no `be worktree clone`.",
 	}
 
 	add := &cobra.Command{
 		Use:   "add <name> [branch]",
-		Short: "Add a sibling worktree from inside a managed repo",
-		Args:  cobra.RangeArgs(1, 2),
+		Short: "Add a grouped-sibling worktree from inside a managed repo",
+		Long: "Creates a worktree at <repo>.worktrees/<branch-slug> beside the clone. With no " +
+			"branch argument a new branch named after <name> is created off the default branch; " +
+			"a name matching an existing branch checks it out; an explicit branch is used as given.",
+		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cwd, err := os.Getwd()
 			if err != nil {
@@ -65,6 +44,6 @@ func newWorktreeCmd() *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(clone, add)
+	cmd.AddCommand(add)
 	return cmd
 }

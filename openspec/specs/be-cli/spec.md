@@ -3,9 +3,7 @@
 ## Purpose
 
 TBD: created by archiving change birds-eye-foundation. Update Purpose after archive.
-
 ## Requirements
-
 ### Requirement: Single self-contained binary
 
 The system SHALL be distributed as a single, statically-linkable Go binary named `be`
@@ -24,17 +22,30 @@ that runs without a runtime interpreter or external language dependencies.
 
 ### Requirement: Command surface
 
-The system SHALL expose a primary command surface whose default command (`be` with no
-args) is the agents view, with the fuzzy session picker available as `be sessions`. The
-agents view is the default because it degrades gracefully without tmux (plain triage
-rows), whereas the picker requires tmux. `be agents` SHALL remain a named alias for the
-default, and `be list` SHALL remain a hidden, deprecated alias for `be sessions` so
+The system SHALL expose a command surface that requires an explicit subcommand: the bare
+`be` invocation (no arguments) SHALL NOT launch any view and SHALL instead report that a
+subcommand is required, naming the available commands. The TUI SHALL be reached as
+`be dash` (the live agents view, which degrades gracefully without tmux). `be agents`
+SHALL be the headless verb namespace (its subcommands defined by the agents-cli
+capability), no longer an alias for the TUI. The fuzzy session picker SHALL remain
+`be sessions`, and `be list` SHALL remain a hidden, deprecated alias for `be sessions` so
 existing invocations keep working.
 
-#### Scenario: Default command opens the agents view
+#### Scenario: Bare invocation requires a subcommand
 
 - **WHEN** the user runs `be` with no arguments
-- **THEN** the system opens the agents view (equivalent to `be agents`)
+- **THEN** the system prints that a subcommand is required, lists the available commands
+  (including `be dash`), and exits non-zero without launching a view
+
+#### Scenario: TUI is reached via `be dash`
+
+- **WHEN** the user runs `be dash`
+- **THEN** the system opens the live agents view (the former bare-`be` TUI)
+
+#### Scenario: `be agents` is the headless namespace
+
+- **WHEN** the user runs `be agents` with a verb such as `be agents list`
+- **THEN** the system dispatches to the headless agent verb rather than opening the TUI
 
 #### Scenario: Picker is reached via `be sessions`
 
@@ -49,7 +60,7 @@ existing invocations keep working.
 
 #### Scenario: Named subcommands are routed
 
-- **WHEN** the user runs a known subcommand such as `be agents` or `be worktree`
+- **WHEN** the user runs a known subcommand such as `be dash` or `be worktree`
 - **THEN** the system dispatches to that subcommand's handler
 
 #### Scenario: Unknown subcommand
@@ -101,3 +112,4 @@ without modifying picker, tmux, or CLI core code.
 - **WHEN** one provider returns an error or its required external tool is missing
 - **THEN** the registry skips that provider, surfaces a non-fatal warning, and still
   returns candidates from the remaining providers
+

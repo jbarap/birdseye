@@ -22,7 +22,8 @@ const (
 	ActionFold        Action = "fold"
 	ActionNewSession  Action = "new_session"
 	ActionNewAgent    Action = "new_agent"
-	ActionDeleteAgent Action = "delete_agent"
+	ActionClose       Action = "close"
+	ActionDelete      Action = "delete"
 	ActionQuit        Action = "quit"
 )
 
@@ -30,12 +31,13 @@ const (
 var AllActions = []Action{
 	ActionUp, ActionDown, ActionTop, ActionBottom,
 	ActionHalfUp, ActionHalfDown, ActionPrevSection, ActionNextSection,
-	ActionSelect, ActionFold, ActionNewSession, ActionNewAgent, ActionDeleteAgent, ActionQuit,
+	ActionSelect, ActionFold, ActionNewSession, ActionNewAgent, ActionClose, ActionDelete, ActionQuit,
 }
 
 // Keymap maps each action to the keys that trigger it. Keys are Bubble Tea
-// key.String() values (e.g. "k", "ctrl+d", "enter"); a two-letter value of the
-// same rune (e.g. "gg") is a chord: that rune pressed twice in a row.
+// key.String() values (e.g. "k", "ctrl+d", "enter"); a two-rune value of two
+// typeable keys (e.g. "gg", "dd", "dD") is a chord: those two keys pressed in
+// sequence.
 type Keymap map[Action][]string
 
 // DefaultKeymap returns the built-in bindings. Vim-native, and equal to the
@@ -54,7 +56,8 @@ func DefaultKeymap() Keymap {
 		ActionFold:        {"tab"},
 		ActionNewSession:  {"s"},
 		ActionNewAgent:    {"n"},
-		ActionDeleteAgent: {"dd"},
+		ActionClose:       {"dd"},
+		ActionDelete:      {"dD"},
 		ActionQuit:        {"q", "esc", "ctrl+c"},
 	}
 }
@@ -89,23 +92,27 @@ func validAction(a Action) bool {
 	return false
 }
 
-// resolver maps pressed keys to actions: single keys directly, and double-rune
-// chords by their rune.
+// resolver maps pressed keys to actions: single keys directly, and two-key chords
+// by their (firstKey, secondKey) pair. prefix holds the first keys that begin some
+// chord, so the view knows when to arm rather than dispatch a key immediately.
 type resolver struct {
 	single map[string]Action
-	double map[rune]Action
+	chords map[[2]string]Action
+	prefix map[string]bool
 }
 
-// buildResolver builds the reverse lookup once and rejects conflicting bindings.
+// buildResolver builds the reverse lookup once and rejects conflicting bindings: a
+// key bound to two actions, or a single key that is also the first key of a chord.
 func (k Keymap) buildResolver() (*resolver, error) {
-	r := &resolver{single: map[string]Action{}, double: map[rune]Action{}}
+	r := &resolver{single: map[string]Action{}, chords: map[[2]string]Action{}, prefix: map[string]bool{}}
 	for _, a := range AllActions {
 		for _, key := range k[a] {
-			if ru, ok := doubleChord(key); ok {
-				if existing, dup := r.double[ru]; dup && existing != a {
+			if chord, ok := parseChord(key); ok {
+				if existing, dup := r.chords[chord]; dup && existing != a {
 					return nil, fmt.Errorf("agents key %q is bound to both %q and %q", key, existing, a)
 				}
-				r.double[ru] = a
+				r.chords[chord] = a
+				r.prefix[chord[0]] = true
 				continue
 			}
 			if existing, dup := r.single[key]; dup && existing != a {
@@ -114,32 +121,49 @@ func (k Keymap) buildResolver() (*resolver, error) {
 			r.single[key] = a
 		}
 	}
-	// A single-rune key cannot also be the prefix of a different chord.
+	// A single key cannot also be the first key of a chord: pressing it would arm
+	// the chord rather than fire the single binding.
 	for key, a := range r.single {
-		if ru, ok := singleRune(key); ok {
-			if ca, exists := r.double[ru]; exists && ca != a {
-				return nil, fmt.Errorf("agents key %q conflicts with chord %q (actions %q and %q)",
-					key, string([]rune{ru, ru}), a, ca)
-			}
+		if r.prefix[key] {
+			return nil, fmt.Errorf("agents key %q conflicts with chord %q (actions %q and %q)",
+				key, key, a, chordWithPrefix(r, key))
 		}
 	}
 	return r, nil
 }
 
-// doubleChord reports whether s is a two-letter chord of one repeated rune.
-func doubleChord(s string) (rune, bool) {
-	r := []rune(s)
-	if len(r) == 2 && r[0] == r[1] && unicode.IsLetter(r[0]) {
-		return r[0], true
+// chordWithPrefix returns an action of some chord whose first key is prefix, for a
+// clearer conflict message; "" if none (should not happen when prefix is set).
+func chordWithPrefix(r *resolver, prefix string) Action {
+	for chord, a := range r.chords {
+		if chord[0] == prefix {
+			return a
+		}
 	}
-	return 0, false
+	return ""
 }
 
-// singleRune reports whether s is exactly one rune.
-func singleRune(s string) (rune, bool) {
-	r := []rune(s)
-	if len(r) == 1 {
-		return r[0], true
+// nonChordKeys are Bubble Tea key.String() values that are two runes long yet name a
+// single key (not two typed keys), so they must not be parsed as chords. "up" is the
+// only such named key; the rest ("down", "enter", "esc", "tab", …) are longer.
+var nonChordKeys = map[string]bool{"up": true}
+
+// parseChord reports whether s is a two-key chord like "dd", "dD", or "gg" and
+// returns its two single-key strings. A value of exactly two typeable runes is a
+// chord; a named key such as "up" is not.
+func parseChord(s string) ([2]string, bool) {
+	if nonChordKeys[s] {
+		return [2]string{}, false
 	}
-	return 0, false
+	r := []rune(s)
+	if len(r) == 2 && isChordRune(r[0]) && isChordRune(r[1]) {
+		return [2]string{string(r[0]), string(r[1])}, true
+	}
+	return [2]string{}, false
+}
+
+// isChordRune reports whether r is a key that may take part in a chord: a letter or
+// digit (so "dd"/"gg"/"dD" qualify, but "{"/"}" or whitespace do not).
+func isChordRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r)
 }

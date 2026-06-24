@@ -19,14 +19,48 @@ var ManagedEvents = []string{
 	"SessionEnd",
 }
 
-// DefaultSettingsPath returns the standard Claude Code settings path,
-// ~/.claude/settings.json.
-func DefaultSettingsPath() (string, error) {
+// ClaudeConfigDir returns the Claude Code config root, ~/.claude — the single place
+// the settings path and the workflow artifacts are resolved from, so a layout change is
+// a one-line fix.
+func ClaudeConfigDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".claude", "settings.json"), nil
+	return filepath.Join(home, ".claude"), nil
+}
+
+// DefaultSettingsPath returns the standard Claude Code settings path,
+// ~/.claude/settings.json.
+func DefaultSettingsPath() (string, error) {
+	dir, err := ClaudeConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "settings.json"), nil
+}
+
+// HooksInstalled reports whether any bird's-eye hook entry is present in the settings
+// file at path — a non-destructive check for the uninstall checklist. A missing file
+// reports false; a malformed file is an error (mirroring the install refusal).
+func HooksInstalled(path string) (bool, error) {
+	settings, before, err := loadSettings(path)
+	if err != nil {
+		return false, err
+	}
+	if before == nil {
+		return false, nil
+	}
+	for _, raw := range asObject(settings["hooks"]) {
+		for _, g := range asArray(raw) {
+			for _, e := range asArray(asObject(g)["hooks"]) {
+				if isOurCommand(commandOf(e)) {
+					return true, nil
+				}
+			}
+		}
+	}
+	return false, nil
 }
 
 // InstallHooks merges bird's-eye's hook commands into the Claude settings file

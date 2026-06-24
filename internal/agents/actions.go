@@ -20,6 +20,10 @@ type Orchestrator interface {
 	// the worktree name), opens a tmux window (in the row's session) rooted there, and
 	// starts the configured agent command.
 	Spawn(repo Row, branch, name string) error
+	// Close tears down a row's tmux window only, leaving any managed worktree on disk
+	// (it then renders as a slot). It has no filesystem effect; the headless analog is
+	// `be agents close`.
+	Close(r Row) error
 	// Remove tears down a row: it kills the row's tmux window and, when the row is a
 	// managed worktree, removes the git worktree. With force=false it returns
 	// ErrWorktreeDirty rather than removing a dirty worktree.
@@ -153,7 +157,7 @@ func (m model) submitNewAgent() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.clearNotice()
-	m.reload()
+	m.reloadAfterAction()
 	return m, nil
 }
 
@@ -178,9 +182,34 @@ func worktreeSlug(branch string) string {
 	return strings.Trim(slug, "-.")
 }
 
+// startClose closes the row's tmux window with no confirmation and no filesystem
+// effect — the safe teardown (`dd`). Under the sibling-worktree layout a managed
+// worktree persists when its window closes and drops to a slot, so the action is
+// reversible and needs no gate. A windowless slot has nothing to close (a no-op). The
+// anchor's window closes like any other (ending the session if it was the last).
+func (m model) startClose() (tea.Model, tea.Cmd) {
+	if m.orch == nil {
+		return m, nil
+	}
+	r, ok := m.currentRow()
+	if !ok {
+		return m, nil
+	}
+	if r.TmuxWindow == "" && r.TmuxPane == "" {
+		return m, nil // a windowless slot: nothing to close
+	}
+	if err := m.orch.Close(r); err != nil {
+		m.setError("close: " + err.Error())
+		return m, nil
+	}
+	m.clearNotice()
+	m.reloadAfterAction()
+	return m, nil
+}
+
 // startDelete opens a confirmation before any delete — a deliberate gate so an
-// accidental `dd` never tears down a window or worktree. The anchor is never removable.
-// The actual removal happens in handleConfirmKey on "y".
+// accidental `dD` never removes a worktree. The anchor is never removable (git refuses
+// to remove a primary worktree). The actual removal happens in handleConfirmKey on "y".
 func (m model) startDelete() (tea.Model, tea.Cmd) {
 	if m.orch == nil {
 		return m, nil
@@ -215,7 +244,7 @@ func (m model) handleConfirmKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.clearNotice()
-		m.reload()
+		m.reloadAfterAction()
 	case "n", "N", "esc", "ctrl+c", "q":
 		m.mode = modeNormal
 		m.setInfo("delete cancelled")
@@ -233,7 +262,7 @@ func (m model) handleConfirmForceKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.setError("delete: " + err.Error())
 		} else {
 			m.clearNotice()
-			m.reload()
+			m.reloadAfterAction()
 		}
 	case "n", "N", "esc", "ctrl+c", "q":
 		m.mode = modeNormal

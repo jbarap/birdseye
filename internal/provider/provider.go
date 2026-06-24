@@ -46,6 +46,11 @@ type Candidate struct {
 	Type string
 	// Kind records whether selecting this attaches or creates.
 	Kind Kind
+	// Dir is the directory a create candidate would be rooted in, where applicable
+	// (dir and worktree candidates carry it; attach and template candidates leave it
+	// empty). The headless `be sessions --json` surfaces it so a client can feed it to
+	// `be agents spawn`.
+	Dir string
 	// Action performs the selection against the tmux backend.
 	Action func(b Backend) error
 }

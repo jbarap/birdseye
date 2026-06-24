@@ -162,7 +162,7 @@ func validHex(s string) bool {
 }
 
 // helpOrder is the order actions appear in the help line.
-var helpOrder = []Action{ActionDown, ActionUp, ActionTop, ActionBottom, ActionPrevSection, ActionNextSection, ActionFold, ActionNewSession, ActionNewAgent, ActionDeleteAgent, ActionSelect, ActionQuit}
+var helpOrder = []Action{ActionDown, ActionUp, ActionTop, ActionBottom, ActionPrevSection, ActionNextSection, ActionFold, ActionNewSession, ActionNewAgent, ActionClose, ActionDelete, ActionSelect, ActionQuit}
 
 var actionLabel = map[Action]string{
 	ActionUp:          "up",
@@ -177,7 +177,8 @@ var actionLabel = map[Action]string{
 	ActionFold:        "fold",
 	ActionNewSession:  "open",
 	ActionNewAgent:    "new",
-	ActionDeleteAgent: "delete",
+	ActionClose:       "close",
+	ActionDelete:      "delete",
 	ActionQuit:        "quit",
 }
 
@@ -230,7 +231,7 @@ type model struct {
 	cursor  int             // index into nav (a leaf, or a folded session header)
 	top     int             // first visible item (scroll offset into the rendered list)
 	chosen  *Row
-	pending rune // armed first rune of a chord (0 = none)
+	pending string // armed first key of a chord ("" = none)
 
 	mode           mode
 	branchInput    string      // new-agent branch field (modeNewAgent)
@@ -415,6 +416,16 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// reloadAfterAction drops any cached git facts (so a just-created or just-removed
+// worktree is seen) and then reloads. Used after spawn/remove; the periodic tick uses
+// the plain reload so it stays a cache lookup rather than a git call.
+func (m *model) reloadAfterAction() {
+	if inv, ok := m.src.(Invalidator); ok {
+		inv.Invalidate()
+	}
+	m.reload()
+}
+
 // reload re-reads rows through the source, preserving the selected row by identity,
 // and refreshes the preview.
 func (m *model) reload() {
@@ -545,26 +556,21 @@ func (m model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	k := key.String()
-	r, isRune := singleRune(k)
 
-	// Complete a chord (e.g. the second g of gg).
-	if m.pending != 0 {
+	// Complete a chord (e.g. the second key of gg or dD).
+	if m.pending != "" {
 		armed := m.pending
-		m.pending = 0
-		if isRune && r == armed {
-			if a, ok := m.res.double[armed]; ok {
-				return m.applyAction(a)
-			}
+		m.pending = ""
+		if a, ok := m.res.chords[[2]string{armed, k}]; ok {
+			return m.applyAction(a)
 		}
-		// Not the completing key: fall through and handle k normally.
+		// Not a completing key: fall through and handle k as its own binding.
 	}
 
-	// Arm a chord on its first rune.
-	if isRune {
-		if _, ok := m.res.double[r]; ok {
-			m.pending = r
-			return m, nil
-		}
+	// Arm a chord on its first key.
+	if m.res.prefix[k] {
+		m.pending = k
+		return m, nil
 	}
 
 	if a, ok := m.res.single[k]; ok {
@@ -605,7 +611,9 @@ func (m model) applyAction(a Action) (tea.Model, tea.Cmd) {
 		return m.startNewSession()
 	case ActionNewAgent:
 		return m.startNewAgent()
-	case ActionDeleteAgent:
+	case ActionClose:
+		return m.startClose()
+	case ActionDelete:
 		return m.startDelete()
 	case ActionSelect:
 		if r, ok := m.currentRow(); ok {
@@ -759,11 +767,11 @@ func (m model) chromeLines() int {
 	return n
 }
 
-// modalLineActive reports whether View will render a notice or confirm line below the
-// body. The new-agent prompt is excluded: it renders as a centered modal *over* the
-// body (same height), so it reserves no extra chrome.
+// modalLineActive reports whether View will render a notice line below the body. The
+// new-agent prompt and the delete confirmation are excluded: each renders as a centered
+// modal *over* the body (same height), so they reserve no extra chrome.
 func (m model) modalLineActive() bool {
-	return m.mode == modeConfirmDelete || m.mode == modeConfirmForce || m.notice != ""
+	return m.notice != ""
 }
 
 // contentRows is the number of body rows that fit inside the panel border given the
@@ -860,6 +868,9 @@ func (m model) View() string {
 	if m.mode == modeNewAgent {
 		body = overlayCenter(body, m.newAgentModal())
 	}
+	if m.mode == modeConfirmDelete || m.mode == modeConfirmForce {
+		body = overlayCenter(body, m.confirmModal())
+	}
 
 	parts := []string{body}
 	if line, ok := m.statusLine(); ok {
@@ -871,20 +882,13 @@ func (m model) View() string {
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 
-// statusLine renders the notable line below the body: an active modal prompt (the
-// new-agent name input or the dirty-delete confirm) or a transient notice. Unlike the
-// faint help line these are bold and color-coded — a rejected action, an error, or a
-// confirm can't be missed. Each is exactly one row plus its top margin, matching the
-// two lines chromeLines reserves so the view never overflows.
+// statusLine renders the transient notice below the body. The delete confirmation now
+// floats as a centered popup over the body (see confirmModal), not as an inline line,
+// so only the notice remains here. The notice is bold and color-coded — a rejected
+// action or an error can't be missed — and is exactly one row plus its top margin,
+// matching the two lines chromeLines reserves so the view never overflows.
 func (m model) statusLine() (string, bool) {
-	switch {
-	case m.mode == modeConfirmDelete:
-		s := lipgloss.NewStyle().Bold(true).Foreground(m.accent).MarginTop(1)
-		return s.Render(m.fitLine(m.deletePrompt() + " (y/n)")), true
-	case m.mode == modeConfirmForce:
-		s := lipgloss.NewStyle().Bold(true).Foreground(lipColor(theme.Red)).MarginTop(1)
-		return s.Render(m.fitLine(fmt.Sprintf("worktree %q has uncommitted changes — force remove? (y/n)", m.target.Worktree))), true
-	case m.notice != "":
+	if m.notice != "" {
 		return m.renderNotice(), true
 	}
 	return "", false
@@ -922,6 +926,36 @@ func (m model) newAgentModal() string {
 	}
 	box := frameStyle.Width(width).Render(strings.Join(rows, "\n"))
 	return panelTitle(box, "new agent", m.accent)
+}
+
+// confirmModal renders the delete confirmation as a centered popup, consistent with the
+// new-agent modal (DESIGN.md's single modal style) and replacing the old inline (y/n)
+// line. modeConfirmDelete asks before removing a worktree; modeConfirmForce folds the
+// dirty-worktree force choice into the same popup, defaulting to cancel.
+func (m model) confirmModal() string {
+	width := clamp(m.width/2, 32, 52)
+	if m.width > 0 && width > m.width-4 {
+		width = m.width - 4
+	}
+	inner := width - 2 // inside the border's left/right padding (frameStyle pads 0,1)
+
+	text := lipgloss.NewStyle().Foreground(lipColor(theme.Text))
+	hint := lipgloss.NewStyle().Faint(true)
+
+	var title, prompt, choices string
+	switch m.mode {
+	case modeConfirmForce:
+		title = "force delete"
+		prompt = lipgloss.NewStyle().Foreground(lipColor(theme.Red)).Render(
+			truncate(fmt.Sprintf("worktree %q has uncommitted changes.", m.target.Worktree), inner))
+		choices = hint.Render("y force-remove (discards changes)   n cancel")
+	default:
+		title = "delete"
+		prompt = text.Render(truncate(m.deletePrompt(), inner))
+		choices = hint.Render("y confirm   n cancel")
+	}
+	box := frameStyle.Width(width).Render(strings.Join([]string{prompt, "", choices}, "\n"))
+	return panelTitle(box, title, m.accent)
 }
 
 // formField renders one input line of the new-agent form. The focused field is accented
@@ -1357,8 +1391,8 @@ func previewLines(content string, h, w int) []string {
 func (m model) renderHelp() string {
 	var parts []string
 	for _, a := range helpOrder {
-		if (a == ActionNewSession || a == ActionNewAgent || a == ActionDeleteAgent) && m.orch == nil {
-			continue // create/delete unavailable without an orchestrator
+		if (a == ActionNewSession || a == ActionNewAgent || a == ActionClose || a == ActionDelete) && m.orch == nil {
+			continue // create/close/delete unavailable without an orchestrator
 		}
 		keys := m.keys[a]
 		if len(keys) == 0 {

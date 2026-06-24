@@ -41,8 +41,10 @@ func newClaudeHookCmd() *cobra.Command {
 	}
 
 	install := &cobra.Command{
-		Use:   "install",
-		Short: "Add the Claude Code hooks to your settings, preserving existing config",
+		Use:        "install",
+		Short:      "Add the Claude Code hooks to your settings, preserving existing config",
+		Hidden:     true,
+		Deprecated: "use `be agents install claude --hooks`",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path, err := resolvePath()
 			if err != nil {
@@ -72,8 +74,10 @@ func newClaudeHookCmd() *cobra.Command {
 		"hook command to install (defaults to the absolute path of this be binary)")
 
 	uninstall := &cobra.Command{
-		Use:   "uninstall",
-		Short: "Remove only bird's-eye's hooks from your Claude settings",
+		Use:        "uninstall",
+		Short:      "Remove only bird's-eye's hooks from your Claude settings",
+		Hidden:     true,
+		Deprecated: "use `be agents uninstall claude --hooks`",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path, err := resolvePath()
 			if err != nil {

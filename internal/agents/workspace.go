@@ -19,35 +19,68 @@ type PaneLister interface {
 
 // RepoInfo is the managed-repo context of a directory (git-derived).
 type RepoInfo struct {
-	Container     string
-	Repo          string
-	DefaultBranch string
-	TopLevel      string
-	Worktree      string
+	GitDir    string // git common dir — the repository's identity across all its worktrees
+	Repo      string // repository name (the primary worktree's base name)
+	TopLevel  string // this directory's worktree top level
+	Worktree  string // the worktree's name (base of TopLevel)
+	IsPrimary bool   // whether this worktree is git's primary worktree (the anchor)
 }
 
-// RepoResolver resolves the repo a directory belongs to; ok=false when not inside a
-// git worktree. worktree.Resolve is adapted to this in cli.
-type RepoResolver interface {
-	Resolve(dir string) (RepoInfo, bool)
+// WorktreeInfo is one worktree in a repository's git worktree set.
+type WorktreeInfo struct {
+	Path      string
+	Name      string // base of Path
+	Branch    string
+	IsPrimary bool
 }
+
+// RepoResolver resolves git facts for the reconciler without this package importing git.
+// worktree.Resolve / worktree.ListWorktrees are adapted to this in cli.
+type RepoResolver interface {
+	// Resolve classifies a directory; ok=false when it is not inside a git worktree.
+	Resolve(dir string) (RepoInfo, bool)
+	// Worktrees enumerates the full git worktree set for the repository identified by
+	// gitDir (its shared git common dir), so worktrees with no open tmux window are
+	// still surfaced.
+	Worktrees(gitDir string) ([]WorktreeInfo, error)
+}
+
+// Invalidator is implemented by a RowSource whose Rows() are backed by cached git facts.
+// The view calls Invalidate after a lifecycle action (spawn/remove) so the next refresh
+// re-reads git rather than serving a stale worktree set.
+type Invalidator interface{ Invalidate() }
 
 // Workspace reconciles live agents, the tmux structure, and git facts into the rows
 // the view renders. It recognizes managed repos and emits anchor/slot rows alongside
-// agent rows. Nothing is persisted: Rows() re-derives each call. A per-start-path
-// cache memoizes git lookups (including negative results) so the per-tick path is a
-// map lookup rather than a git call.
+// agent rows. Nothing is persisted: Rows() re-derives each call. Two caches keep the
+// per-tick path off git: a per-start-path cache memoizes repo classification (including
+// negative results), and a per-repo cache memoizes the git worktree set; both are
+// dropped by Invalidate after a lifecycle action.
 type Workspace struct {
-	src   Source
-	panes PaneLister
-	repos RepoResolver
-	cache map[string]*RepoInfo // start path -> repo (nil = not a worktree)
+	src     Source
+	panes   PaneLister
+	repos   RepoResolver
+	cache   map[string]*RepoInfo      // start path -> repo (nil = not a worktree)
+	wtCache map[string][]WorktreeInfo // git common dir -> worktree set
 }
 
 // NewWorkspace builds a Workspace over an agent source, a tmux pane lister, and a git
 // repo resolver. It satisfies RowSource.
 func NewWorkspace(src Source, panes PaneLister, repos RepoResolver) *Workspace {
-	return &Workspace{src: src, panes: panes, repos: repos, cache: map[string]*RepoInfo{}}
+	return &Workspace{
+		src:     src,
+		panes:   panes,
+		repos:   repos,
+		cache:   map[string]*RepoInfo{},
+		wtCache: map[string][]WorktreeInfo{},
+	}
+}
+
+// Invalidate drops the cached git facts so the next Rows() re-reads git. Called by the
+// view after a spawn or remove changes the on-disk worktree set.
+func (w *Workspace) Invalidate() {
+	w.cache = map[string]*RepoInfo{}
+	w.wtCache = map[string][]WorktreeInfo{}
 }
 
 // lookup resolves (and memoizes) the repo context of a start path.
@@ -65,6 +98,19 @@ func (w *Workspace) lookup(dir string) *RepoInfo {
 	}
 	w.cache[dir] = &info
 	return &info
+}
+
+// worktrees resolves (and memoizes) the git worktree set for a repository.
+func (w *Workspace) worktrees(gitDir string) []WorktreeInfo {
+	if v, ok := w.wtCache[gitDir]; ok {
+		return v
+	}
+	list, err := w.repos.Worktrees(gitDir)
+	if err != nil {
+		list = nil
+	}
+	w.wtCache[gitDir] = list
+	return list
 }
 
 // Rows implements RowSource: it joins live agents with the tmux structure and git
@@ -96,11 +142,11 @@ func (w *Workspace) Rows() ([]Row, error) {
 	var rows []Row
 
 	for _, sess := range sessionOrder {
-		anchor, ok := w.anchorOf(bySession[sess])
+		repo, ok := w.managedRepoOf(bySession[sess])
 		if !ok {
 			continue // not a managed repo; its agents fall through to the plain pass
 		}
-		rows = append(rows, w.managedRows(sess, bySession[sess], anchor, byPane, claimed)...)
+		rows = append(rows, w.managedRows(sess, bySession[sess], repo, byPane, claimed)...)
 		// Incidental agents in this managed session (windows that are not worktrees of it).
 		for _, a := range agents {
 			if a.TmuxSession == sess && !claimed[a.SessionID] {
@@ -121,72 +167,90 @@ func (w *Workspace) Rows() ([]Row, error) {
 	return rows, nil
 }
 
-// anchorOf finds a session's anchor: the lowest-window-index pane that is its repo's
-// default-branch checkout. ok=false means the session is not a managed repo.
-func (w *Workspace) anchorOf(panes []PaneInfo) (RepoInfo, bool) {
-	var anchor RepoInfo
-	anchorWin := ""
+// managedRepoOf decides whether a session is a managed repo and, if so, which repository
+// it is. A session is managed iff at least one of its windows started inside a git
+// worktree. When more than one repo is present, the primary-worktree window wins; failing
+// that, the lowest-window-index worktree window. ok=false means the session is plain.
+func (w *Workspace) managedRepoOf(panes []PaneInfo) (RepoInfo, bool) {
+	var chosen RepoInfo
+	chosenWin := ""
 	found := false
 	for _, p := range panes {
 		info := w.lookup(p.StartPath)
-		if info == nil || info.DefaultBranch == "" || info.Worktree != info.DefaultBranch {
+		if info == nil {
 			continue
 		}
-		if !found || lessWindow(p.WindowIndex, anchorWin) {
-			anchor, anchorWin, found = *info, p.WindowIndex, true
+		switch {
+		case !found:
+			chosen, chosenWin, found = *info, p.WindowIndex, true
+		case info.IsPrimary && !chosen.IsPrimary:
+			chosen, chosenWin = *info, p.WindowIndex
+		case info.IsPrimary == chosen.IsPrimary && lessWindow(p.WindowIndex, chosenWin):
+			chosen, chosenWin = *info, p.WindowIndex
 		}
 	}
-	return anchor, found
+	return chosen, found
 }
 
-// managedRows builds the anchor/worktree/slot rows for one managed session. Each
-// worktree of the anchor's container yields one row (the agent's if one runs there,
-// else a slot — or the base marker for the default-branch worktree). Agents adopted as
-// worktree rows are recorded in claimed.
-func (w *Workspace) managedRows(sess string, panes []PaneInfo, anchor RepoInfo, byPane map[string]Agent, claimed map[string]bool) []Row {
-	type entry struct {
-		pane  PaneInfo
-		info  *RepoInfo
-		agent Agent
-		has   bool
+// managedRows builds the anchor/worktree/slot rows for one managed session. It enumerates
+// the repository's full git worktree set (not just open windows), so a worktree with no
+// window still renders as a slot. Each worktree yields one row: an agent row if an agent
+// runs in its window, the `⌂ base` anchor row for the primary worktree, else an `◌ slot`
+// spawn target. Agents adopted as worktree rows are recorded in claimed.
+func (w *Workspace) managedRows(sess string, panes []PaneInfo, repo RepoInfo, byPane map[string]Agent, claimed map[string]bool) []Row {
+	// Index this repo's open windows by their worktree path, preferring a pane that has
+	// a live agent so the row carries the agent.
+	type windowed struct {
+		pane PaneInfo
+		has  bool
 	}
-	byName := map[string]*entry{}
-	var names []string
+	byPath := map[string]windowed{}
 	for _, p := range panes {
 		info := w.lookup(p.StartPath)
-		if info == nil || info.Container != anchor.Container {
+		if info == nil || info.GitDir != repo.GitDir {
 			continue
 		}
-		a, has := byPane[p.PaneID]
-		if e := byName[info.Worktree]; e == nil {
-			byName[info.Worktree] = &entry{pane: p, info: info, agent: a, has: has}
-			names = append(names, info.Worktree)
-		} else if has && !e.has {
-			e.pane, e.agent, e.has = p, a, true // prefer the pane that has an agent
+		_, has := byPane[p.PaneID]
+		if e, ok := byPath[info.TopLevel]; !ok || (has && !e.has) {
+			byPath[info.TopLevel] = windowed{pane: p, has: has}
 		}
 	}
 
+	wts := w.worktrees(repo.GitDir)
 	var out []Row
-	for _, name := range names {
-		e := byName[name]
+	for _, wt := range wts {
+		win, hasWindow := byPath[wt.Path]
+		agent, hasAgent := Agent{}, false
+		if hasWindow {
+			agent, hasAgent = byPane[win.pane.PaneID]
+		}
 		switch {
-		case e.has:
-			r := agentRow(e.agent)
-			r.Dir, r.Worktree, r.Managed = e.info.TopLevel, name, true
+		case hasAgent:
+			r := agentRow(agent)
+			r.Dir, r.Worktree, r.Managed = wt.Path, wt.Name, true
+			r.Repo, r.Branch, r.GitDir = repo.Repo, wt.Branch, repo.GitDir
 			out = append(out, r)
-			claimed[e.agent.SessionID] = true
-		case name == anchor.DefaultBranch:
-			out = append(out, Row{
+			claimed[agent.SessionID] = true
+		case wt.IsPrimary:
+			r := Row{
 				Kind: RowAnchor, SessionID: "anchor:" + sess,
-				TmuxSession: sess, TmuxWindow: e.pane.WindowIndex, TmuxWindowName: e.pane.WindowName,
-				TmuxPane: e.pane.PaneID, Dir: e.info.TopLevel, Worktree: name, Managed: true,
-			})
+				TmuxSession: sess, Dir: wt.Path, Worktree: wt.Name, Managed: true,
+				Repo: repo.Repo, Branch: wt.Branch, GitDir: repo.GitDir,
+			}
+			if hasWindow {
+				r.TmuxWindow, r.TmuxWindowName, r.TmuxPane = win.pane.WindowIndex, win.pane.WindowName, win.pane.PaneID
+			}
+			out = append(out, r)
 		default:
-			out = append(out, Row{
-				Kind: RowSlot, SessionID: "slot:" + sess + ":" + name,
-				TmuxSession: sess, TmuxWindow: e.pane.WindowIndex, TmuxWindowName: e.pane.WindowName,
-				TmuxPane: e.pane.PaneID, Dir: e.info.TopLevel, Worktree: name, Managed: true,
-			})
+			r := Row{
+				Kind: RowSlot, SessionID: "slot:" + sess + ":" + wt.Name,
+				TmuxSession: sess, Dir: wt.Path, Worktree: wt.Name, Managed: true,
+				Repo: repo.Repo, Branch: wt.Branch, GitDir: repo.GitDir,
+			}
+			if hasWindow {
+				r.TmuxWindow, r.TmuxWindowName, r.TmuxPane = win.pane.WindowIndex, win.pane.WindowName, win.pane.PaneID
+			}
+			out = append(out, r)
 		}
 	}
 	return out

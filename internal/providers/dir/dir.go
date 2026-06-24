@@ -59,6 +59,7 @@ func (p *Provider) Candidates() ([]provider.Candidate, error) {
 			Label: name + "  (" + path + ")",
 			Type:  Type,
 			Kind:  provider.KindCreate,
+			Dir:   dir,
 			Action: func(b provider.Backend) error {
 				if err := b.Ensure(name, dir); err != nil {
 					return err

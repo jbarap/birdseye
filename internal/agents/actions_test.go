@@ -14,6 +14,7 @@ type removeCall struct {
 
 type fakeOrch struct {
 	spawns      []spawnCall
+	closes      []Row
 	removes     []removeCall
 	dirty       bool   // when true, Remove(force=false) reports ErrWorktreeDirty
 	newSessions int    // count of NewSession calls
@@ -22,6 +23,11 @@ type fakeOrch struct {
 
 func (f *fakeOrch) Spawn(repo Row, branch, name string) error {
 	f.spawns = append(f.spawns, spawnCall{repo, branch, name})
+	return nil
+}
+
+func (f *fakeOrch) Close(r Row) error {
+	f.closes = append(f.closes, r)
 	return nil
 }
 
@@ -148,6 +154,55 @@ func TestNewAgentEscCancels(t *testing.T) {
 	m = nm.(model)
 	if m.mode != modeNormal || len(orch.spawns) != 0 {
 		t.Fatalf("esc should cancel without spawning, mode=%v spawns=%v", m.mode, orch.spawns)
+	}
+}
+
+// TestCloseAndDeleteChords drives the dd/dD teardown chords through the dispatcher: dd
+// closes the row's window instantly (no confirmation, no worktree removal), while dD —
+// sharing the first key — opens the delete confirmation instead.
+func TestCloseAndDeleteChords(t *testing.T) {
+	orch := &fakeOrch{}
+	row := Row{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", Worktree: "feat", Managed: true, Dir: "/d", TmuxWindow: "1", TmuxPane: "%2"}
+	m := modelWith(t, orch, []Row{row})
+
+	// First d arms the shared chord prefix; it must not act yet.
+	nm, _ := m.handleKey(key("d"))
+	m = nm.(model)
+	if m.pending != "d" {
+		t.Fatalf("first d should arm the chord, pending=%q", m.pending)
+	}
+	// Second d completes dd → close: one Close, no confirm, no removes.
+	nm, _ = m.handleKey(key("d"))
+	m = nm.(model)
+	if len(orch.closes) != 1 {
+		t.Fatalf("dd should close once, got %d", len(orch.closes))
+	}
+	if m.mode != modeNormal || len(orch.removes) != 0 {
+		t.Fatalf("dd must not confirm or remove, mode=%v removes=%v", m.mode, orch.removes)
+	}
+
+	// dD shares the first key but completes to delete → the confirmation popup opens.
+	nm, _ = m.handleKey(key("d"))
+	m = nm.(model)
+	nm, _ = m.handleKey(key("D"))
+	m = nm.(model)
+	if m.mode != modeConfirmDelete {
+		t.Fatalf("dD should open the delete confirm, mode=%v", m.mode)
+	}
+	if len(orch.removes) != 0 {
+		t.Fatalf("dD must not remove before confirmation, got %+v", orch.removes)
+	}
+}
+
+// TestCloseWindowlessSlotIsNoop checks the close action no-ops on a windowless slot:
+// there is no tmux window to close, so the orchestrator is never invoked.
+func TestCloseWindowlessSlotIsNoop(t *testing.T) {
+	orch := &fakeOrch{}
+	m := modelWith(t, orch, []Row{{Kind: RowSlot, SessionID: "slot:proj:spike", TmuxSession: "proj", Worktree: "spike", Managed: true, Dir: "/d"}})
+	nm, _ := m.startClose()
+	m = nm.(model)
+	if len(orch.closes) != 0 {
+		t.Fatalf("closing a windowless slot should be a no-op, got %+v", orch.closes)
 	}
 }
 

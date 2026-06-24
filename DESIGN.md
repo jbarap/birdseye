@@ -89,8 +89,8 @@ structural **markers** (not statuses — they mark the absence/role of an agent)
 
 | Marker | Glyph + word | Meaning |
 |---|---|---|
-| anchor | `⌂ base` | the repo's default-branch checkout (no agent) |
-| slot | `◌ slot` | a worktree with no agent — a spawn target |
+| anchor | `⌂ base` | the repo's primary worktree (git's main worktree; no agent) |
+| slot | `◌ slot` | a worktree with no agent — a spawn target (windowed or windowless) |
 
 A managed repo's section bar additionally carries a source-control indicator (`󰊢`) and its
 worktree count, so recognition reads from a glyph and a word, never color. Within the repo
@@ -136,17 +136,82 @@ In the agents view, two facts about a row are **independent**: whether it has a 
 (a hook record) and whether it is a managed **worktree** (its window started inside a recognized
 repo's worktree). A row can be either, both, or neither. This orthogonality is what lets a managed
 repo and a user's ordinary, unrecognized session coexist in the same view — and in the same tmux
-session — without one reshaping the other. A window surfaces only when it has an agent, is a managed
-worktree, or is a repo's anchor; anything else stays invisible, so an unrecognized session renders
-identically to a tool-free terminal.
+session — without one reshaping the other. Recognition is git-native: a window is a managed worktree
+when its start path resolves (via `git rev-parse --git-common-dir` / `git worktree list`) to a
+worktree of a repository, not by matching any path shape. A row surfaces when it has an agent, is a
+managed worktree, or is a repo's anchor (its primary worktree); a worktree with no open window still
+surfaces as a slot, since the set is enumerated from git. Anything else stays invisible, so an
+unrecognized session renders identically to a tool-free terminal.
 
 The **worktree is the row** — not a new indent level. In the common case (one agent per worktree),
 the worktree row and the agent row are the same line, so the view stays a two-level tree
 (session → row) with the [pinned status gutter](#layout-philosophy) intact. A managed repo's
 session bar carries a recognition indicator (glyph + worktree count, never color alone); rows that
-are worktrees without an agent, and the repo's default-branch anchor, each take their own
+are worktrees without an agent, and the repo's primary-worktree anchor, each take their own
 pinned-gutter token (glyph + word), defined in `theme` exactly like every other status — so the
 managed view never relies on color to convey "empty slot" or "anchor."
+
+## Primitives and clients
+
+bird's-eye is a *capability* with interchangeable faces, not an app with a CLI bolted on. Agent
+management is a headless primitive; a human TUI and an orchestrating agent are peer clients of it.
+These principles are how that capability stays composable and un-opinionated as it grows — the
+architectural expression of [Recognition over ownership](#recognition-over-ownership). Some of it is
+direction the binary has not fully grown into yet; it is written as principle, not as a claim about
+today's commands.
+
+- **The CLI is the API.** Every capability is a composable command that speaks `--json`. There is no
+  second, bespoke API: anything that can run a shell — a script, *or another agent* — can drive the
+  whole fleet. New capability means a new verb, not a new surface.
+
+- **Clients are peers; no face holds private powers.** Anything a human does in the dash is a
+  headless command underneath. The shared core is the work lifecycle (list, status, spawn, close,
+  delete); only *ergonomics* differ by client — a live preview is for human eyes, `--json` and a
+  message-send are for an agent's. **Litmus:** if a UI can do something no command can, the
+  capability is in the wrong place.
+
+- **Substrate, not orchestrator.** bird's-eye supplies primitives; the *workflow* lives in the
+  user's agents and prompts. The binary never learns what "QA" or "open a PR" means. An opinionated
+  playbook — an orchestrator that spawns workers, reviews their output, opens PRs — is something a
+  user's agent composes from the verbs, never logic baked into `be`.
+
+- **Opinions ship as removable artifacts.** The binary stays un-opinionated; bird's-eye's *own*
+  workflows ship as opt-in, installable skills / commands / hooks that compose the primitives from
+  the outside (an interactive checklist by default, never an implicit install). Two tiers, each
+  independently opt-in: hooks *enable* a capability (status detection); workflow skills are *pure
+  opinion*. Remove the skills and nothing core breaks.
+
+- **Address by durability.** A handle is only as stable as the thing it names. A *unit of work* is
+  named by its git worktree — it survives renames, tmux restarts, and the agent respawning. A *live
+  realization* is named by tmux's own ids (`%pane`, `@window`), never by mutable names or drifting
+  window indices. Because addresses are *derived*, not assigned, recognizing ("importing") an agent
+  bird's-eye did not spawn is automatic, not a command.
+
+These are realized, not just aspirational: the work lifecycle (list, status, spawn, send,
+jump, close, delete) lives in one operation layer (`internal/fleet`) that **both** faces
+call. The `be dash` TUI's actions are thin adapters over it and the headless `be agents`
+verbs call it directly, so the dash's `dd` (close) and `dD` (delete) are the *same*
+operations as `be agents close` and `be agents delete` — neither face holds a power the
+other lacks. Teardown safety is a property of the *key*, not a dialog: `dd` closes a window
+only (reversible — the worktree persists as a slot) and acts instantly, while only the
+irreversible `dD` (which also runs `git worktree remove`) confirms. Addressing follows the durability
+tiers literally: a unit of work is named by its git worktree (`<repo>` for the anchor,
+`<repo>/<worktree>` for a linked one), derived from `git-common-dir` + `git worktree list`
+on every call; a worktreeless agent is named by its tmux pane id (`%id`); the agent process
+is the most ephemeral and is resolved at call time. Because every handle is *derived*, an
+agent bird's-eye never spawned is addressable with no import step, and an ambiguous handle
+(two repos in view sharing a basename) is refused with the disambiguating paths rather than
+guessed.
+
+- **One observable world.** Every client reads and writes one substrate — tmux, git, hooks — which
+  is the single source of truth. Nothing is cached or owned, so concurrent actors (you and your
+  orchestrator) never diverge, and the machine's work is visible on the same screen you would drive
+  yourself, live.
+
+- **Only wrap what you improve.** A primitive earns a place in bird's-eye only by adding something
+  the raw substrate command lacks — a worktree command that encodes the layout policy earns its
+  keep; a bare `git clone` does not, so it is not a bird's-eye command. When a wrapper stops adding
+  value, it is removed.
 
 ## Degradation
 

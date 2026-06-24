@@ -139,7 +139,7 @@ func TestChordAbortedByOtherKey(t *testing.T) {
 	if m.cursor != 4 {
 		t.Fatalf("aborted chord then j at bottom should stay 4, got %d", m.cursor)
 	}
-	if m.pending != 0 {
+	if m.pending != "" {
 		t.Fatalf("pending chord should be cleared")
 	}
 }

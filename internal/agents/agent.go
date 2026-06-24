@@ -67,13 +67,13 @@ type Source interface {
 }
 
 // RowKind distinguishes the leaf rows the agents view renders. A row may carry a
-// live agent, mark a managed repo's default-branch anchor, or mark an empty worktree
-// slot (a worktree window with no agent — a spawn target).
+// live agent, mark a managed repo's primary-worktree anchor, or mark an empty worktree
+// slot (a worktree with no agent — a spawn target, whether or not it has a window).
 type RowKind int
 
 const (
 	RowAgent  RowKind = iota // a live agent (status from its hook record)
-	RowAnchor                // a managed repo's default-branch checkout (no agent)
+	RowAnchor                // a managed repo's primary worktree (no agent)
 	RowSlot                  // a managed worktree with no agent (spawn target)
 )
 
@@ -98,6 +98,16 @@ type Row struct {
 	// outside a managed repo. A non-empty value is what makes delete also remove the
 	// worktree.
 	Worktree string
+	// Repo is the repository name for managed rows (the primary worktree's basename);
+	// empty for incidental agents. With Worktree it forms the durable `repo/worktree`
+	// handle the headless verbs address work by.
+	Repo string
+	// Branch is the worktree's checked-out branch for managed rows; empty otherwise.
+	Branch string
+	// GitDir is the repository's shared git common dir — its identity across all its
+	// worktrees — used to detect when two repos sharing a basename make a handle
+	// ambiguous. Empty for incidental agents.
+	GitDir string
 	// Managed reports whether the owning session is a recognized managed repo, so its
 	// section bar shows the indicator and `n` is available.
 	Managed bool

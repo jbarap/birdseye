@@ -75,7 +75,10 @@ rather than shown as unknown.
 The system SHALL provide commands to install and uninstall the Claude Code hooks into the
 user's settings file, preserving all unrelated configuration and hooks, supporting a
 user-supplied settings path, and operating idempotently. Uninstall SHALL remove only the
-entries the tool added.
+entries the tool added. These hook operations SHALL be reached through the hooks tier of
+`be agents install <type>` / `be agents uninstall <type>` (with `be hook claude
+install`/`uninstall` retained as hidden, deprecated aliases); the install/uninstall
+behavior and its safety guarantees SHALL be unchanged by that reachability change.
 
 #### Scenario: Install preserves existing config
 
@@ -83,6 +86,12 @@ entries the tool added.
   and unrelated hooks
 - **THEN** the tool adds its hook entries while leaving all other keys and hooks intact,
   and records a backup of the previous file
+
+#### Scenario: Install reached through `be agents install`
+
+- **WHEN** the user installs the hooks via `be agents install claude --hooks`
+- **THEN** the same hook entries are installed with the same safety guarantees as the
+  deprecated `be hook claude install`
 
 #### Scenario: Custom settings path
 
@@ -123,35 +132,44 @@ sessions require action.
 
 ### Requirement: Popup-friendly invocation
 
-The system SHALL run the agents view — the default `be` command (also reachable as
-`be agents`) — as a self-contained command suitable for launching in a transient context
-such as a tmux popup, SHALL allow navigating to a selected agent's session — landing on the
-exact window and pane the agent runs in — and SHALL keep the view's rendered state current
-by refreshing in place as agent state changes while the view is open, without the user
-re-running the command.
+The system SHALL run the agents view as the `be dash` command — a self-contained command
+suitable for launching in a transient context such as a tmux popup — SHALL allow
+navigating to a selected agent's session (landing on the exact window and pane the agent
+runs in), and SHALL keep the view's rendered state current by refreshing in place as agent
+state changes while the view is open, without the user re-running the command. The view's
+interactive actions (jump, spawn, close, delete) SHALL resolve to the **same** operation
+layer the headless `be agents` verbs expose, so the dash and the verbs stay in lifecycle
+parity.
 
 #### Scenario: Runs in a popup context
 
-- **WHEN** the agents view is launched via `tmux display-popup -E be`
+- **WHEN** the agents view is launched via `tmux display-popup -E be dash`
 - **THEN** the view renders within the popup and exits cleanly when dismissed
 
 #### Scenario: Jump to selected agent's exact pane
 
 - **WHEN** the user selects an agent in the view
-- **THEN** the system switches/attaches to that agent's tmux session and focuses the agent's
-  window and pane, so the user lands where the agent runs even in a split window
+- **THEN** the system switches/attaches to that agent's tmux session and focuses the
+  agent's window and pane, so the user lands where the agent runs even in a split window
 
 #### Scenario: Jump falls back when the pane is gone
 
 - **WHEN** the selected agent's recorded pane no longer exists
 - **THEN** the system still connects to the agent's session rather than failing
 
+#### Scenario: Dash actions share the headless operation layer
+
+- **WHEN** the user performs an interactive action in `be dash` (jump, spawn, close, or
+  delete)
+- **THEN** it resolves to the same operation the corresponding `be agents` verb invokes,
+  so both surfaces behave identically
+
 #### Scenario: View refreshes as state changes
 
 - **WHEN** an agent's hook writes new state (or a new agent appears, or one becomes stale)
   while the agents view is open
 - **THEN** the view re-renders to reflect the current state without the user re-running
-  `be agents`
+  `be dash`
 
 #### Scenario: Selection is preserved across refreshes
 
@@ -504,35 +522,40 @@ interface.
 
 The agents view SHALL recognize managed repositories from a Workspace snapshot
 re-derived on every refresh, never persisted. The snapshot SHALL be built from cheap
-inputs: the live tmux structure (sessions, windows, and panes with each pane's
-**start path**), the existing agent hook records, and per-repo git facts (default
-branch, worktree set, dirtiness) read through a cache. Classification SHALL use the
-pane **start path**, not its current directory, so navigating inside a window never
-changes recognition. A session SHALL be recognized as a managed repo iff at least one
-of its windows started in a `<repo>/<default-branch>` directory; the lowest-index such
-window SHALL be the canonical **anchor**, and a second such window SHALL NOT
-de-recognize the session. Windows whose start path is under the same `<repo>/`
-container (but is not the anchor) SHALL be that repo's **managed worktrees**. The
-per-tick path classification SHALL be cheap (a cache lookup); git SHALL be consulted
-only on a cache miss or when performing an action, never per tick for every window.
+inputs: the live tmux structure (sessions, windows, and panes with each pane's **start
+path**), the existing agent hook records, and per-repo git facts read through a cache —
+the repository's shared git directory (`git rev-parse --git-common-dir`), its **worktree
+set** (`git worktree list`), its default branch, and dirtiness. Recognition SHALL be
+**git-native**: a window's start path is classified by resolving it to a git worktree and
+its repository, not by matching a `<repo>/<default-branch>` path shape, so any on-disk
+layout is recognized — including worktrees a user or another tool created. A session
+SHALL be recognized as a managed repo iff at least one of its windows started inside a
+git worktree of a repository. A repository's **anchor** SHALL be its git **primary
+worktree** (the worktree git refuses to remove), independent of which branch is checked
+out there; the window started in that primary worktree SHALL be the canonical anchor
+window. Windows started in other worktrees of the same repository (same
+`git-common-dir`) SHALL be that repo's **managed worktrees**. The per-tick path
+classification SHALL be cheap (a cache lookup); git SHALL be consulted only on a cache
+miss or when performing an action, never per tick for every window.
 
-#### Scenario: Session with a main anchor is recognized
+#### Scenario: Session with a primary-worktree window is recognized
 
-- **WHEN** a tmux session has a window whose start path is `<repo>/<default-branch>`
+- **WHEN** a tmux session has a window whose start path is a repository's git primary
+  worktree
 - **THEN** the view recognizes that session as a managed repo anchored on that window
 
-#### Scenario: No anchor means not managed
+#### Scenario: Anchor is the primary worktree regardless of branch
 
-- **WHEN** a session has windows under a `<repo>/` container but none started in the
-  repo's default-branch directory
+- **WHEN** a repository's primary worktree has a non-default branch checked out
+- **THEN** the view still treats that primary worktree's window as the anchor, because
+  the anchor is defined by git's primary worktree, not by the branch name
+
+#### Scenario: No worktree window means not managed
+
+- **WHEN** a session has no window started inside any git worktree of a recognized
+  repository
 - **THEN** the session is not recognized as managed and renders exactly as a plain
   session
-
-#### Scenario: A second main window does not de-manage
-
-- **WHEN** a recognized managed session gains a second window also started in
-  `<repo>/<default-branch>`
-- **THEN** the session stays managed and the lowest-index anchor remains canonical
 
 #### Scenario: Recognition uses start path, not current directory
 
@@ -545,21 +568,30 @@ only on a cache miss or when performing an action, never per tick for every wind
 - **THEN** the managed/worktree/anchor classification is recomputed from the current
   tmux + git state rather than read from any persisted orchestration state
 
+#### Scenario: Third-party worktree is recognized
+
+- **WHEN** a window started in a worktree created by a tool other than `be worktree add`,
+  belonging to a recognized repository
+- **THEN** the view classifies it as a managed worktree of that repository, because
+  recognition reads the git worktree set rather than a bird's-eye path convention
+
 ### Requirement: Managed-repo presentation
 
-The agents view SHALL render a managed repository's session bar with a managed
-indicator combining the worktree glyph and the worktree count (so the indicator does
-not rely on color alone), extending the session-bar rule so a managed repo shows a bar
-even when it has no live agents. Beneath it the view SHALL render an `⌂ base` anchor
-row for the default-branch checkout and one **worktree row** per managed-worktree
-window, reusing the existing fixed-column grid with no new indent level. A worktree
-row's pinned status gutter SHALL show its agent's status when a worktree has a live
-agent, and an `◌ slot` indicator (glyph plus short label) when it has none, so an
-empty worktree is visibly a spawn target without relying on color. Agent-ness and
-worktree-ness SHALL be independent: an incidental window in a managed session that has
-a live agent but is not a worktree SHALL render as an ordinary agent row, unchanged
-from a plain session. New status-gutter and indicator glyphs (`◌ slot`, `⌂ base`)
-SHALL be defined in the shared theme package.
+The agents view SHALL render a managed repository's session bar with a managed indicator
+combining the worktree glyph and the worktree count (so the indicator does not rely on
+color alone), extending the session-bar rule so a managed repo shows a bar even when it
+has no live agents. Beneath it the view SHALL render an `⌂ base` anchor row for the
+repository's primary worktree and one **worktree row** per worktree in the repository's
+git worktree set. Worktree rows SHALL be enumerated from the **git worktree set**, not
+only from open tmux windows: a worktree with an open window renders against that window,
+and a worktree with **no open tmux window** SHALL still render as a row showing an
+`◌ slot` indicator (a spawn target). A worktree row's pinned status gutter SHALL show its
+agent's status when the worktree's window has a live agent, and an `◌ slot` indicator
+(glyph plus short label) when it has no agent or no window, so an empty or windowless
+worktree is visibly a spawn target without relying on color. Agent-ness and worktree-ness
+SHALL be independent: an incidental window in a managed session that has a live agent but
+is not a worktree SHALL render as an ordinary agent row, unchanged from a plain session.
+The `◌ slot` and `⌂ base` glyphs SHALL be defined in the shared theme package.
 
 #### Scenario: Managed session bar carries an indicator
 
@@ -567,21 +599,27 @@ SHALL be defined in the shared theme package.
 - **THEN** its session bar shows the worktree glyph and the worktree count, and the bar
   appears even if the repo currently has no live agents
 
-#### Scenario: Anchor row
+#### Scenario: Anchor row reflects the primary worktree
 
-- **WHEN** a managed repo's default-branch checkout has no agent
+- **WHEN** a managed repo's primary worktree has no agent
 - **THEN** the view renders an `⌂ base` anchor row for it
 
 #### Scenario: Worktree with an agent shows agent status
 
-- **WHEN** a managed worktree window has a live agent
+- **WHEN** a managed worktree's window has a live agent
 - **THEN** its row's status gutter shows that agent's status at the pinned column
 
 #### Scenario: Worktree without an agent shows a slot
 
-- **WHEN** a managed worktree window has no live agent
+- **WHEN** a managed worktree has an open window but no live agent
 - **THEN** its row's status gutter shows `◌ slot` as a spawn target, distinguishable
   without color
+
+#### Scenario: Windowless worktree surfaces as a slot
+
+- **WHEN** a repository's git worktree set contains a worktree with no open tmux window
+- **THEN** the view still renders a row for it showing `◌ slot`, so the worktree is a
+  visible spawn target rather than vanishing from the view
 
 #### Scenario: Incidental agent in a managed session is unchanged
 
@@ -652,43 +690,51 @@ action SHALL be available only for managed repos.
 
 ### Requirement: Remove an agent and its worktree
 
-The agents view SHALL provide a rebindable action (default the `dd` chord) to remove the
-agent under the cursor, always behind a confirmation so an accidental keypress is never
-destructive. On confirm, a managed worktree row's removal SHALL kill the worktree's tmux
-window and remove the git worktree; a clean worktree is removed directly on that confirm,
-while a dirty (or otherwise non-removable) worktree SHALL escalate to a second
-force-remove confirmation, defaulting to cancel, rather than discarding changes silently.
-For an incidental agent row (an agent that is not a managed worktree), removal SHALL only
-kill/forget the agent and SHALL NOT remove any worktree. The anchor SHALL NOT be
-removable through this action.
+The agents view SHALL provide a rebindable **delete** action (default the `dD` chord,
+config key `delete`) that closes the row's tmux window **and** removes its git worktree.
+Delete SHALL be shown behind a confirmation rendered as a centered popup consistent with
+the new-agent modal — not an inline `(y/n)` status line — so an accidental keypress is
+never destructive. On confirm, a clean worktree SHALL be removed; a dirty (or otherwise
+non-removable) worktree SHALL present a force-remove choice folded into the same popup
+flow, defaulting to cancel, rather than discarding changes silently. On a windowless slot,
+delete SHALL remove the worktree (there is no window to close). On an incidental agent row
+(no worktree), delete SHALL only close the window, since there is no worktree to remove.
+The anchor SHALL NOT be deletable: because it is the repository's primary worktree, git
+refuses to remove it, so delete on the anchor is structurally refused. The delete action
+SHALL be identical in effect to `be agents delete`.
 
-#### Scenario: Delete asks before acting
+#### Scenario: Delete asks before acting via a popup
 
-- **WHEN** the user invokes delete on any removable row
-- **THEN** the view shows a confirmation and removes nothing until the user confirms
+- **WHEN** the user invokes delete on a removable worktree row
+- **THEN** the view shows a centered popup confirmation and removes nothing until the user
+  confirms
 
 #### Scenario: Delete a clean worktree
 
-- **WHEN** the user invokes delete on a managed worktree whose working tree is clean and
-  confirms
-- **THEN** the system kills its window and removes the git worktree
+- **WHEN** the user confirms delete on a managed worktree whose working tree is clean
+- **THEN** the system closes its window and removes the git worktree
 
-#### Scenario: Delete a dirty worktree escalates to force
+#### Scenario: Delete a dirty worktree folds force into the popup
 
 - **WHEN** the user confirms delete on a managed worktree with uncommitted changes
-- **THEN** the view shows a second force-remove confirmation, and cancelling leaves the
-  worktree and its window intact
+- **THEN** the popup presents a force-remove choice defaulting to cancel, and cancelling
+  leaves the worktree and its window intact
+
+#### Scenario: Delete a windowless slot removes the worktree
+
+- **WHEN** the user invokes delete on a windowless slot and confirms
+- **THEN** the system removes that git worktree, with no window to close
 
 #### Scenario: Delete an incidental agent removes no worktree
 
-- **WHEN** the user invokes delete on an agent row that is not a managed worktree and
-  confirms
-- **THEN** only that agent/window is removed and no `git worktree remove` is performed
+- **WHEN** the user invokes delete on an agent row that is not a managed worktree
+- **THEN** only that window is closed and no `git worktree remove` is performed
 
 #### Scenario: Anchor is not deletable
 
 - **WHEN** the cursor is on the `⌂ base` anchor row and the user invokes delete
-- **THEN** the system does not remove the anchor or the default-branch checkout
+- **THEN** the system refuses, because git will not remove the repository's primary
+  worktree
 
 ### Requirement: Configurable refresh interval and agent command
 
@@ -713,4 +759,77 @@ reported as a configuration error rather than silently ignored.
 - **WHEN** `[agents] refresh` or `[agents] command` is malformed
 - **THEN** configuration loading fails with a clear error rather than silently using a
   default
+
+### Requirement: Two-key chord bindings
+
+The agents view's keymap SHALL support chords that are arbitrary **two-key sequences**,
+not only a single rune pressed twice, so that a chord like `dd` (a repeated key) and a
+chord like `dD` (two different keys) are both bindable. The resolver SHALL arm on the
+first key of any bound chord and resolve the action on the second key; if the second key
+does not complete a chord with the armed first key, the armed state SHALL clear and that
+second key SHALL be handled as its own binding. A single-key binding that is also the
+first key of a chord SHALL be reported as a configuration conflict at load time.
+
+#### Scenario: Repeated-key chord resolves
+
+- **WHEN** the user presses the two keys of a repeated-key chord such as `gg`
+- **THEN** the resolver triggers that chord's action
+
+#### Scenario: Mixed-key chord resolves
+
+- **WHEN** the user presses the two keys of a mixed chord such as `dD` (`d` then
+  shift-`d`)
+- **THEN** the resolver triggers that chord's action, distinct from the `dd` chord that
+  shares the first key
+
+#### Scenario: Incomplete chord falls through
+
+- **WHEN** the user presses a key that begins a chord and then a key that does not
+  complete any chord with it
+- **THEN** the armed state clears and the second key is handled as its own binding rather
+  than being swallowed
+
+#### Scenario: Single key conflicting with a chord prefix is rejected
+
+- **WHEN** configuration binds a single key that is also the first key of a bound chord
+- **THEN** loading configuration fails with a clear error naming the conflict
+
+### Requirement: Close a window
+
+The agents view SHALL provide a rebindable **close** action (default the `dd` chord, config
+key `close`) that closes the tmux window of the row under the cursor and has **no
+filesystem effect**. Close SHALL be **instant** — it SHALL NOT show a confirmation —
+because under the git-native layout the worktree persists when its window closes, so the
+action is reversible. Closing a managed worktree's window SHALL leave the worktree on disk,
+which then renders as a slot. Closing an incidental agent's window SHALL just close it.
+Closing the anchor's window SHALL close that window, and if it is the session's last window
+the tmux session ends. On a windowless slot (no window to close) the action SHALL be a
+no-op. The close action SHALL be identical in effect to `be agents close`.
+
+#### Scenario: Close a worktree window leaves a slot
+
+- **WHEN** the user presses the close key on a managed worktree row with an open window
+- **THEN** the window is closed, the git worktree remains on disk, and the row renders as a
+  slot on the next refresh
+
+#### Scenario: Close is instant with no confirmation
+
+- **WHEN** the user presses the close key on any closable row
+- **THEN** the window is closed immediately with no confirmation dialog
+
+#### Scenario: Close an incidental agent
+
+- **WHEN** the user presses the close key on an incidental agent row (no worktree)
+- **THEN** only that window is closed and no worktree is touched
+
+#### Scenario: Close the anchor window
+
+- **WHEN** the user presses the close key on the `⌂ base` anchor row
+- **THEN** the anchor's window is closed (ending the session if it was the last window),
+  and no worktree is removed
+
+#### Scenario: Close a windowless slot is a no-op
+
+- **WHEN** the user presses the close key on a windowless slot row
+- **THEN** nothing is closed and no worktree is touched
 

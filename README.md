@@ -1,5 +1,7 @@
 # bird's-eye (`be`)
 
+> One place to launch, watch, and steer agent work across all your repos.
+
 SHAMELESSLY VIBE CODED.
 
 A lightweight, hackable bird's-eye view over your tmux sessions — and the AI
@@ -22,18 +24,25 @@ bird's-eye draws on ideas/visuals/concepts from these projects:
 
 ## Features
 
-- **`be`** — a tmux-popup-friendly view of your Claude Code sessions and
+- **`be dash`** — a tmux-popup-friendly view of your Claude Code sessions and
   their status (needs-attention / working / idle / done), so you know which need
   you. It **updates live** as sessions change, shows a **preview** of the selected
   session's terminal, and navigates with **vim-native, configurable** keys. When a
   tmux session is a **managed repo** (see below) it also surfaces that repo's
   worktrees and lets you spin agents up and tear them down in place. Press `s` to
   open a new session from the same fuzzy picker without leaving the view.
+- **`be agents`** — the same agent lifecycle headlessly, for scripts and orchestrating
+  agents: `list`, `status`, `spawn`, `send`, `jump`, `close`, `delete`. Data verbs emit
+  `--json`. Work is addressed by a derived `repo/worktree` handle (a worktreeless agent
+  by its tmux pane id). The dash and these verbs share one operation layer, so they
+  always behave identically. `be agents install claude` adds the opt-in Claude Code
+  integration (status hooks and/or bird's-eye's orchestrator/QA/PR skills).
 - **One fuzzy picker** (`be sessions`) over running tmux sessions, `tmuxp` templates,
   `zoxide`/directory roots, and git worktrees — attach to what exists or create
-  what doesn't.
-- **`be worktree`** — clone a repo into `<parent>/<repo>/<default-branch>` (anywhere on
-  disk) and spin up sibling worktrees from inside it; worktrees discovered under
+  what doesn't. `be sessions --json` enumerates the same candidates non-interactively.
+- **`be worktree`** — spin up grouped-sibling worktrees from inside a repo
+  (`git clone` the repo yourself; bird's-eye recognizes any clone). Worktrees live at
+  `<repo>.worktrees/<branch-slug>` beside the clone, and worktrees discovered under
   optional configured roots are surfaced as session candidates.
 - **Modular providers** — add a new way to create sessions by implementing one
   small Go interface.
@@ -65,18 +74,41 @@ any compatible machine and run it; no Go toolchain required.
 ## Usage
 
 ```sh
-be                    # agent status view (also `be agents`)
+be dash               # live agent status view (the TUI)
 be sessions           # open the fuzzy session picker
-be worktree clone <url> [parent]   # → <parent-or-cwd>/<repo>/<default-branch>
-be worktree add <name> [branch]    # run from inside the repo; new sibling worktree
+be sessions --json    # enumerate launch candidates non-interactively
+git clone <url>                    # clone a repo with git directly — no special layout
+be worktree add <name> [branch]    # run from inside the repo; → <repo>.worktrees/<branch-slug>
+
+# Headless agent fleet (anything that runs a shell can drive it):
+be agents list --json                       # the fleet as JSON records
+be agents status <repo>/<worktree> --json   # one work item
+be agents spawn <dir> --branch <b> [--prompt <p>]   # new worktree + window + agent
+be agents send  <repo>/<worktree> "<input>"         # best-effort: reports sent, not received
+be agents jump  <repo>/<worktree>                   # connect tmux to its pane
+be agents close <repo>/<worktree>                   # close the window, keep the worktree
+be agents delete <repo>/<worktree> [--force]        # also `git worktree remove`
 ```
+
+> **Breaking change:** bare `be` no longer launches a view — a subcommand is now
+> required, and the TUI moved to `be dash`. `be agents` is the headless verb namespace
+> (it used to be an alias for the TUI). Update any popup keybindings and scripts to
+> `be dash`.
+
+A **work handle** is derived from git on every call, so it survives session/window
+renames, tmux restarts, and an agent respawning: `<repo>` addresses a repository's
+primary worktree (its anchor), `<repo>/<worktree>` a linked worktree, and a worktreeless
+agent its tmux pane id (e.g. `%5`). Because handles are derived, an agent bird's-eye
+never spawned is addressable with no import step. When two repos in view share a basename
+the handle is ambiguous and the verb refuses with the disambiguating paths rather than
+guessing.
 
 ### Recommended tmux popup keybinding
 
 Add to `~/.tmux.conf` to pop the agents view from anywhere:
 
 ```tmux
-bind-key g display-popup -E -w 80% -h 60% "be"
+bind-key g display-popup -E -w 80% -h 60% "be dash"
 ```
 
 The agents view refreshes in place as hooks report new state, so a popup left open
@@ -90,17 +122,21 @@ All of these keys are configurable (see `[agents.keys]` below).
 
 ### Managed repos (agent orchestration)
 
-`be agents` *recognizes* — it never takes over — the common worktree-per-agent layout.
-A tmux session is a **managed repo** when one of its windows started in a
-`<repo>/<default-branch>` directory (the structure `be worktree` creates). bird's-eye
-owns no state for this: every refresh it re-derives the picture from tmux + git, so an
+bird's-eye *recognizes* — it never takes over — the common worktree-per-agent layout,
+in both `be dash` and the `be agents` verbs. Recognition is **git-native**: a tmux session is a **managed repo** when one of its
+windows started inside any git worktree of a repository, identified by its shared git
+directory (`git rev-parse --git-common-dir`). No path convention is required, so worktrees
+recognize wherever they live — including ones another tool created. bird's-eye owns no
+state for this: every refresh it re-derives the picture from tmux + git, so an
 unrecognized session looks and behaves exactly as before.
 
 In a managed repo the view shows, beside live agents:
 
 - a `󰘬` indicator and worktree count on the session bar,
-- a `⌂ base` row for the default-branch checkout,
-- a `◌ slot` row for each worktree window with no agent (a spawn target).
+- a `⌂ base` row for the repo's **primary worktree** (git's main worktree, whatever branch
+  it has checked out — git itself refuses to remove it, so the anchor can't be deleted),
+- a `◌ slot` row for each worktree with no agent — a spawn target — **including worktrees
+  with no open tmux window**, since the set is enumerated from `git worktree list`.
 
 Two actions become available (configurable, see `[agents.keys]`):
 
@@ -110,10 +146,20 @@ Two actions become available (configurable, see `[agents.keys]`):
   the worktree name), `esc` cancels. It then creates the worktree on that branch, opens a
   tmux window rooted there, and runs the configured agent command (`[agents] command`,
   default `claude`) **inside that window's interactive shell**.
-- **`dd` — delete agent**: always asks `(y/n)` first. On confirm it removes the agent's
-  window; for a managed worktree it also runs `git worktree remove`, escalating to a
-  second force confirmation when the worktree has uncommitted changes. An incidental agent
-  (one not in a worktree) is just closed; the repo anchor can't be deleted.
+- **`dd` — close**: closes the row's tmux window and nothing else — **instant, no
+  confirmation, no filesystem effect**. Under the sibling-worktree layout the worktree
+  survives and the row drops to a `◌ slot`, so closing is reversible (re-open a window in
+  it). On a windowless slot it's a no-op. Closing the anchor's window ends the session if
+  it was the last. Identical in effect to `be agents close`.
+- **`dD` — delete**: closes the window **and** runs `git worktree remove`, behind a
+  centered popup confirmation (consistent with the new-agent modal — never the old inline
+  `(y/n)` line). A dirty worktree folds a force-remove choice into the same popup,
+  defaulting to cancel. An incidental agent (one not in a worktree) is just closed; the
+  repo anchor is refused, since git won't remove a primary worktree. Identical in effect
+  to `be agents delete`.
+
+Safety lives in the **key**, not the dialog: `dd` can never touch disk regardless of how
+fast you confirm, and only the irreversible `dD` prompts.
 
 Agents in non-managed sessions, and incidental shells inside a managed session, keep
 working exactly as today — orchestration is purely additive.
@@ -184,8 +230,8 @@ use_zoxide = true
 roots = ["~/projects", "~/work"]
 
 [worktree]
-# Optional discovery paths scanned for managed repos (each a <repo>/<default-branch>
-# container of git worktrees). Worktrees can live anywhere; these only feed the picker.
+# Optional discovery paths scanned for git repos. Each repo's worktrees are enumerated
+# from git (so they can live anywhere); these roots only feed the picker.
 # Omit or leave empty to list none.
 roots = ["~/code", "~/work"]
 
@@ -196,8 +242,8 @@ command = "claude"                    # agent command for `n`, run in the window
 # accent = "#c792ea"                  # agents-view accent (title + cursor); #rrggbb
 
 # Rebind the agents-view keys. Each action lists the keys that trigger it;
-# omit an action to keep its default. A two-letter value of the same key (e.g.
-# "gg") is a chord — that key pressed twice. Defaults shown below.
+# omit an action to keep its default. A two-rune value of two typeable keys (e.g.
+# "gg", "dd", "dD") is a chord — those two keys pressed in sequence. Defaults shown below.
 [agents.keys]
 up        = ["k", "up"]
 down      = ["j", "down"]
@@ -208,32 +254,64 @@ half_down = ["ctrl+d"]
 select    = ["enter"]
 new_session  = ["s"]                   # open a session via the picker, stay in the view
 new_agent    = ["n"]
-delete_agent = ["dd"]                  # "dd" is the d key pressed twice (a chord)
+close        = ["dd"]                   # close the window (safe, no disk effect); "dd" is a chord
+delete       = ["dD"]                   # close + git worktree remove, behind a popup; "dD" is a chord
 quit      = ["q", "esc", "ctrl+c"]
 ```
 
-## Claude Code hook setup (for `be agents`)
+## Claude Code integration (`be agents install`)
 
-`be agents` derives status from state that Claude Code hooks write — status is never
-inferred from pane contents. (The view does poll that state to refresh live, and the
-preview pane reads terminal output for display only; neither affects an agent's
-status.) Install the hooks once:
+bird's-eye ships its Claude Code integration as **two independent, opt-in tiers** — you
+choose what (if anything) to install, and the binary itself stays un-opinionated:
+
+- **hooks** — status detection. Agent status shown in `be dash` and reported by `be
+  agents` comes from state Claude Code hooks write; status is never inferred from pane
+  contents. (The view polls that state to refresh live, and the preview pane reads
+  terminal output for display only; neither affects status.)
+- **workflows** — bird's-eye-authored **skills** (orchestrator, QA, PR) that compose the
+  `be agents` verbs into opinionated playbooks. These are removable artifacts, never code
+  in the binary.
 
 ```sh
-be hook claude install                     # merges into ~/.claude/settings.json
-be hook claude install --settings <path>   # for a non-standard settings location
-be hook claude uninstall                   # removes only bird's-eye's hooks
+be agents install claude --hooks               # status detection only
+be agents install claude --workflows           # the skills only
+be agents install claude --hooks --workflows   # both
+be agents install claude                        # no flag → interactive checklist (in a terminal)
+be agents install claude --hooks --settings <path>   # non-standard settings location
+
+be agents uninstall claude --workflows         # symmetric, tier-scoped; removes only what we wrote
+be agents uninstall claude                      # no flag → checklist of installed tiers
 ```
 
-Install is **safe**: it preserves every other key and any unrelated hooks you
+Nothing is ever installed implicitly: passing no tier flag shows a checklist (one line per
+tier) in an interactive terminal, and in a non-TTY (piped/scripted) it **errors** asking
+for `--hooks`/`--workflows` rather than guess. Selecting nothing is a no-op.
+
+> **Deprecated alias:** `be hook claude install` / `uninstall` still work (hidden) and route
+> to the hooks tier, so existing instructions keep functioning. Prefer `be agents install
+> claude --hooks`.
+
+### Removability
+
+The two tiers are independent and the workflows tier is **removable by construction**.
+Uninstalling the workflow skills — or never installing them — leaves the `be` binary, every
+`be agents` verb, and the hooks tier fully functional; the skills only *compose* the verbs,
+they are never required by them. The hooks tier is likewise independent: removing it does
+not touch the skills. Both removals touch only what bird's-eye wrote.
+
+### Hooks tier details
+
+The hooks install is **safe**: it preserves every other key and any unrelated hooks you
 already have, refuses to touch a malformed file, writes a `.bak` backup before
 changing anything, and is idempotent. Uninstall removes only the entries
 bird's-eye added. By default the installed hook calls the absolute path of the
 `be` binary you ran (robust against PATH differences in Claude's hook
-environment); override with `--command`.
+environment); override with `--command`. The workflows tier mirrors this safety for its
+files: re-install rewrites only changed artifacts and backs up a hand-edited one to `.bak`
+rather than clobbering it.
 
-Each agent type is its own subcommand (`be hook claude …`), so support for other
-agents can be added later without changing this interface. The install wires up
+Each agent type is its own `<type>` argument (`be agents install claude …`), so support for
+other agents can be added later without reshaping the command. The hooks install wires up
 these events in your Claude settings:
 
 ```json

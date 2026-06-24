@@ -1,9 +1,11 @@
-// Package worktree manages a repo-per-folder layout that can live anywhere on
-// disk: a repository is cloned to <parent>/<repo>/<default-branch>, and sibling
-// git worktrees live alongside it as <parent>/<repo>/<name>. The <repo>/ container
-// is derived from git (the parent of the worktree's top level), so there is no
-// mandatory common root. Worktrees discovered under optional configured roots are
-// surfaced to the picker as session candidates.
+// Package worktree manages a grouped-sibling layout that can live anywhere on disk: a
+// repository is a plain clone at <path>/<repo>, and its additional git worktrees live as
+// grouped siblings under <path>/<repo>.worktrees/<branch-slug>. Recognition is git-native
+// — a repository and its worktrees are derived from `git worktree list` and the shared git
+// directory (`git rev-parse --git-common-dir`), not from any path convention — so any
+// on-disk layout is recognized, including worktrees a user or another tool created.
+// Worktrees discovered under optional configured roots are surfaced to the picker as
+// session candidates.
 package worktree
 
 import (
@@ -18,26 +20,24 @@ import (
 // ErrGitMissing is returned when git is required but not on PATH.
 var ErrGitMissing = errors.New("git is required but was not found on PATH")
 
-// Managed is a repository container and the worktrees it contains.
+// Managed is a repository and the worktrees it contains.
 type Managed struct {
-	Repo string // repository folder name (the <repo>/ container's base name)
-	Dirs []Dir  // the default-branch checkout plus sibling worktrees
+	Repo string // repository folder name (the primary worktree's base name)
+	Dirs []Dir  // the primary worktree plus its linked worktrees
 }
 
 // Dir is one worktree directory.
 type Dir struct {
-	Name string // e.g. "main", "master", "feature-x"
+	Name string // e.g. "main", "feature-login"
 	Path string // absolute path
 }
 
-// RepoNameFromURL derives the repository folder name from a clone URL.
-func RepoNameFromURL(url string) string {
-	url = strings.TrimRight(strings.TrimSpace(url), "/")
-	base := url
-	if i := strings.LastIndexAny(url, "/:"); i >= 0 {
-		base = url[i+1:]
-	}
-	return strings.TrimSuffix(base, ".git")
+// Worktree is one entry in a repository's git worktree set.
+type Worktree struct {
+	Path      string // absolute, symlink-resolved worktree path
+	Branch    string // short branch name; empty if detached or bare
+	Head      string // commit the worktree is checked out at
+	IsPrimary bool   // git's primary (main) worktree — the one `git worktree remove` refuses
 }
 
 func requireGit() error {
@@ -47,90 +47,124 @@ func requireGit() error {
 	return nil
 }
 
-// Clone clones url into <parent>/<repo>/<default-branch>, where <default-branch> is
-// the repository's actual default branch resolved from the remote's HEAD (e.g. main,
-// master, trunk). If that directory already exists it does not re-clone; the returned
-// bool reports whether it already existed.
-func Clone(parent, url string) (dir string, existed bool, err error) {
+// ListWorktrees enumerates the worktrees of the repository containing dir via
+// `git worktree list --porcelain`. The first worktree git reports is the primary
+// worktree. Paths are absolute and symlink-resolved so they compare equal to the start
+// paths the reconciler derives from git.
+func ListWorktrees(dir string) ([]Worktree, error) {
 	if err := requireGit(); err != nil {
-		return "", false, err
+		return nil, err
 	}
-	repo := RepoNameFromURL(url)
-	if repo == "" {
-		return "", false, fmt.Errorf("could not derive repo name from %q", url)
-	}
-	branch, err := defaultBranchFromRemote(url)
+	out, err := output(dir, "git", "worktree", "list", "--porcelain")
 	if err != nil {
-		return "", false, err
+		return nil, err
 	}
-	dir = filepath.Join(parent, repo, branch)
-	if _, statErr := os.Stat(dir); statErr == nil {
-		return dir, true, nil
+	var wts []Worktree
+	var cur *Worktree
+	flush := func() {
+		if cur != nil {
+			wts = append(wts, *cur)
+			cur = nil
+		}
 	}
-	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
-		return "", false, err
+	for _, line := range strings.Split(out, "\n") {
+		switch {
+		case strings.HasPrefix(line, "worktree "):
+			flush()
+			p := strings.TrimPrefix(line, "worktree ")
+			if resolved, err := filepath.EvalSymlinks(p); err == nil {
+				p = resolved
+			}
+			cur = &Worktree{Path: filepath.Clean(p), IsPrimary: len(wts) == 0}
+		case cur == nil:
+			continue
+		case strings.HasPrefix(line, "HEAD "):
+			cur.Head = strings.TrimPrefix(line, "HEAD ")
+		case strings.HasPrefix(line, "branch "):
+			cur.Branch = strings.TrimPrefix(strings.TrimPrefix(line, "branch "), "refs/heads/")
+		}
 	}
-	if err := run("", "git", "clone", url, dir); err != nil {
-		return "", false, err
-	}
-	return dir, false, nil
+	flush()
+	return wts, nil
 }
 
-// Add creates a sibling worktree <container>/<name>, inferring the <repo>/ container
-// from cwd (the parent of the current worktree's top level), so it works from anywhere
-// inside any worktree of the repo. Branch handling: branch defaults to the worktree name
-// when empty, so a lone name still creates a <name> branch in a <name> directory; an
-// explicit branch decouples the two (branch "feature/login" in directory "feature-login").
-// A branch that already exists (local or remote-tracking) is checked out; otherwise a new
-// branch of that name is created off the repository's default branch. It declines to
-// overwrite an existing directory.
+// Add creates a grouped-sibling worktree under <repo>.worktrees/<branch-slug>, resolving
+// the repository (and its primary worktree) from git's shared git dir, so it works from
+// anywhere inside any worktree of the repo. Branch handling: branch defaults to name when
+// empty; the directory name is the filesystem-safe slug of the branch (`feature/login` →
+// `feature-login`). A branch that already exists (local or remote-tracking) is checked
+// out; otherwise a new branch of that name is created off the repository's default
+// branch. It declines to overwrite an existing directory (a slug collision).
 func Add(cwd, name, branch string) (dir string, err error) {
 	if err := requireGit(); err != nil {
 		return "", err
 	}
-	container, top, err := containerOf(cwd)
+	primary, _, err := primaryOf(cwd)
 	if err != nil {
 		return "", err
-	}
-	dir = filepath.Join(container, name)
-	if _, statErr := os.Stat(dir); statErr == nil {
-		return "", fmt.Errorf("worktree %q already exists at %s", name, dir)
 	}
 	if branch == "" {
 		branch = name
 	}
+	slug := slugifyBranch(branch)
+	if slug == "" {
+		return "", fmt.Errorf("could not derive a worktree directory name from %q", branch)
+	}
+	container := primary + ".worktrees"
+	dir = filepath.Join(container, slug)
+	if _, statErr := os.Stat(dir); statErr == nil {
+		return "", fmt.Errorf("worktree directory %q already exists at %s", slug, dir)
+	}
 	var args []string
-	if branchExists(top, branch) {
+	if branchExists(primary, branch) {
 		// Existing local/remote branch: check it out in the new worktree.
 		args = []string{"worktree", "add", dir, branch}
 	} else {
 		// New branch of the given name, based on the repository's default branch.
 		args = []string{"worktree", "add", "-b", branch, dir}
-		if def := defaultBranchOfRepo(top); def != "" {
+		if def := defaultBranchOfRepo(primary); def != "" {
 			args = append(args, def)
 		}
 	}
-	if err := run(top, "git", args...); err != nil {
+	if err := os.MkdirAll(container, 0o755); err != nil {
+		return "", err
+	}
+	if err := run(primary, "git", args...); err != nil {
 		return "", err
 	}
 	return dir, nil
 }
 
-// List returns the managed repositories discovered under the given roots. A managed
-// repo is laid out as <root>/<repo>/<worktree>, where each worktree directory is named
-// after the branch checked out there. Recognition turns on the *anchor*: a child whose
-// directory name is the repository's default branch (e.g. <repo>/main) — the same gate
-// the orchestration layer uses. A single anchored checkout with no siblings is a valid
-// managed repo; siblings sharing the anchor's git store are its other worktrees.
-//
-// The anchor is what separates a managed repo from an ordinary projects folder. A
-// directory named after a *project* — `~/projects/{repoA,repoB,…}` or `docs/tax`, a
-// plain clone two levels under a root — is not its repo's default branch, so it is not
-// mistaken for a worktree. Children are grouped by git common-dir, so an unrelated
-// clone sitting beside a real worktree set lands in its own (anchorless) group and is
-// excluded rather than poisoning the set.
+// slugifyBranch turns a branch name into a filesystem-safe directory name: path
+// separators and any other character outside [A-Za-z0-9._-] become a hyphen, runs of
+// hyphens collapse, and leading/trailing hyphens and dots are trimmed. "feature/login" →
+// "feature-login".
+func slugifyBranch(branch string) string {
+	var b strings.Builder
+	for _, r := range branch {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+	slug := b.String()
+	for strings.Contains(slug, "--") {
+		slug = strings.ReplaceAll(slug, "--", "-")
+	}
+	return strings.Trim(slug, "-.")
+}
+
+// List returns the managed repositories discovered under the given roots. A repository is
+// a git clone found directly under a root; its worktrees are enumerated from git
+// (`git worktree list`), so they are recognized wherever they live — including the
+// grouped-sibling `<repo>.worktrees/<slug>` directories and worktrees other tools made.
+// Repositories are de-duplicated by their shared git dir, so a linked worktree that
+// happens to sit under a root does not produce a second entry.
 func List(roots ...string) ([]Managed, error) {
 	var out []Managed
+	seen := map[string]bool{}
 	for _, root := range roots {
 		if root == "" {
 			continue
@@ -146,51 +180,41 @@ func List(roots ...string) ([]Managed, error) {
 			if !e.IsDir() {
 				continue
 			}
-			out = append(out, managedReposIn(e.Name(), filepath.Join(root, e.Name()))...)
+			p := filepath.Join(root, e.Name())
+			if !isGitWorktree(p) {
+				continue
+			}
+			gitDir, ok := commonDirOf(p)
+			if !ok || seen[gitDir] {
+				continue
+			}
+			seen[gitDir] = true
+			wts, err := ListWorktrees(p)
+			if err != nil || len(wts) == 0 {
+				continue
+			}
+			var dirs []Dir
+			for _, w := range wts {
+				dirs = append(dirs, Dir{Name: filepath.Base(w.Path), Path: w.Path})
+			}
+			out = append(out, Managed{Repo: filepath.Base(primaryPath(wts)), Dirs: dirs})
 		}
 	}
 	return out, nil
 }
 
-// managedReposIn groups the git-worktree children of a container directory by the
-// repository they belong to (their git common-dir) and returns one Managed per group
-// that contains an anchor — a worktree whose directory name is that repo's default
-// branch. Directory order is preserved.
-func managedReposIn(name, container string) []Managed {
-	sub, err := os.ReadDir(container)
-	if err != nil {
-		return nil
-	}
-	var order []string
-	groups := map[string][]Dir{}
-	anchored := map[string]bool{}
-	for _, s := range sub {
-		if !s.IsDir() {
-			continue
-		}
-		p := filepath.Join(container, s.Name())
-		if !isGitWorktree(p) {
-			continue
-		}
-		key, ok := commonDirOf(p)
-		if !ok {
-			continue // a stray `.git` that git itself rejects is not a worktree
-		}
-		if _, seen := groups[key]; !seen {
-			order = append(order, key)
-		}
-		groups[key] = append(groups[key], Dir{Name: s.Name(), Path: p})
-		if !anchored[key] && s.Name() == defaultBranchOfRepo(p) {
-			anchored[key] = true // the repo's default-branch checkout lives here
+// primaryPath returns the primary worktree's path from a worktree set, falling back to
+// the first entry.
+func primaryPath(wts []Worktree) string {
+	for _, w := range wts {
+		if w.IsPrimary {
+			return w.Path
 		}
 	}
-	var out []Managed
-	for _, key := range order {
-		if anchored[key] {
-			out = append(out, Managed{Repo: name, Dirs: groups[key]})
-		}
+	if len(wts) > 0 {
+		return wts[0].Path
 	}
-	return out
+	return ""
 }
 
 // commonDirOf returns the absolute, symlink-resolved git common-dir for a worktree
@@ -222,78 +246,67 @@ func IsDirty(dir string) (bool, error) {
 
 // Remove removes the worktree at dir via `git worktree remove`. With force=false git
 // declines a worktree that has uncommitted changes; force=true passes --force. The
-// command runs from the repository's main worktree (resolved from the common git dir)
-// so removing a linked worktree — even the caller's own — succeeds.
+// command runs from the repository's primary worktree (resolved from the common git dir)
+// so removing a linked worktree — even the caller's own — succeeds. git itself refuses to
+// remove a primary worktree, which is what keeps a repo's anchor non-deletable.
 func Remove(dir string, force bool) error {
 	if err := requireGit(); err != nil {
 		return err
 	}
-	commonDir, err := output(dir, "git", "rev-parse", "--git-common-dir")
+	primary, _, err := primaryOf(dir)
 	if err != nil {
 		return err
 	}
-	if !filepath.IsAbs(commonDir) {
-		commonDir = filepath.Join(dir, commonDir)
-	}
-	mainWorktree := filepath.Dir(commonDir)
 	args := []string{"worktree", "remove", dir}
 	if force {
 		args = append(args, "--force")
 	}
-	return run(mainWorktree, "git", args...)
+	return run(primary, "git", args...)
 }
 
-// Info describes the managed-repo context of a directory.
+// Info describes the managed-repo context of a directory (git-derived).
 type Info struct {
-	Container     string // the <repo>/ container (parent of the worktree top level)
-	Repo          string // the container's base name
-	DefaultBranch string // the repo's default branch (e.g. main, master)
-	TopLevel      string // the directory's worktree top level
-	Worktree      string // the worktree's name (base of TopLevel)
+	GitDir    string // git common dir — the repository's stable identity across worktrees
+	Repo      string // the repository's name (the primary worktree's base name)
+	TopLevel  string // this directory's worktree top level
+	Worktree  string // the worktree's name (base of TopLevel)
+	IsPrimary bool   // whether this worktree is git's primary worktree (the anchor)
 }
 
-// Resolve returns the managed-repo context of dir, or ok=false when dir is not inside
-// a git worktree. It is the git-backed classifier the agents view's reconciler uses.
+// Resolve returns the managed-repo context of dir, or ok=false when dir is not inside a
+// git worktree. It is the git-backed classifier the agents view's reconciler uses.
 func Resolve(dir string) (Info, bool) {
-	container, top, err := containerOf(dir)
+	top, err := output(dir, "git", "rev-parse", "--show-toplevel")
+	if err != nil {
+		return Info{}, false
+	}
+	if resolved, err := filepath.EvalSymlinks(top); err == nil {
+		top = resolved
+	}
+	top = filepath.Clean(top)
+	primary, gitDir, err := primaryOf(dir)
 	if err != nil {
 		return Info{}, false
 	}
 	return Info{
-		Container:     container,
-		Repo:          filepath.Base(container),
-		DefaultBranch: defaultBranchOfRepo(top),
-		TopLevel:      top,
-		Worktree:      filepath.Base(top),
+		GitDir:    gitDir,
+		Repo:      filepath.Base(primary),
+		TopLevel:  top,
+		Worktree:  filepath.Base(top),
+		IsPrimary: top == primary,
 	}, true
 }
 
-// containerOf returns the <repo>/ container and the current worktree's top level for
-// a starting directory: the container is the parent of `git rev-parse --show-toplevel`.
-// It errors clearly when start is not inside a git worktree.
-func containerOf(start string) (container, top string, err error) {
-	top, err = output(start, "git", "rev-parse", "--show-toplevel")
-	if err != nil {
+// primaryOf resolves the repository identity for a starting directory: its git common
+// dir (shared across all worktrees) and its primary worktree (the parent of the common
+// dir — the worktree git refuses to remove). It errors clearly when start is not inside a
+// git worktree.
+func primaryOf(start string) (primary, gitDir string, err error) {
+	gd, ok := commonDirOf(start)
+	if !ok {
 		return "", "", fmt.Errorf("not inside a git worktree; run `be worktree add` from within a managed repo")
 	}
-	return filepath.Dir(top), top, nil
-}
-
-// defaultBranchFromRemote resolves a clone URL's default branch from the remote's
-// HEAD via `git ls-remote --symref` (no clone needed).
-func defaultBranchFromRemote(url string) (string, error) {
-	out, err := output("", "git", "ls-remote", "--symref", url, "HEAD")
-	if err != nil {
-		return "", err
-	}
-	// A symref line looks like: "ref: refs/heads/main\tHEAD".
-	for _, line := range strings.Split(out, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) >= 2 && fields[0] == "ref:" {
-			return strings.TrimPrefix(fields[1], "refs/heads/"), nil
-		}
-	}
-	return "", fmt.Errorf("could not determine default branch for %q", url)
+	return filepath.Dir(gd), gd, nil
 }
 
 // defaultBranchOfRepo resolves an existing local repo's default branch from
