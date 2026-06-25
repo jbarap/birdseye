@@ -249,10 +249,10 @@ refresh = "1s"                        # live-refresh interval (a Go duration)
 command = "claude"                    # agent command for `n`, run in the window's shell
 # command = "claude --permission-mode=auto"   # fewer permission prompts (see above)
 # accent = "#c792ea"                  # agents-view accent (title + cursor); #rrggbb
-# split = 0.55                        # cap on the agents-list pane's width when the preview
-                                      # is shown: the list sizes to its content (columns flex
-                                      # to fit, no clipping) but never past this share, so the
-                                      # preview keeps the rest. Default 0.55, clamped to 0.3–0.8
+# split = 0.4                         # the agents-list pane's share of the width when the
+                                      # preview is shown: the list fills out to this share
+                                      # (columns flex to fit, no clipping) and the preview takes
+                                      # the rest. Default 0.4, clamped to 0.3–0.8
 
 # Rebind the agents-view keys. Each action lists the keys that trigger it;
 # omit an action to keep its default. A two-rune value of two typeable keys (e.g.

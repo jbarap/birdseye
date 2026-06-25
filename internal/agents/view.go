@@ -35,10 +35,10 @@ const (
 	minPreviewCols  = 24
 )
 
-// defaultSplit mirrors config.DefaultSplit: the agents-list pane's maximum share of the
-// width when none is configured. Kept here too so a model built without Run (tests) still
-// lays out sensibly.
-const defaultSplit = 0.55
+// defaultSplit mirrors config.DefaultSplit: the agents-list pane's share of the width when
+// none is configured. Kept here too so a model built without Run (tests) still lays out
+// sensibly.
+const defaultSplit = 0.4
 
 // listCapWidth is the largest the list content (after the cursor column and the frame) may
 // grow to while still leaving the preview its minimum width. Zero means no preview is shown
