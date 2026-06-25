@@ -1,9 +1,8 @@
 package worktree
 
 import (
-	"strings"
-
 	"github.com/jbarap/birdseye/internal/provider"
+	"github.com/jbarap/birdseye/internal/providers/dir"
 )
 
 // Type is the provider's source tag.
@@ -33,7 +32,10 @@ func (p *Provider) Candidates() ([]provider.Candidate, error) {
 	}
 	var out []provider.Candidate
 	for _, m := range managed {
-		name := sessionName(m.Repo)
+		// Name the session by the repository's home (the same <repo>-<hash> the dash's
+		// `n` and `be agents spawn` use) so opening a repo here and spawning into it land
+		// in one session rather than two differently-named ones.
+		name := dir.HomeSession(m.GitDir)
 		path := m.Path
 		out = append(out, provider.Candidate{
 			Name:  name,
@@ -51,10 +53,4 @@ func (p *Provider) Candidates() ([]provider.Candidate, error) {
 		})
 	}
 	return out, nil
-}
-
-// sessionName builds a tmux-safe session name from a repo name.
-func sessionName(repo string) string {
-	r := strings.NewReplacer(".", "_", ":", "_", " ", "_", "/", "-")
-	return r.Replace(repo)
 }

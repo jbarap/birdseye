@@ -1243,7 +1243,7 @@ type repoGroup struct {
 // panes in several sessions and still collect under one section. Sections are ordered by
 // their most-urgent agent (lowest status rank), then by name. Within a section the anchor
 // (if any) is pinned first, agents follow by status rank then title, and empty worktree
-// slots sort last. Incidental agents (no repository) collect under a "no repo" heading.
+// slots sort last. Incidental agents (no repository) collect under a "(no-repo)" heading.
 func groupRows(in []Row) ([]Row, []renderItem) {
 	if len(in) == 0 {
 		return nil, nil
@@ -1283,7 +1283,7 @@ func groupRows(in []Row) ([]Row, []renderItem) {
 	for _, g := range groups {
 		label := g.label
 		if label == "" {
-			label = "no repo"
+			label = "(no-repo)"
 		}
 		items = append(items, renderItem{kind: kindSession, label: label, sessionKey: g.key, count: len(g.rows), managed: g.isRepo, worktrees: g.worktrees})
 		for _, r := range g.rows {
@@ -1300,9 +1300,9 @@ func groupRows(in []Row) ([]Row, []renderItem) {
 }
 
 // locatorHint returns the `[in: <session>]` suffix for a row whose pane lives outside its
-// repository's `be-` home session, so a cross-session entry is visibly flagged rather than
-// silently drawn under a section it does not share a session with. It is empty for rows in
-// the home, rows with no live window, and ungrouped incidental agents.
+// repository's home session, so a pane be recognized in one of the user's own sessions is
+// visibly flagged rather than silently drawn under a section it does not share a session
+// with. It is empty for rows in the home, rows with no live window, and incidental agents.
 func locatorHint(r Row) string {
 	if r.GitDir == "" || r.TmuxSession == "" {
 		return ""

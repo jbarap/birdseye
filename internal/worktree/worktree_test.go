@@ -5,6 +5,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/jbarap/birdseye/internal/providers/dir"
 )
 
 // TestAddGroupedSibling exercises the grouped-sibling creation policy and branch
@@ -171,8 +173,14 @@ func TestProviderCandidatesFromRoots(t *testing.T) {
 	if len(cands) != 1 {
 		t.Fatalf("expected one candidate per repo, got %d", len(cands))
 	}
-	if cands[0].Name != "alpha" || cands[0].Label != "alpha" {
-		t.Fatalf("expected a single alpha repo candidate, got %+v", cands[0])
+	// The candidate is named by the repository's home session (<repo>-<hash>), the same name
+	// the dash's `n` and `be agents spawn` use, so opening here and spawning land in one session.
+	gitDir, ok := commonDirOf(alpha)
+	if !ok {
+		t.Fatal("alpha should be a git worktree")
+	}
+	if want := dir.HomeSession(gitDir); cands[0].Name != want || cands[0].Label != "alpha" {
+		t.Fatalf("expected alpha candidate named %q with label alpha, got %+v", want, cands[0])
 	}
 	if cands[0].Type != Type {
 		t.Fatalf("expected candidate type %q, got %q", Type, cands[0].Type)

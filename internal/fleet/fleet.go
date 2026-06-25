@@ -237,8 +237,8 @@ func targetFromRow(r agents.Row) Target {
 func FromRow(r agents.Row) Target { return targetFromRow(r) }
 
 // Spawn creates a unit of work: it resolves repoDir to its repository, ensures
-// (reuses) the repository's deterministic `be-` home session, adds a sibling worktree
-// for branch, opens a window rooted there, and starts the agent command — seeding
+// (reuses) the repository's deterministic home session, adds a sibling worktree
+// for branch, opens a window rooted there, and starts the agent command - seeding
 // prompt when non-empty. It returns the new worktree's `repo/worktree` handle. The home
 // is a pure function of the repository's identity (dir.HomeSession), so spawn always
 // routes into be's write domain and never injects a window into a user-made session,
@@ -287,8 +287,8 @@ func (f *Fleet) OpenShell(t Target) (string, error) {
 	return f.openWindow(t, "")
 }
 
-// openWindow resolves the worktree's repository, ensures (reuses) the repository's `be-`
-// home session, opens a window rooted at the worktree running command (empty for a plain
+// openWindow resolves the worktree's repository, ensures (reuses) the repository's home
+// session, opens a window rooted at the worktree running command (empty for a plain
 // shell), and returns the `repo/worktree` handle. The directory must already exist; it
 // adds no worktree. Like Spawn it routes into be's write domain (dir.HomeSession), so
 // re-waking a slot or base never injects a window into a user-made session.

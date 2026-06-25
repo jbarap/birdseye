@@ -131,8 +131,8 @@ func (m model) wake(r Row) (tea.Model, tea.Cmd) {
 // windowedRowForWorktree finds the now-windowed row for a just-opened worktree, identified
 // by its directory, so Enter can attach to the window wake created. The worktree directory
 // is the stable per-worktree identity (unique across a repo's slots and its base), so it
-// survives the row's kind changing from slot/base to windowed — and survives wake routing
-// the new window into the repository's `be-` home rather than the row's prior session.
+// survives the row's kind changing from slot/base to windowed - and survives wake routing
+// the new window into the repository's home session rather than the row's prior session.
 func (m model) windowedRowForWorktree(src Row) (Row, bool) {
 	for _, r := range m.rows {
 		if src.Dir != "" && r.Dir == src.Dir && r.hasWindow() {

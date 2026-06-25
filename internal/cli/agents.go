@@ -124,7 +124,7 @@ func newAgentsSpawnCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// Spawn routes into the repository's `be-` home, ensuring-or-reusing it.
+			// Spawn routes into the repository's home session, ensuring-or-reusing it.
 			handle, err := f.Spawn(abs, branch, "", prompt)
 			if err != nil {
 				return err
@@ -413,7 +413,7 @@ type orchestrator struct {
 }
 
 // Spawn adds a worktree in the row's repo and starts the agent, via the shared fleet.
-// The fleet routes the new window into the repository's `be-` home, so spawning from a
+// The fleet routes the new window into the repository's home session, so spawning from a
 // section whose only presence is a user session still lands in be's write domain.
 func (o orchestrator) Spawn(repo agents.Row, branch, name string) error {
 	_, err := o.fleet.Spawn(repo.Dir, branch, name, "")

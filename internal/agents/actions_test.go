@@ -422,8 +422,8 @@ func TestDeleteRefusedWithCoTenant(t *testing.T) {
 	const gd = "/code/proj/.git"
 	// Two agents share the feat worktree.
 	coTenants := []Row{
-		{Kind: RowAgent, SessionID: "a1", TmuxSession: "be-proj", Worktree: "feat", Dir: "/code/proj.worktrees/feat", GitDir: gd, TmuxWindow: "1", TmuxPane: "%2"},
-		{Kind: RowAgent, SessionID: "a2", TmuxSession: "be-proj", Worktree: "feat", Dir: "/code/proj.worktrees/feat", GitDir: gd, TmuxWindow: "2", TmuxPane: "%3"},
+		{Kind: RowAgent, SessionID: "a1", TmuxSession: "proj-x", Worktree: "feat", Dir: "/code/proj.worktrees/feat", GitDir: gd, TmuxWindow: "1", TmuxPane: "%2"},
+		{Kind: RowAgent, SessionID: "a2", TmuxSession: "proj-x", Worktree: "feat", Dir: "/code/proj.worktrees/feat", GitDir: gd, TmuxWindow: "2", TmuxPane: "%3"},
 	}
 	orch := &fakeOrch{}
 	m := modelWith(t, orch, coTenants)
@@ -440,7 +440,7 @@ func TestDeleteRefusedWithCoTenant(t *testing.T) {
 	}
 
 	// A sole occupant of its worktree proceeds to the confirmation.
-	sole := []Row{{Kind: RowAgent, SessionID: "s", TmuxSession: "be-proj", Worktree: "solo", Dir: "/code/proj.worktrees/solo", GitDir: gd, TmuxWindow: "1", TmuxPane: "%9"}}
+	sole := []Row{{Kind: RowAgent, SessionID: "s", TmuxSession: "proj-x", Worktree: "solo", Dir: "/code/proj.worktrees/solo", GitDir: gd, TmuxWindow: "1", TmuxPane: "%9"}}
 	m2 := modelWith(t, orch, sole)
 	nm2, _ := m2.startDelete()
 	m2 = nm2.(model)

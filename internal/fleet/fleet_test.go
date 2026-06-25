@@ -233,10 +233,10 @@ func TestRecordJSONShape(t *testing.T) {
 	}
 }
 
-// TestOpenRoutesToBeHome pins the write-domain rule: re-opening a worktree routes the new
-// window into the repository's deterministic `be-` home session, never into the row's prior
+// TestOpenRoutesToHome pins the write-domain rule: re-opening a worktree routes the new
+// window into the repository's deterministic home session, never into the row's prior
 // (possibly user-made) session, even when the Target names one.
-func TestOpenRoutesToBeHome(t *testing.T) {
+func TestOpenRoutesToHome(t *testing.T) {
 	const gd = "/code/proj/.git"
 	var calls []string
 	runner := func(args ...string) (string, error) {
@@ -248,7 +248,7 @@ func TestOpenRoutesToBeHome(t *testing.T) {
 	}}
 	f := New(tmux.NewWithRunner(runner, false), "claude", fakeSource{}, fakePanes{}, repos)
 
-	// The Target carries a user session; Open must ignore it and use the be- home.
+	// The Target carries a user session; Open must ignore it and use the home session.
 	if _, err := f.Open(Target{Handle: "proj/spike", Dir: "/code/proj.worktrees/spike", Session: "my-user-session"}); err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +263,7 @@ func TestOpenRoutesToBeHome(t *testing.T) {
 		}
 	}
 	if !routed {
-		t.Fatalf("the new window should be created in the be- home %q, calls=%v", home, calls)
+		t.Fatalf("the new window should be created in the home session %q, calls=%v", home, calls)
 	}
 }
 

@@ -156,15 +156,17 @@ start path **or any** active agent's working directory resolves (via the git-com
 `git worktree list`) to a worktree of it — not by matching any path shape. There is **no
 whole-session purity gate**: a stray non-git pane never suppresses a repository, and panes spanning
 two repositories yield two sections. One repository's rows may be drawn from several tmux sessions; a
-row whose pane lives outside the repository's `be-` home session carries an `[in: <session>]` locator
+row whose pane lives outside the repository's home session carries an `[in: <session>]` locator
 hint. An agent with no git context renders as an incidental, ungrouped row, identical to a tool-free
 terminal.
 
-be authors windows only in the sessions it names — the **`be-<repo>` home is its write domain**, a
-deterministic, collision-safe function of the repository's identity (its git-common-dir). Every other
-session is observed read-only; spawning from a repository whose only presence is a user session
-creates its `be-` home rather than injecting into the user's session. This is the relocation of
-"managed": not a tracked flag, but a rule about *where be is allowed to write*.
+be authors windows only in the sessions it names - the **`<repo>-<hash>` home is its write domain**, a
+deterministic, collision-safe function of the repository's identity (its git-common-dir). The trailing
+hash both disambiguates same-named repositories and marks the session as be-derived, without a noisy
+prefix; the same name is used by the dash's `n`, `be agents spawn`, and the session picker, so they all
+land in one session. Every other session is observed read-only; spawning from a repository whose only
+presence is a user session creates its home rather than injecting into the user's session. This is the
+relocation of "managed": not a tracked flag, but a rule about *where be is allowed to write*.
 
 **An agent is the row; an agentless worktree is a row.** A worktree is no longer one-to-one with a
 row: two agents in one worktree are **two rows** (the worktree label repeating), and a worktree with

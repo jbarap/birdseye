@@ -662,7 +662,7 @@ func TestGroupAgentsUngroupedBucket(t *testing.T) {
 
 	// The no-repo bucket (working, more urgent) floats above the done session.
 	want := []string{
-		"S:no repo",
+		"S:(no-repo)",
 		"A:loose", // no tmux window → no inline label
 		"S:api",
 		"A:real one@win 0",
@@ -739,15 +739,15 @@ func TestFoldStateSurvivesRefresh(t *testing.T) {
 }
 
 // TestLocatorHint pins the cross-session locator: a row whose pane lives outside its
-// repository's be- home carries an `[in: <session>]` hint naming that session, while a row
-// in the home, a windowless row, and an ungrouped incidental agent carry none.
+// repository's home session carries an `[in: <session>]` hint naming that session, while a
+// row in the home, a windowless row, and an ungrouped incidental agent carry none.
 func TestLocatorHint(t *testing.T) {
 	const gd = "/code/proj/.git"
 	home := dir.HomeSession(gd)
 
-	// In the be- home: no hint.
+	// In the home session: no hint.
 	if h := locatorHint(Row{GitDir: gd, TmuxSession: home}); h != "" {
-		t.Errorf("a row in the be- home should have no hint, got %q", h)
+		t.Errorf("a row in the home session should have no hint, got %q", h)
 	}
 	// In a user session: hint naming that session.
 	if h := locatorHint(Row{GitDir: gd, TmuxSession: "proj"}); h != "[in: proj]" {

@@ -127,15 +127,17 @@ in both `be dash` and the `be agents` verbs, and groups what it shows by **repos
 rather than by tmux session. Recognition is **git-native** and **repo-first**: a repository
 (identified by its shared git directory, `git rev-parse --git-common-dir`) lights up when
 **any** pane's start path **or any** active agent's working directory resolves into one of
-its worktrees. There is no whole-session gate — a stray non-git pane never hides a repo, and
+its worktrees. There is no whole-session gate - a stray non-git pane never hides a repo, and
 a session touching two repos shows both as separate sections. One repo's rows may come from
-several sessions; a row outside the repo's `be-` home session is flagged `[in: <session>]`.
-No path convention is required, so worktrees recognize wherever they live — including ones
+several sessions; a row outside the repo's home session is flagged `[in: <session>]`.
+No path convention is required, so worktrees recognize wherever they live - including ones
 another tool created. birdseye owns no state for this: every refresh it re-derives the
 picture from tmux + git, so an unrecognized session looks and behaves exactly as before.
 
-New agents always land in the repository's **`be-<repo>` home session** — be's write domain,
-created on demand — so be only ever authors windows in sessions it named, never in yours.
+New agents always land in the repository's **`<repo>-<hash>` home session** - be's write domain,
+created on demand - so be only ever authors windows in sessions it named, never in yours. The
+trailing hash marks the session as be-derived (and keeps same-named repos distinct); opening the
+repo from the picker, `be agents spawn`, and the dash's `n` all resolve to that one home.
 
 In a recognized repository the view shows, beside live agents:
 

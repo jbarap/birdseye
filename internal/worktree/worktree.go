@@ -24,8 +24,9 @@ var ErrGitMissing = errors.New("git is required but was not found on PATH")
 
 // Managed is a discovered repository: its name and the primary worktree to open into.
 type Managed struct {
-	Repo string // repository folder name (the primary worktree's base name)
-	Path string // absolute path of the primary worktree — where opening the repo lands
+	Repo   string // repository folder name (the primary worktree's base name)
+	Path   string // absolute path of the primary worktree - where opening the repo lands
+	GitDir string // git common dir - the repository's identity, used to name its home session
 }
 
 // Worktree is one entry in a repository's git worktree set.
@@ -188,7 +189,7 @@ func List(roots ...string) ([]Managed, error) {
 				continue
 			}
 			primary := primaryPath(wts)
-			out = append(out, Managed{Repo: filepath.Base(primary), Path: primary})
+			out = append(out, Managed{Repo: filepath.Base(primary), Path: primary, GitDir: gitDir})
 		}
 	}
 	return out, nil

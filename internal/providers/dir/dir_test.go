@@ -20,7 +20,7 @@ func TestSessionNameSanitizes(t *testing.T) {
 }
 
 // TestHomeSessionDeterministicAndCollisionSafe pins the two load-bearing properties of the
-// be- home name: it is a deterministic function of the git-common-dir (the same repository
+// home name: it is a deterministic function of the git-common-dir (the same repository
 // always resolves to the same name, so spawning is idempotent), and two repositories that
 // share a basename receive distinct names (so they never collide onto one home).
 func TestHomeSessionDeterministicAndCollisionSafe(t *testing.T) {
@@ -36,10 +36,10 @@ func TestHomeSessionDeterministicAndCollisionSafe(t *testing.T) {
 	if na == nb {
 		t.Fatalf("two repositories sharing a basename must get distinct homes, both = %q", na)
 	}
-	// Friendly part: the basename and the be- namespace prefix are both present.
+	// The name is the repo basename plus the disambiguating/managed-marker hash, no prefix.
 	for _, n := range []string{na, nb} {
-		if !strings.HasPrefix(n, "be-proj-") {
-			t.Fatalf("home %q should carry the be- prefix and the repo basename", n)
+		if !strings.HasPrefix(n, "proj-") {
+			t.Fatalf("home %q should be the repo basename followed by its hash", n)
 		}
 	}
 }

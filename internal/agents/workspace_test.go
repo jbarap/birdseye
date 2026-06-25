@@ -235,13 +235,13 @@ func TestWorkspaceTwoAgentsOneWorktreeTwoRows(t *testing.T) {
 	// rather than folding into one. Row identity is one row per agent.
 	const gd = "/code/proj/.git"
 	src := &fakeSource{list: []Agent{
-		{SessionID: "a1", TmuxSession: "be-proj-x", TmuxWindow: "1", TmuxPane: "%2", CWD: "/code/proj.worktrees/feat", Title: "a1", Status: StatusWorking},
-		{SessionID: "a2", TmuxSession: "be-proj-x", TmuxWindow: "2", TmuxPane: "%3", CWD: "/code/proj.worktrees/feat", Title: "a2", Status: StatusIdle},
+		{SessionID: "a1", TmuxSession: "proj-x", TmuxWindow: "1", TmuxPane: "%2", CWD: "/code/proj.worktrees/feat", Title: "a1", Status: StatusWorking},
+		{SessionID: "a2", TmuxSession: "proj-x", TmuxWindow: "2", TmuxPane: "%3", CWD: "/code/proj.worktrees/feat", Title: "a2", Status: StatusIdle},
 	}}
 	panes := fakePanes{list: []PaneInfo{
-		{Session: "be-proj-x", WindowIndex: "0", PaneID: "%1", StartPath: "/code/proj"},
-		{Session: "be-proj-x", WindowIndex: "1", PaneID: "%2", StartPath: "/code/proj.worktrees/feat"},
-		{Session: "be-proj-x", WindowIndex: "2", PaneID: "%3", StartPath: "/code/proj.worktrees/feat"},
+		{Session: "proj-x", WindowIndex: "0", PaneID: "%1", StartPath: "/code/proj"},
+		{Session: "proj-x", WindowIndex: "1", PaneID: "%2", StartPath: "/code/proj.worktrees/feat"},
+		{Session: "proj-x", WindowIndex: "2", PaneID: "%3", StartPath: "/code/proj.worktrees/feat"},
 	}}
 	repos := &fakeRepos{
 		m: map[string]RepoInfo{
