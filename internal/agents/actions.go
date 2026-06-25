@@ -86,8 +86,8 @@ func (m model) startNewAgent() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	r, ok := m.currentRow()
-	if !ok || !r.Managed || r.Dir == "" {
-		m.setError("new agent: place the cursor inside a managed repo")
+	if !ok || r.GitDir == "" || r.Dir == "" {
+		m.setError("new agent: place the cursor inside a recognized repo")
 		return m, nil
 	}
 	m.mode = modeNewAgent
@@ -129,12 +129,13 @@ func (m model) wake(r Row) (tea.Model, tea.Cmd) {
 }
 
 // windowedRowForWorktree finds the now-windowed row for a just-opened worktree, identified
-// by its directory and session, so Enter can attach to the window wake created. The
-// worktree directory is the stable per-worktree identity (unique across a repo's slots and
-// its base), so it survives the row's kind changing from slot/base to windowed.
+// by its directory, so Enter can attach to the window wake created. The worktree directory
+// is the stable per-worktree identity (unique across a repo's slots and its base), so it
+// survives the row's kind changing from slot/base to windowed — and survives wake routing
+// the new window into the repository's `be-` home rather than the row's prior session.
 func (m model) windowedRowForWorktree(src Row) (Row, bool) {
 	for _, r := range m.rows {
-		if src.Dir != "" && r.Dir == src.Dir && r.TmuxSession == src.TmuxSession && r.hasWindow() {
+		if src.Dir != "" && r.Dir == src.Dir && r.hasWindow() {
 			return r, true
 		}
 	}
@@ -291,10 +292,35 @@ func (m model) startDelete() (tea.Model, tea.Cmd) {
 		m.setError("the repo base cannot be deleted — dd closes its window")
 		return m, nil
 	}
+	// Sole-occupant guard: removing a worktree is permitted only when the target is the
+	// only row of that worktree. With a co-tenant (e.g. a second agent in the same
+	// worktree), refuse here — before the confirmation — so a worktree is never removed
+	// out from under a co-located agent. The user must close the others first.
+	if r.isManagedWorktree() && m.worktreeOccupants(r) > 1 {
+		m.setError("this worktree has other agents — close them first (dd), then dD removes it")
+		return m, nil
+	}
 	m.mode = modeConfirmDelete
 	m.target = r
 	m.confirmChoice = 0 // default to cancel, the safe choice
 	return m, nil
+}
+
+// worktreeOccupants counts the rows that share the target's worktree (its directory within
+// the same repository). It is the sole-occupant test for delete: a count above one means a
+// co-tenant agent is present, so the worktree must not be removed yet. A row with no
+// worktree directory has no occupancy to share and counts as none.
+func (m model) worktreeOccupants(r Row) int {
+	if r.Dir == "" {
+		return 0
+	}
+	n := 0
+	for _, x := range m.rows {
+		if x.Dir == r.Dir && x.GitDir == r.GitDir {
+			n++
+		}
+	}
+	return n
 }
 
 // handleConfirmKey resolves the delete confirmation. The two buttons (cancel / confirm)

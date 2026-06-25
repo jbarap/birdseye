@@ -129,6 +129,7 @@ func (s *ClaudeSource) Agents() ([]Agent, error) {
 			TmuxWindow:     r.TmuxWindow,
 			TmuxWindowName: r.TmuxWindowName,
 			TmuxPane:       r.TmuxPane,
+			CWD:            r.CWD,
 			Title:          r.Title,
 			Status:         status,
 			Updated:        r.Updated,
@@ -278,7 +279,14 @@ func HandleHook(event string, r io.Reader) error {
 	if pane != "" {
 		rec.TmuxPane = pane
 	}
-	rec.Title = title(rec.TmuxSession, in.CWD)
+	// Persist the agent's working directory: the reconciler resolves it to a
+	// repository for recognition, so it must survive on the record, not only feed
+	// the display title. The hook reports it on every event; an empty value (an
+	// unexpected payload) leaves any previously recorded directory intact.
+	if in.CWD != "" {
+		rec.CWD = in.CWD
+	}
+	rec.Title = title(rec.TmuxSession, rec.CWD)
 	return writeRecord(dir, rec)
 }
 

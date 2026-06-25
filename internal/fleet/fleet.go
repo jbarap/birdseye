@@ -52,6 +52,7 @@ type Record struct {
 	Worktree string  `json:"worktree,omitempty"`
 	Branch   string  `json:"branch,omitempty"`
 	Path     string  `json:"path,omitempty"`
+	AgentDir string  `json:"agent_dir,omitempty"`
 	Session  Session `json:"session"`
 	Window   string  `json:"window,omitempty"`
 	Pane     string  `json:"pane,omitempty"`
@@ -67,6 +68,7 @@ type Target struct {
 	Worktree  string
 	Branch    string
 	Dir       string
+	AgentDir  string
 	GitDir    string
 	Session   string
 	Window    string
@@ -127,6 +129,7 @@ func (f *Fleet) records() ([]Record, error) {
 			Worktree: r.Worktree,
 			Branch:   r.Branch,
 			Path:     r.Dir,
+			AgentDir: r.AgentDir,
 			Session:  Session{ID: ids[r.TmuxSession], Name: r.TmuxSession},
 			Window:   r.TmuxWindow,
 			Pane:     r.TmuxPane,
@@ -161,6 +164,7 @@ func (f *Fleet) Status(handle string) (Record, error) {
 		Worktree: t.Worktree,
 		Branch:   t.Branch,
 		Path:     t.Dir,
+		AgentDir: t.AgentDir,
 		Session:  Session{ID: ids[t.Session], Name: t.Session},
 		Window:   t.Window,
 		Pane:     t.Pane,
@@ -217,6 +221,7 @@ func targetFromRow(r agents.Row) Target {
 		Worktree:  r.Worktree,
 		Branch:    r.Branch,
 		Dir:       r.Dir,
+		AgentDir:  r.AgentDir,
 		GitDir:    r.GitDir,
 		Session:   r.TmuxSession,
 		Window:    r.TmuxWindow,
@@ -232,20 +237,19 @@ func targetFromRow(r agents.Row) Target {
 func FromRow(r agents.Row) Target { return targetFromRow(r) }
 
 // Spawn creates a unit of work: it resolves repoDir to its repository, ensures
-// (reuses) a tmux session, adds a sibling worktree for branch, opens a window
-// rooted there, and starts the agent command — seeding prompt when non-empty. It
-// returns the new worktree's `repo/worktree` handle. session may be empty, in
-// which case it is derived from the repository name; the dash passes the live
-// session it is already in so the window lands there.
-func (f *Fleet) Spawn(repoDir, session, branch, name, prompt string) (string, error) {
+// (reuses) the repository's deterministic `be-` home session, adds a sibling worktree
+// for branch, opens a window rooted there, and starts the agent command — seeding
+// prompt when non-empty. It returns the new worktree's `repo/worktree` handle. The home
+// is a pure function of the repository's identity (dir.HomeSession), so spawn always
+// routes into be's write domain and never injects a window into a user-made session,
+// even when the repository's only existing presence is in one.
+func (f *Fleet) Spawn(repoDir, branch, name, prompt string) (string, error) {
 	info, ok := f.repos.Resolve(repoDir)
 	if !ok {
 		return "", fmt.Errorf("not a git repository: %s", repoDir)
 	}
 	primary := filepath.Dir(info.GitDir)
-	if session == "" {
-		session = dir.SessionName(info.Repo)
-	}
+	session := dir.HomeSession(info.GitDir)
 	if err := f.client.Ensure(session, primary, info.Repo); err != nil {
 		return "", err
 	}
@@ -283,9 +287,11 @@ func (f *Fleet) OpenShell(t Target) (string, error) {
 	return f.openWindow(t, "")
 }
 
-// openWindow resolves the worktree's repository, ensures (reuses) the tmux session, opens a
-// window rooted at the worktree running command (empty for a plain shell), and returns the
-// `repo/worktree` handle. The directory must already exist; it adds no worktree.
+// openWindow resolves the worktree's repository, ensures (reuses) the repository's `be-`
+// home session, opens a window rooted at the worktree running command (empty for a plain
+// shell), and returns the `repo/worktree` handle. The directory must already exist; it
+// adds no worktree. Like Spawn it routes into be's write domain (dir.HomeSession), so
+// re-waking a slot or base never injects a window into a user-made session.
 func (f *Fleet) openWindow(t Target, command string) (string, error) {
 	if t.Dir == "" {
 		return "", fmt.Errorf("no worktree to open")
@@ -294,10 +300,7 @@ func (f *Fleet) openWindow(t Target, command string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("not a git repository: %s", t.Dir)
 	}
-	session := t.Session
-	if session == "" {
-		session = dir.SessionName(info.Repo)
-	}
+	session := dir.HomeSession(info.GitDir)
 	if err := f.client.Ensure(session, filepath.Dir(info.GitDir), info.Repo); err != nil {
 		return "", err
 	}
@@ -325,6 +328,14 @@ func (f *Fleet) Delete(t Target, force bool) error {
 		return fmt.Errorf("%q is a primary worktree and cannot be deleted", t.Handle)
 	}
 	isWorktree := t.Worktree != "" && t.Dir != ""
+	// Sole-occupant guard: a worktree is removed only when the target is its only row.
+	// A co-tenant (e.g. a second agent in the same worktree) blocks removal — close the
+	// others first — so a worktree is never removed out from under a co-located agent.
+	if isWorktree {
+		if n, err := f.worktreeOccupants(t); err == nil && n > 1 {
+			return fmt.Errorf("%q shares its worktree with %d other agent(s); close them first", t.Handle, n-1)
+		}
+	}
 	if isWorktree && !force {
 		if dirty, err := worktree.IsDirty(t.Dir); err == nil && dirty {
 			return agents.ErrWorktreeDirty
@@ -335,6 +346,23 @@ func (f *Fleet) Delete(t Target, force bool) error {
 		return worktree.Remove(t.Dir, force)
 	}
 	return nil
+}
+
+// worktreeOccupants counts the reconciled rows sharing the target's worktree (its
+// directory within the same repository) — the sole-occupant test for Delete. A count
+// above one means a co-tenant agent is present and the worktree must not be removed yet.
+func (f *Fleet) worktreeOccupants(t Target) (int, error) {
+	rows, err := f.rows()
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, r := range rows {
+		if r.Dir == t.Dir && r.GitDir == t.GitDir {
+			n++
+		}
+	}
+	return n, nil
 }
 
 // closeWindow kills the target's window, addressing it by the stable pane id when

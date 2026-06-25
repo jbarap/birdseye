@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/jbarap/birdseye/internal/providers/dir"
 	"github.com/jbarap/birdseye/internal/theme"
 )
 
@@ -26,15 +27,104 @@ const (
 	cursorColWidth  = 2  // leftmost gutter: cursor glyph on the selected row, else blank
 	statusColWidth  = 9  // " G word  " — status glyph + 4-char word, pinned across rows
 	agentIndent     = 6  // a row's columns sit this far right of the session bar's label
-	windowColWidth  = 11 // gray window-label column
-	nameColWidth    = 22 // white name column
+	windowColMin    = 11 // worktree/window-label column: baseline, flexes to fit content
+	windowColMax    = 28 // ... but never past this
+	nameColMin      = 8  // title column: baseline, flexes to fit content
+	nameColMax      = 48 // ... but never past this
 	previewMinWidth = 92
 	minPreviewCols  = 24
 )
 
-// rowContentWidth is a row's width after the cursor column. Session bars and the
-// selected-row highlight span exactly this, so their backgrounds line up.
-const rowContentWidth = statusColWidth + agentIndent + windowColWidth + nameColWidth
+// defaultSplit mirrors config.DefaultSplit: the agents-list pane's maximum share of the
+// width when none is configured. Kept here too so a model built without Run (tests) still
+// lays out sensibly.
+const defaultSplit = 0.55
+
+// listCapWidth is the largest the list content (after the cursor column and the frame) may
+// grow to while still leaving the preview its minimum width. Zero means no preview is shown
+// (or the size isn't known yet), so the list is uncapped. The shrink loop in colWidths trims
+// columns to this so a long label can never starve the preview.
+func (m model) listCapWidth() int {
+	if m.width <= 0 || !m.showPreview() {
+		return 0
+	}
+	return m.width - 2 /*inter-pane gap*/ - (minPreviewCols + 4) /*preview frame*/ - cursorColWidth - 4 /*list frame*/
+}
+
+// listTargetWidth is the list content width the configured split asks for: the agents pane's
+// share of the terminal, clamped so the preview keeps its minimum. The list fills out to this
+// (padding past its content) so the pane occupies its configured portion rather than collapsing
+// to a narrow column. Zero means no preview / unknown size, so there is nothing to fill toward.
+func (m model) listTargetWidth() int {
+	if m.width <= 0 || m.split <= 0 || !m.showPreview() {
+		return 0
+	}
+	t := int(float64(m.width)*m.split+0.5) - cursorColWidth - 4
+	if cap := m.listCapWidth(); cap > 0 && t > cap {
+		t = cap
+	}
+	return t
+}
+
+// rawRowWidth is the width the columns actually need: the gutter, indent, the worktree and
+// title columns, and (when any row carries one) a one-space gap plus the locator-hint column.
+func rawRowWidth(windowW, nameW, hintW int) int {
+	w := statusColWidth + agentIndent + windowW + nameW
+	if hintW > 0 {
+		w += 1 + hintW
+	}
+	return w
+}
+
+// colWidths returns the worktree-label, title, and locator-hint column widths for the current
+// rows. Each flexes to fit the widest value present — so a label like "algorithms2" shows in
+// full rather than clipped — clamped to a sane band, then narrowed (title first, then worktree)
+// so the columns never starve the preview. The hint is its own fixed-width column so every
+// "[in: …]" lines up at the same x, rather than floating behind each title's trailing edge.
+func (m model) colWidths() (windowW, nameW, hintW int) {
+	windowW, nameW = windowColMin, nameColMin
+	for i := range m.rows {
+		r := m.rows[i]
+		if w := lipgloss.Width(rowLabel(r)) + 1; w > windowW { // +1 keeps a trailing space
+			windowW = w
+		}
+		if w := lipgloss.Width(displayTitle(r.Title, r.TmuxSession)); w > nameW {
+			nameW = w
+		}
+		if w := lipgloss.Width(locatorHint(r)); w > hintW {
+			hintW = w
+		}
+	}
+	if windowW > windowColMax {
+		windowW = windowColMax
+	}
+	if nameW > nameColMax {
+		nameW = nameColMax
+	}
+	for cap := m.listCapWidth(); cap > 0 && rawRowWidth(windowW, nameW, hintW) > cap; {
+		if nameW > nameColMin {
+			nameW--
+		} else if windowW > windowColMin {
+			windowW--
+		} else {
+			break
+		}
+	}
+	return
+}
+
+// rowContentWidth is a row's width after the cursor column: the larger of what the columns need
+// and the split's target share, so session bars and the selected-row highlight span the whole
+// pane and the pane fills its configured portion. The columns pack left; any surplus is trailing
+// space on the right (see leafRow), not a gap wedged between a title and its hint.
+func (m model) rowContentWidth() int {
+	windowW, nameW, hintW := m.colWidths()
+	w := rawRowWidth(windowW, nameW, hintW)
+	if t := m.listTargetWidth(); t > w {
+		w = t
+	}
+	return w
+}
 
 // Glyphs that live alongside the status glyphs (colors come from theme; these marks
 // are not colors, so they stay here next to statusGlyph by convention).
@@ -93,6 +183,7 @@ var (
 	sessionBarCountStyle = lipgloss.NewStyle().Faint(true).Foreground(lipColor(theme.SessionFg)).Background(lipColor(theme.SessionBg))
 	windowColStyle       = lipgloss.NewStyle().Foreground(lipColor(theme.Gray))
 	nameColStyle         = lipgloss.NewStyle().Foreground(lipColor(theme.Text))
+	hintStyle            = lipgloss.NewStyle().Faint(true).Foreground(lipColor(theme.Gray))
 	rowHL                = lipColor(theme.RowHL)
 )
 
@@ -254,6 +345,7 @@ type model struct {
 	width, height int
 	preview       string         // cached preview for the selected row
 	accent        lipgloss.Color // title + cursor color (configurable)
+	split         float64        // agents-list pane's share of the width (configurable)
 	err           error
 }
 
@@ -266,7 +358,7 @@ func newModel(src RowSource, prev Previewer, keys Keymap, refresh time.Duration)
 	if refresh <= 0 {
 		refresh = defaultRefresh
 	}
-	m := model{src: src, prev: prev, keys: keys, res: res, refresh: refresh, folded: map[string]bool{}, accent: lipColor(theme.Accent)}
+	m := model{src: src, prev: prev, keys: keys, res: res, refresh: refresh, folded: map[string]bool{}, accent: lipColor(theme.Accent), split: defaultSplit}
 	list, err := src.Rows()
 	if err != nil {
 		return model{}, err
@@ -326,13 +418,16 @@ func (m *model) recomputeNav() {
 // Run renders the agents view and blocks until the user selects a row or quits. It
 // returns the chosen row (nil when quit without selecting). orch may be nil to disable
 // the create/delete actions.
-func Run(src RowSource, prev Previewer, keys Keymap, accent lipgloss.Color, refresh time.Duration, orch Orchestrator) (*Row, error) {
+func Run(src RowSource, prev Previewer, keys Keymap, accent lipgloss.Color, refresh time.Duration, split float64, orch Orchestrator) (*Row, error) {
 	m, err := newModel(src, prev, keys, refresh)
 	if err != nil {
 		return nil, err
 	}
 	if accent != "" {
 		m.accent = accent
+	}
+	if split > 0 {
+		m.split = split
 	}
 	m.orch = orch
 	p := tea.NewProgram(m, tea.WithAltScreen())
@@ -677,12 +772,14 @@ func (m model) toggleFold() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// focusSession moves the cursor onto the named session (its header when folded, else its
-// first row) when it is present, and leaves the cursor put otherwise. Used after opening a
-// new session so the eye lands on what was just created.
+// focusSession moves the cursor onto the first navigable row whose pane lives in the
+// named tmux session, and leaves the cursor put otherwise. Used after opening a new
+// session so the eye lands on what was just created. Sections group by repository now, so
+// this matches the row's own tmux session rather than the section key.
 func (m *model) focusSession(name string) {
 	for i, itemIdx := range m.nav {
-		if m.items[itemIdx].sessionKey == name {
+		it := m.items[itemIdx]
+		if it.kind == kindRow && m.rows[it.rowIdx].TmuxSession == name {
 			m.cursor = i
 			return
 		}
@@ -930,7 +1027,7 @@ func (m model) newAgentModal() string {
 	label := lipgloss.NewStyle().Foreground(lipColor(theme.Gray))
 	hint := lipgloss.NewStyle().Faint(true)
 
-	repo := m.target.TmuxSession
+	repo := m.target.Repo
 	if repo == "" {
 		repo = m.target.Title
 	}
@@ -1128,76 +1225,92 @@ func windowLabel(index, name string) string {
 	return ""
 }
 
-// sessionGroup is one tmux session's rows ("" key is the ungrouped bucket).
-type sessionGroup struct {
-	key       string
+// repoGroup is one repository's rows, keyed by git-common-dir ("" is the ungrouped
+// bucket for incidental agents). label is the repository's display name; isRepo marks a
+// recognized repository (so its section bar carries the indicator and `n` is available),
+// as opposed to the ungrouped bucket.
+type repoGroup struct {
+	key       string // git-common-dir (section identity / fold key)
+	label     string // repository name
 	rows      []Row
-	managed   bool
+	isRepo    bool
 	worktrees int
 }
 
-// groupRows arranges rows into a flat session→row list and returns them in render
-// order alongside the interleaved header/row items the view draws. Sessions are
-// ordered by their most-urgent agent (lowest status rank), then by name. Within a
-// session the anchor (if any) is pinned first, agents follow by status rank then
-// title, and empty worktree slots sort last. Rows lacking a tmux session collect under
-// an "ungrouped" heading.
+// groupRows arranges rows into a flat repository→row list and returns them in render
+// order alongside the interleaved header/row items the view draws. Grouping is by
+// repository (git-common-dir), not tmux session: a repository's rows may come from
+// panes in several sessions and still collect under one section. Sections are ordered by
+// their most-urgent agent (lowest status rank), then by name. Within a section the anchor
+// (if any) is pinned first, agents follow by status rank then title, and empty worktree
+// slots sort last. Incidental agents (no repository) collect under a "no repo" heading.
 func groupRows(in []Row) ([]Row, []renderItem) {
 	if len(in) == 0 {
 		return nil, nil
 	}
 
-	var sessions []*sessionGroup
-	idx := map[string]*sessionGroup{}
+	var groups []*repoGroup
+	idx := map[string]*repoGroup{}
 	for _, r := range in {
-		sg := idx[r.TmuxSession]
-		if sg == nil {
-			sg = &sessionGroup{key: r.TmuxSession}
-			idx[r.TmuxSession] = sg
-			sessions = append(sessions, sg)
+		g := idx[r.GitDir]
+		if g == nil {
+			g = &repoGroup{key: r.GitDir, label: r.Repo, isRepo: r.GitDir != ""}
+			idx[r.GitDir] = g
+			groups = append(groups, g)
 		}
-		sg.rows = append(sg.rows, r)
-		if r.Managed {
-			sg.managed = true
-		}
+		g.rows = append(g.rows, r)
 	}
 
-	for _, sg := range sessions {
-		sort.SliceStable(sg.rows, func(i, j int) bool { return rowLess(sg.rows[i], sg.rows[j]) })
+	for _, g := range groups {
+		sort.SliceStable(g.rows, func(i, j int) bool { return rowLess(g.rows[i], g.rows[j]) })
 		seen := map[string]bool{}
-		for _, r := range sg.rows {
+		for _, r := range g.rows {
 			if r.Worktree != "" && !seen[r.Worktree] {
 				seen[r.Worktree] = true
-				sg.worktrees++
+				g.worktrees++
 			}
 		}
 	}
-	sort.SliceStable(sessions, func(i, j int) bool {
-		if ri, rj := groupRank(sessions[i].rows), groupRank(sessions[j].rows); ri != rj {
+	sort.SliceStable(groups, func(i, j int) bool {
+		if ri, rj := groupRank(groups[i].rows), groupRank(groups[j].rows); ri != rj {
 			return ri < rj
 		}
-		return sessions[i].key < sessions[j].key
+		return groups[i].label < groups[j].label
 	})
 
 	ordered := make([]Row, 0, len(in))
-	items := make([]renderItem, 0, len(in)+len(sessions))
-	for _, sg := range sessions {
-		label := sg.key
+	items := make([]renderItem, 0, len(in)+len(groups))
+	for _, g := range groups {
+		label := g.label
 		if label == "" {
-			label = "ungrouped"
+			label = "no repo"
 		}
-		items = append(items, renderItem{kind: kindSession, label: label, sessionKey: sg.key, count: len(sg.rows), managed: sg.managed, worktrees: sg.worktrees})
-		for _, r := range sg.rows {
+		items = append(items, renderItem{kind: kindSession, label: label, sessionKey: g.key, count: len(g.rows), managed: g.isRepo, worktrees: g.worktrees})
+		for _, r := range g.rows {
 			ordered = append(ordered, r)
 			items = append(items, renderItem{
 				kind:       kindRow,
-				sessionKey: sg.key,
+				sessionKey: g.key,
 				window:     rowLabel(r),
 				rowIdx:     len(ordered) - 1,
 			})
 		}
 	}
 	return ordered, items
+}
+
+// locatorHint returns the `[in: <session>]` suffix for a row whose pane lives outside its
+// repository's `be-` home session, so a cross-session entry is visibly flagged rather than
+// silently drawn under a section it does not share a session with. It is empty for rows in
+// the home, rows with no live window, and ungrouped incidental agents.
+func locatorHint(r Row) string {
+	if r.GitDir == "" || r.TmuxSession == "" {
+		return ""
+	}
+	if r.TmuxSession == dir.HomeSession(r.GitDir) {
+		return ""
+	}
+	return "[in: " + r.TmuxSession + "]"
 }
 
 // rowLabel is the gray-column label for a leaf row: the worktree name when the row is
@@ -1304,13 +1417,14 @@ func (m model) sessionBar(it renderItem) string {
 	if it.managed {
 		name = managedGlyph + " " + it.label
 	}
+	w := m.rowContentWidth()
 	switch {
 	case m.folded[it.sessionKey]:
-		return sessionBarStyle.Width(rowContentWidth).Render(truncate(fmt.Sprintf("▸ %s  (%d)", name, it.count), rowContentWidth))
+		return sessionBarStyle.Width(w).Render(truncate(fmt.Sprintf("▸ %s  (%d)", name, it.count), w))
 	case it.managed && it.worktrees > 0:
 		return m.barWithCount("▾ "+name, fmt.Sprintf("%d wt", it.worktrees))
 	default:
-		return sessionBarStyle.Width(rowContentWidth).Render(truncate("▾ "+name, rowContentWidth))
+		return sessionBarStyle.Width(w).Render(truncate("▾ "+name, w))
 	}
 }
 
@@ -1318,9 +1432,10 @@ func (m model) sessionBar(it renderItem) string {
 // subtle count pinned to the right edge, over a continuous bar background. When the
 // two would not fit, it degrades to a single left-aligned, truncated label.
 func (m model) barWithCount(left, count string) string {
-	gap := rowContentWidth - lipgloss.Width(left) - lipgloss.Width(count)
+	w := m.rowContentWidth()
+	gap := w - lipgloss.Width(left) - lipgloss.Width(count)
 	if gap < 1 {
-		return sessionBarStyle.Width(rowContentWidth).Render(truncate(left+"  "+count, rowContentWidth))
+		return sessionBarStyle.Width(w).Render(truncate(left+"  "+count, w))
 	}
 	return sessionBarStyle.Render(left) +
 		sessionBarStyle.Render(strings.Repeat(" ", gap)) +
@@ -1334,16 +1449,36 @@ func (m model) leafRow(it renderItem, selected bool) string {
 	r := m.rows[it.rowIdx]
 	gutter, st := gutterFor(r)
 	indent := strings.Repeat(" ", agentIndent)
-	win := padRight(truncate(it.window, windowColWidth-1), windowColWidth)
-	name := padRight(truncate(displayTitle(r.Title, it.sessionKey), nameColWidth), nameColWidth)
-	if !selected {
-		return st.Render(gutter) + indent + windowColStyle.Render(win) + nameColStyle.Render(name)
+	windowW, nameW, hintW := m.colWidths()
+	win := padRight(truncate(it.window, windowW-1), windowW)
+	title := padRight(truncate(displayTitle(r.Title, r.TmuxSession), nameW), nameW)
+
+	winSt, nameSt, hintSt := windowColStyle, nameColStyle, hintStyle
+	gutterSt := st
+	if selected {
+		hl := func(s lipgloss.Style) lipgloss.Style { return s.Background(rowHL) }
+		winSt, hintSt, gutterSt = hl(winSt), hl(hintSt), hl(gutterSt)
+		nameSt = nameSt.Background(rowHL).Bold(true)
 	}
-	hl := lipgloss.NewStyle().Background(rowHL)
-	return st.Background(rowHL).Render(gutter) +
-		hl.Render(indent) +
-		windowColStyle.Background(rowHL).Render(win) +
-		nameColStyle.Background(rowHL).Bold(true).Render(name)
+
+	// Columns pack left: gutter, indent, worktree, title. The "[in: …]" locator is an exception
+	// annotation, so it rides a rightmost column flush to the pane's target width — every hint
+	// lines up at the same right edge, and any surplus is the gap between the title and that
+	// column, never trailing space past the hint.
+	row := gutterSt.Render(gutter) + nameSt.Render(indent) + winSt.Render(win) + nameSt.Render(title)
+	used := statusColWidth + agentIndent + windowW + nameW
+	if hintW > 0 {
+		// Reserve one space before the hint column, then push the rest of the surplus into it so
+		// the locator sits at the right edge.
+		gap := 1
+		if pad := m.rowContentWidth() - used - hintW; pad > gap {
+			gap = pad
+		}
+		row += nameSt.Render(strings.Repeat(" ", gap)) + hintSt.Render(padRight(truncate(locatorHint(r), hintW), hintW))
+	} else if pad := m.rowContentWidth() - used; pad > 0 {
+		row += nameSt.Render(strings.Repeat(" ", pad))
+	}
+	return row
 }
 
 // gutterFor returns the pinned status/marker gutter for a row and the style to render

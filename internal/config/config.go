@@ -74,6 +74,34 @@ type Agents struct {
 	// Command is the program spawned for a new orchestration agent; empty defaults
 	// to "claude".
 	Command string `toml:"command"`
+	// Split caps the agents-list pane's width when the preview is shown, as a fraction
+	// of the terminal in (0,1). The list sizes to its content; this bounds how much it
+	// may take so the preview keeps the rest. Zero keeps the built-in default.
+	Split float64 `toml:"split"`
+}
+
+// DefaultSplit is the cap on the agents-list pane's width when none is configured — a bit
+// over half, so a content-heavy list can grow into the larger share before the preview does.
+const DefaultSplit = 0.55
+
+// SplitRatio resolves the agents-list pane's width cap, defaulting to DefaultSplit. It is
+// clamped to a sane band so the list is never cramped and the preview never vanishes; a
+// value outside (0,1) is reported as an error rather than silently coerced.
+func (a Agents) SplitRatio() (float64, error) {
+	if a.Split == 0 {
+		return DefaultSplit, nil
+	}
+	if a.Split <= 0 || a.Split >= 1 {
+		return 0, fmt.Errorf("invalid agents.split %v: want a fraction between 0 and 1 (e.g. 0.55)", a.Split)
+	}
+	const lo, hi = 0.3, 0.8
+	if a.Split < lo {
+		return lo, nil
+	}
+	if a.Split > hi {
+		return hi, nil
+	}
+	return a.Split, nil
 }
 
 // RefreshInterval resolves the configured live-refresh interval, defaulting to one

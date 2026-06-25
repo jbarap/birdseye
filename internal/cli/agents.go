@@ -124,8 +124,8 @@ func newAgentsSpawnCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// Session "" → derived from the repo name; spawn ensures-or-reuses it.
-			handle, err := f.Spawn(abs, "", branch, "", prompt)
+			// Spawn routes into the repository's `be-` home, ensuring-or-reusing it.
+			handle, err := f.Spawn(abs, branch, "", prompt)
 			if err != nil {
 				return err
 			}
@@ -308,6 +308,10 @@ func runDash() error {
 	if err != nil {
 		return err
 	}
+	split, err := cfg.Agents.SplitRatio()
+	if err != nil {
+		return err
+	}
 	src, err := agents.NewClaudeSource()
 	if err != nil {
 		return err
@@ -324,7 +328,7 @@ func runDash() error {
 		orch = orchestrator{fleet: f, client: client, cfg: cfg}
 	}
 
-	chosen, err := agents.Run(rowSrc, prev, keys, accent, refresh, orch)
+	chosen, err := agents.Run(rowSrc, prev, keys, accent, refresh, split, orch)
 	if err != nil {
 		return err
 	}
@@ -409,8 +413,10 @@ type orchestrator struct {
 }
 
 // Spawn adds a worktree in the row's repo and starts the agent, via the shared fleet.
+// The fleet routes the new window into the repository's `be-` home, so spawning from a
+// section whose only presence is a user session still lands in be's write domain.
 func (o orchestrator) Spawn(repo agents.Row, branch, name string) error {
-	_, err := o.fleet.Spawn(repo.Dir, repo.TmuxSession, branch, name, "")
+	_, err := o.fleet.Spawn(repo.Dir, branch, name, "")
 	return err
 }
 

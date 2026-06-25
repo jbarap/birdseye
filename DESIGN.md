@@ -120,8 +120,9 @@ hotkey letter stays accented on both sides so the shortcut reads without relying
 
 - **Fixed columns.** The agents view is `cursor | status gutter | indent | window | name`, each at a
   stable horizontal position; over-long values truncate with `…`.
-- **Section bars.** A group header (a tmux session) is a full-width bar, left-aligned, in a distinct
-  background — visually different from the selection highlight so structure and cursor never blur.
+- **Section bars.** A group header (a recognized repository) is a full-width bar, left-aligned, in a
+  distinct background — visually different from the selection highlight so structure and cursor never
+  blur. Sections group by repository, not by tmux session.
 - **The status gutter is pinned.** Status sits at the same column on every row regardless of
   grouping, so it reads as one vertical stripe.
 
@@ -144,25 +145,36 @@ wrong design.** Recognize the structure each tick; don't become a session manage
 ### The orthogonal row model
 
 In the agents view, two facts about a row are **independent**: whether it has a live **agent**
-(a hook record) and whether it is a managed **worktree** (its window started inside a recognized
-repo's worktree). A row can be either, both, or neither. This orthogonality is what lets a managed
-repo and a user's ordinary, unrecognized sessions coexist in the same view — side by side — without
-one reshaping the other. Recognition is git-native and whole-session: a session is a managed repo
-only when *every* pane resolves (via `git rev-parse --git-common-dir` / `git worktree list`) to a
-worktree of one and the same repository — not by matching any path shape. A single non-git or
-foreign-repo pane drops the session back to a plain, unrecognized session, so a managed repo is
-always exactly one repository's worktree set. Within a managed repo a row surfaces when it has an
-agent, is a managed worktree, or is the repo's base (its primary worktree); a worktree with no open
-window still surfaces as a slot, since the set is enumerated from git. An unrecognized session
-renders identically to a tool-free terminal.
+(a hook record) and whether it is a managed **worktree** (a worktree of a recognized repository). A
+row can be either, both, or neither. This orthogonality is what lets a recognized repository and a
+user's ordinary, unrecognized sessions coexist in the same view — side by side — without one
+reshaping the other.
 
-The **worktree is the row** — not a new indent level. In the common case (one agent per worktree),
-the worktree row and the agent row are the same line, so the view stays a two-level tree
-(session → row) with the [pinned status gutter](#layout-philosophy) intact. A managed repo's
-session bar carries a recognition indicator (glyph + worktree count, never color alone); rows that
-are worktrees without an agent, and the repo's primary-worktree base, each take their own
-pinned-gutter token (glyph + word), defined in `theme` exactly like every other status — so the
-managed view never relies on color to convey "empty slot" or "base."
+Recognition is git-native and **repo-first**: the view groups by **repository** (keyed by
+`git rev-parse --git-common-dir`), not by tmux session. A repository is recognized when **any** pane's
+start path **or any** active agent's working directory resolves (via the git-common-dir /
+`git worktree list`) to a worktree of it — not by matching any path shape. There is **no
+whole-session purity gate**: a stray non-git pane never suppresses a repository, and panes spanning
+two repositories yield two sections. One repository's rows may be drawn from several tmux sessions; a
+row whose pane lives outside the repository's `be-` home session carries an `[in: <session>]` locator
+hint. An agent with no git context renders as an incidental, ungrouped row, identical to a tool-free
+terminal.
+
+be authors windows only in the sessions it names — the **`be-<repo>` home is its write domain**, a
+deterministic, collision-safe function of the repository's identity (its git-common-dir). Every other
+session is observed read-only; spawning from a repository whose only presence is a user session
+creates its `be-` home rather than injecting into the user's session. This is the relocation of
+"managed": not a tracked flag, but a rule about *where be is allowed to write*.
+
+**An agent is the row; an agentless worktree is a row.** A worktree is no longer one-to-one with a
+row: two agents in one worktree are **two rows** (the worktree label repeating), and a worktree with
+no agent is a row even with no open window — the repo's base (its primary worktree) or an empty slot,
+enumerated from the git worktree set. The view stays a two-level tree (repository → row) with the
+[pinned status gutter](#layout-philosophy) intact; co-located agents add no third indent level. A
+recognized repository's section bar carries a recognition indicator (glyph + worktree count, never
+color alone); the base and slot rows each take their own pinned-gutter token (glyph + word), defined
+in `theme` exactly like every other status — so the view never relies on color to convey "empty slot"
+or "base."
 
 ## Primitives and clients
 

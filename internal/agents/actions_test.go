@@ -119,7 +119,7 @@ func TestNewAgentGatedToManagedRepo(t *testing.T) {
 
 func TestNewAgentPromptAndSpawn(t *testing.T) {
 	orch := &fakeOrch{}
-	repo := Row{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", Title: "feat", Managed: true, Dir: "/code/proj/feat", Worktree: "feat"}
+	repo := Row{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", Title: "feat", Dir: "/code/proj/feat", Worktree: "feat", GitDir: "/code/proj/.git"}
 	m := modelWith(t, orch, []Row{repo})
 
 	nm, _ := m.startNewAgent()
@@ -144,7 +144,7 @@ func TestNewAgentPromptAndSpawn(t *testing.T) {
 // edit it stops the auto-derivation so the branch and worktree decouple.
 func TestNewAgentWorktreeSlugsBranch(t *testing.T) {
 	orch := &fakeOrch{}
-	repo := Row{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", Title: "feat", Managed: true, Dir: "/code/proj/feat", Worktree: "feat"}
+	repo := Row{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", Title: "feat", Dir: "/code/proj/feat", Worktree: "feat", GitDir: "/code/proj/.git"}
 	m := modelWith(t, orch, []Row{repo})
 
 	nm, _ := m.startNewAgent()
@@ -182,7 +182,7 @@ func TestNewAgentWorktreeSlugsBranch(t *testing.T) {
 
 func TestNewAgentEscCancels(t *testing.T) {
 	orch := &fakeOrch{}
-	m := modelWith(t, orch, []Row{{Kind: RowAgent, Managed: true, Dir: "/d", TmuxSession: "proj", Title: "t"}})
+	m := modelWith(t, orch, []Row{{Kind: RowAgent, Dir: "/d", TmuxSession: "proj", Title: "t", GitDir: "/code/proj/.git"}})
 	nm, _ := m.startNewAgent()
 	m = nm.(model)
 	m = typeRunes(m, "abc")
@@ -198,7 +198,7 @@ func TestNewAgentEscCancels(t *testing.T) {
 // sharing the first key — opens the delete confirmation instead.
 func TestCloseAndDeleteChords(t *testing.T) {
 	orch := &fakeOrch{}
-	row := Row{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", Worktree: "feat", Managed: true, Dir: "/d", TmuxWindow: "1", TmuxPane: "%2"}
+	row := Row{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", Worktree: "feat", Dir: "/d", TmuxWindow: "1", TmuxPane: "%2"}
 	m := modelWith(t, orch, []Row{row})
 
 	// First d arms the shared chord prefix; it must not act yet.
@@ -235,7 +235,7 @@ func TestCloseAndDeleteChords(t *testing.T) {
 // still gets feedback rather than a swallowed keystroke.
 func TestCloseWindowlessSlotIsNoop(t *testing.T) {
 	orch := &fakeOrch{}
-	m := modelWith(t, orch, []Row{{Kind: RowSlot, SessionID: "slot:proj:spike", TmuxSession: "proj", Worktree: "spike", Managed: true, Dir: "/d"}})
+	m := modelWith(t, orch, []Row{{Kind: RowSlot, SessionID: "slot:proj:spike", TmuxSession: "proj", Worktree: "spike", Dir: "/d"}})
 	nm, _ := m.startClose()
 	m = nm.(model)
 	if len(orch.closes) != 0 {
@@ -255,7 +255,7 @@ func TestCloseWindowlessSlotIsNoop(t *testing.T) {
 // A windowless base must read as the base, never as a removable slot.
 func TestCloseWindowlessBaseFeedback(t *testing.T) {
 	orch := &fakeOrch{}
-	m := modelWith(t, orch, []Row{{Kind: RowAnchor, SessionID: "anchor:proj", TmuxSession: "proj", Worktree: "main", Repo: "proj", Managed: true, Dir: "/d", IsPrimary: true}})
+	m := modelWith(t, orch, []Row{{Kind: RowAnchor, SessionID: "anchor:proj", TmuxSession: "proj", Worktree: "main", Repo: "proj", Dir: "/d", IsPrimary: true}})
 	nm, _ := m.startClose()
 	m = nm.(model)
 	if len(orch.closes) != 0 {
@@ -273,7 +273,7 @@ func TestCloseWindowlessBaseFeedback(t *testing.T) {
 // windowless slot opens an agent in its existing worktree (never recreating it), then
 // attaches to the now-windowed row rather than jumping to an unrelated window.
 func TestEnterOnWindowlessSlotSpawnsAndAttaches(t *testing.T) {
-	slot := Row{Kind: RowSlot, SessionID: "slot:proj:spike", TmuxSession: "proj", Repo: "proj", Worktree: "spike", Managed: true, Dir: "/d"}
+	slot := Row{Kind: RowSlot, SessionID: "slot:proj:spike", TmuxSession: "proj", Repo: "proj", Worktree: "spike", Dir: "/d"}
 	src := &mutableRows{rows: []Row{slot}}
 	orch := &fakeOrch{onOpen: func() {
 		// Open spawned a window in the slot's worktree; the reload now sees it windowed.
@@ -307,7 +307,7 @@ func TestEnterOnWindowlessSlotSpawnsAndAttaches(t *testing.T) {
 // windowless base opens a plain shell (never an agent) in the base worktree and attaches to
 // it, rather than dropping the user onto an unrelated agent's window in the session.
 func TestEnterOnWindowlessBaseOpensShellAndAttaches(t *testing.T) {
-	base := Row{Kind: RowAnchor, SessionID: "anchor:proj", TmuxSession: "proj", Repo: "proj", Worktree: "main", Managed: true, Dir: "/code/proj", IsPrimary: true}
+	base := Row{Kind: RowAnchor, SessionID: "anchor:proj", TmuxSession: "proj", Repo: "proj", Worktree: "main", Dir: "/code/proj", IsPrimary: true}
 	src := &mutableRows{rows: []Row{base}}
 	orch := &fakeOrch{onOpen: func() {
 		windowed := base
@@ -339,7 +339,7 @@ func TestEnterOnWindowlessBaseOpensShellAndAttaches(t *testing.T) {
 // TestEnterOnWindowlessSlotOpenError keeps the view alive on failure: a failed Open reports
 // the error and attaches to nothing.
 func TestEnterOnWindowlessSlotOpenError(t *testing.T) {
-	slot := Row{Kind: RowSlot, SessionID: "slot:proj:spike", TmuxSession: "proj", Repo: "proj", Worktree: "spike", Managed: true, Dir: "/d"}
+	slot := Row{Kind: RowSlot, SessionID: "slot:proj:spike", TmuxSession: "proj", Repo: "proj", Worktree: "spike", Dir: "/d"}
 	orch := &fakeOrch{openErr: errors.New("boom")}
 	m := modelWith(t, orch, []Row{slot})
 
@@ -358,7 +358,7 @@ func TestEnterOnWindowlessSlotOpenError(t *testing.T) {
 
 func TestDeleteAnchorBlocked(t *testing.T) {
 	orch := &fakeOrch{}
-	m := modelWith(t, orch, []Row{{Kind: RowAnchor, SessionID: "anchor:proj", TmuxSession: "proj", Worktree: "main", Managed: true, IsPrimary: true}})
+	m := modelWith(t, orch, []Row{{Kind: RowAnchor, SessionID: "anchor:proj", TmuxSession: "proj", Worktree: "main", IsPrimary: true}})
 	nm, _ := m.startDelete()
 	m = nm.(model)
 	if m.mode == modeConfirmDelete {
@@ -374,7 +374,7 @@ func TestDeleteAnchorBlocked(t *testing.T) {
 // refused at the gate (cleanly) rather than slipping through to a git error.
 func TestDeletePrimaryWithAgentBlocked(t *testing.T) {
 	orch := &fakeOrch{}
-	primaryAgent := Row{Kind: RowAgent, SessionID: "a", TmuxSession: "proj", Repo: "proj", Worktree: "proj", Managed: true, Dir: "/code/proj", IsPrimary: true, TmuxWindow: "0", TmuxPane: "%1"}
+	primaryAgent := Row{Kind: RowAgent, SessionID: "a", TmuxSession: "proj", Repo: "proj", Worktree: "proj", Dir: "/code/proj", IsPrimary: true, TmuxWindow: "0", TmuxPane: "%1"}
 	m := modelWith(t, orch, []Row{primaryAgent})
 	nm, _ := m.startDelete()
 	m = nm.(model)
@@ -391,7 +391,7 @@ func TestDeletePrimaryWithAgentBlocked(t *testing.T) {
 
 func TestDeleteAlwaysConfirms(t *testing.T) {
 	orch := &fakeOrch{dirty: false}
-	m := modelWith(t, orch, []Row{{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", Worktree: "feat", Managed: true, Dir: "/d"}})
+	m := modelWith(t, orch, []Row{{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", Worktree: "feat", Dir: "/d"}})
 
 	// dd opens a confirmation and removes nothing yet — the safety gate.
 	nm, _ := m.startDelete()
@@ -414,9 +414,44 @@ func TestDeleteAlwaysConfirms(t *testing.T) {
 	}
 }
 
+// TestDeleteRefusedWithCoTenant pins the sole-occupant guard: invoking delete on a row
+// whose worktree also hosts another agent is refused before the confirmation, removing
+// nothing, so a worktree is never deleted out from under a co-located agent. A sole
+// occupant of the same worktree proceeds to the confirmation as normal.
+func TestDeleteRefusedWithCoTenant(t *testing.T) {
+	const gd = "/code/proj/.git"
+	// Two agents share the feat worktree.
+	coTenants := []Row{
+		{Kind: RowAgent, SessionID: "a1", TmuxSession: "be-proj", Worktree: "feat", Dir: "/code/proj.worktrees/feat", GitDir: gd, TmuxWindow: "1", TmuxPane: "%2"},
+		{Kind: RowAgent, SessionID: "a2", TmuxSession: "be-proj", Worktree: "feat", Dir: "/code/proj.worktrees/feat", GitDir: gd, TmuxWindow: "2", TmuxPane: "%3"},
+	}
+	orch := &fakeOrch{}
+	m := modelWith(t, orch, coTenants)
+	nm, _ := m.startDelete() // cursor on the first co-tenant
+	m = nm.(model)
+	if m.mode != modeNormal {
+		t.Fatalf("delete with a co-tenant must not open the confirmation, mode=%v", m.mode)
+	}
+	if m.notice == "" || m.noticeLevel != noticeError {
+		t.Fatalf("delete with a co-tenant should report a refusal, notice=%q level=%v", m.notice, m.noticeLevel)
+	}
+	if len(orch.removes) != 0 {
+		t.Fatalf("delete with a co-tenant must remove nothing, got %+v", orch.removes)
+	}
+
+	// A sole occupant of its worktree proceeds to the confirmation.
+	sole := []Row{{Kind: RowAgent, SessionID: "s", TmuxSession: "be-proj", Worktree: "solo", Dir: "/code/proj.worktrees/solo", GitDir: gd, TmuxWindow: "1", TmuxPane: "%9"}}
+	m2 := modelWith(t, orch, sole)
+	nm2, _ := m2.startDelete()
+	m2 = nm2.(model)
+	if m2.mode != modeConfirmDelete {
+		t.Fatalf("delete of a sole occupant should open the confirmation, mode=%v", m2.mode)
+	}
+}
+
 func TestDeleteConfirmCancelDoesNothing(t *testing.T) {
 	orch := &fakeOrch{dirty: false}
-	m := modelWith(t, orch, []Row{{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", Worktree: "feat", Managed: true, Dir: "/d"}})
+	m := modelWith(t, orch, []Row{{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", Worktree: "feat", Dir: "/d"}})
 	nm, _ := m.startDelete()
 	m = nm.(model)
 	nm, _ = m.handleConfirmKey(key("n"))
@@ -430,7 +465,7 @@ func TestDeleteConfirmCancelDoesNothing(t *testing.T) {
 // safe default) and that ⏎ there cancels without removing anything.
 func TestDeleteConfirmDefaultsToCancel(t *testing.T) {
 	orch := &fakeOrch{dirty: false}
-	m := modelWith(t, orch, []Row{{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", Worktree: "feat", Managed: true, Dir: "/d"}})
+	m := modelWith(t, orch, []Row{{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", Worktree: "feat", Dir: "/d"}})
 	nm, _ := m.startDelete()
 	m = nm.(model)
 	if m.confirmChoice != 0 {
@@ -447,7 +482,7 @@ func TestDeleteConfirmDefaultsToCancel(t *testing.T) {
 // activates it with ⏎ (no y keystroke), exercising the navigable-button path.
 func TestDeleteConfirmSelectThenEnter(t *testing.T) {
 	orch := &fakeOrch{dirty: false}
-	m := modelWith(t, orch, []Row{{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", Worktree: "feat", Managed: true, Dir: "/d"}})
+	m := modelWith(t, orch, []Row{{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", Worktree: "feat", Dir: "/d"}})
 	nm, _ := m.startDelete()
 	m = nm.(model)
 	nm, _ = m.handleConfirmKey(key("right"))
@@ -464,7 +499,7 @@ func TestDeleteConfirmSelectThenEnter(t *testing.T) {
 
 func TestDeleteDirtyWorktreeEscalatesToForce(t *testing.T) {
 	orch := &fakeOrch{dirty: true}
-	m := modelWith(t, orch, []Row{{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", Worktree: "feat", Managed: true, Dir: "/d"}})
+	m := modelWith(t, orch, []Row{{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", Worktree: "feat", Dir: "/d"}})
 
 	nm, _ := m.startDelete()
 	m = nm.(model)

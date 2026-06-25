@@ -27,10 +27,10 @@ birdseye draws on ideas/visuals/concepts from these projects:
 - **`be dash`** — a tmux-popup-friendly view of your Claude Code sessions and
   their status (needs-attention / working / idle / done), so you know which need
   you. It **updates live** as sessions change, shows a **preview** of the selected
-  session's terminal, and navigates with **vim-native, configurable** keys. When a
-  tmux session is a **managed repo** (see below) it also surfaces that repo's
-  worktrees and lets you spin agents up and tear them down in place. Press `s` to
-  open a new session from the same fuzzy picker without leaving the view.
+  session's terminal, and navigates with **vim-native, configurable** keys. It groups
+  what it shows by **repository** (see below), surfacing each recognized repo's worktrees
+  and letting you spin agents up and tear them down in place. Press `s` to open a new
+  session from the same fuzzy picker without leaving the view.
 - **`be agents`** — the same agent lifecycle headlessly, for scripts and orchestrating
   agents: `list`, `status`, `spawn`, `send`, `jump`, `close`, `delete`. Data verbs emit
   `--json`. Work is addressed by a derived `repo/worktree` handle (a worktreeless agent
@@ -120,22 +120,26 @@ for half-page — `enter` jumps to the selected agent's session, and `q` dismiss
 you back in the view with it listed — handy for opening a repo before spinning agents up.
 All of these keys are configurable (see `[agents.keys]` below).
 
-### Managed repos (agent orchestration)
+### Repositories (agent orchestration)
 
 birdseye *recognizes* — it never takes over — the common worktree-per-agent layout,
-in both `be dash` and the `be agents` verbs. Recognition is **git-native** and
-**whole-session**: a tmux session is a **managed repo** only when *every* pane started
-inside a git worktree of **one and the same** repository, identified by its shared git
-directory (`git rev-parse --git-common-dir`). A single pane outside a git worktree, or in a
-different repo, drops the session back to a plain one — so a managed repo is always exactly
-one repository's worktree set, and your ordinary dev sessions are never mistaken for it. No
-path convention is required, so worktrees recognize wherever they live — including ones
+in both `be dash` and the `be agents` verbs, and groups what it shows by **repository**
+rather than by tmux session. Recognition is **git-native** and **repo-first**: a repository
+(identified by its shared git directory, `git rev-parse --git-common-dir`) lights up when
+**any** pane's start path **or any** active agent's working directory resolves into one of
+its worktrees. There is no whole-session gate — a stray non-git pane never hides a repo, and
+a session touching two repos shows both as separate sections. One repo's rows may come from
+several sessions; a row outside the repo's `be-` home session is flagged `[in: <session>]`.
+No path convention is required, so worktrees recognize wherever they live — including ones
 another tool created. birdseye owns no state for this: every refresh it re-derives the
 picture from tmux + git, so an unrecognized session looks and behaves exactly as before.
 
-In a managed repo the view shows, beside live agents:
+New agents always land in the repository's **`be-<repo>` home session** — be's write domain,
+created on demand — so be only ever authors windows in sessions it named, never in yours.
 
-- a `󱘎` indicator and worktree count on the session bar,
+In a recognized repository the view shows, beside live agents:
+
+- a `󱘎` indicator and worktree count on the section bar,
 - a `⌂ base` row for the repo's **primary worktree** (git's main worktree, whatever branch
   it has checked out — git itself refuses to remove it, so the base can't be deleted),
 - a `◌ slot` row for each worktree with no agent — a spawn target — **including worktrees
@@ -158,13 +162,16 @@ Two actions become available (configurable, see `[agents.keys]`):
   centered popup confirmation (consistent with the new-agent modal — never the old inline
   `(y/n)` line). A dirty worktree folds a force-remove choice into the same popup,
   defaulting to cancel. The repo base is refused, since git won't remove a primary
-  worktree. Identical in effect to `be agents delete`.
+  worktree. Delete is permitted only on the **sole occupant** of a worktree: if two agents
+  share one worktree it is refused with a notice, so a worktree is never removed out from
+  under a co-located agent — close the others first. Identical in effect to `be agents delete`.
 
 Safety lives in the **key**, not the dialog: `dd` can never touch disk regardless of how
 fast you confirm, and only the irreversible `dD` prompts.
 
-Agents in non-managed sessions, and incidental shells inside a managed session, keep
-working exactly as today — orchestration is purely additive.
+Agents with no git context render as incidental, ungrouped rows, and your ordinary shells
+keep working exactly as today — orchestration is purely additive. Two agents in the same
+worktree show as two rows (the worktree label repeats), each independently addressable.
 
 The agent command is run *through the window's shell* (typed in with `tmux send-keys`),
 not as tmux's bare child process. That means it inherits your normal per-directory
@@ -242,6 +249,10 @@ refresh = "1s"                        # live-refresh interval (a Go duration)
 command = "claude"                    # agent command for `n`, run in the window's shell
 # command = "claude --permission-mode=auto"   # fewer permission prompts (see above)
 # accent = "#c792ea"                  # agents-view accent (title + cursor); #rrggbb
+# split = 0.55                        # cap on the agents-list pane's width when the preview
+                                      # is shown: the list sizes to its content (columns flex
+                                      # to fit, no clipping) but never past this share, so the
+                                      # preview keeps the rest. Default 0.55, clamped to 0.3–0.8
 
 # Rebind the agents-view keys. Each action lists the keys that trigger it;
 # omit an action to keep its default. A two-rune value of two typeable keys (e.g.

@@ -16,6 +16,7 @@ type record struct {
 	TmuxWindow     string    `json:"tmux_window"`
 	TmuxWindowName string    `json:"tmux_window_name"`
 	TmuxPane       string    `json:"tmux_pane"`
+	CWD            string    `json:"cwd"`
 	Title          string    `json:"title"`
 	Status         Status    `json:"status"`
 	Updated        time.Time `json:"updated"`

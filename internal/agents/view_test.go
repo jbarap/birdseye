@@ -10,7 +10,14 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+
+	"github.com/jbarap/birdseye/internal/providers/dir"
 )
+
+// stripANSI drops SGR escapes so a test can assert on the plain text layout (column
+// positions, alignment) rather than the styled bytes.
+func stripANSI(s string) string { return ansi.Strip(s) }
 
 type fakeSource struct {
 	list []Agent
@@ -90,13 +97,26 @@ func nm(src Source, prev Previewer, km Keymap) (model, error) {
 	return newModel(AgentsAsRows(src), prev, km, 0)
 }
 
-// rowsOf converts agents to RowAgent rows for the grouping tests.
+// rowsOf converts agents to RowAgent rows for the grouping tests. Grouping is by
+// repository, so each agent's tmux session stands in for the repository it groups under:
+// the row carries Repo == GitDir == the session name. An agent with no session has no
+// repository and falls into the ungrouped bucket.
 func rowsOf(ags ...Agent) []Row {
 	out := make([]Row, len(ags))
 	for i, a := range ags {
-		out[i] = agentRow(a)
+		r := agentRow(a)
+		if a.TmuxSession != "" {
+			r.Repo, r.GitDir = a.TmuxSession, a.TmuxSession
+		}
+		out[i] = r
 	}
 	return out
+}
+
+// rowModel builds a model over fixed, repo-tagged rows (rowsOf), for the section/fold
+// mechanics tests that need repository-keyed grouping rather than the plain agent source.
+func rowModel(km Keymap, ags ...Agent) (model, error) {
+	return newModel(fixedRows{rowsOf(ags...)}, nil, km, 0)
 }
 
 func TestNavigationVimMotions(t *testing.T) {
@@ -247,8 +267,8 @@ func TestWindowlessStructuralRowShowsNoPreview(t *testing.T) {
 		"anchor:proj":     "the active window's output",
 	}}
 	rows := []Row{
-		{Kind: RowSlot, SessionID: "slot:proj:spike", TmuxSession: "proj", Worktree: "spike", Managed: true, Dir: "/d"},
-		{Kind: RowAnchor, SessionID: "anchor:proj", TmuxSession: "proj", Worktree: "main", Managed: true, Dir: "/d", IsPrimary: true},
+		{Kind: RowSlot, SessionID: "slot:proj:spike", TmuxSession: "proj", Worktree: "spike", Dir: "/d"},
+		{Kind: RowAnchor, SessionID: "anchor:proj", TmuxSession: "proj", Worktree: "main", Dir: "/d", IsPrimary: true},
 	}
 	m, err := newModel(fixedRows{rows}, prev, DefaultKeymap(), 0)
 	if err != nil {
@@ -640,15 +660,15 @@ func TestGroupAgentsUngroupedBucket(t *testing.T) {
 	}
 	ordered, items := groupRows(rowsOf(in...))
 
-	// The ungrouped bucket (working, more urgent) floats above the done session.
+	// The no-repo bucket (working, more urgent) floats above the done session.
 	want := []string{
-		"S:ungrouped",
+		"S:no repo",
 		"A:loose", // no tmux window → no inline label
 		"S:api",
 		"A:real one@win 0",
 	}
 	if got := shape(ordered, items); !reflect.DeepEqual(got, want) {
-		t.Fatalf("ungrouped shape mismatch:\n got %v\nwant %v", got, want)
+		t.Fatalf("no-repo bucket shape mismatch:\n got %v\nwant %v", got, want)
 	}
 }
 
@@ -658,7 +678,7 @@ func TestFoldCollapsesAndUnfolds(t *testing.T) {
 		ag("arewa", "1", "write tests", StatusWorking),
 		ag("web", "0", "ship landing", StatusDone),
 	}
-	m, err := nm(&fakeSource{list: in}, nil, DefaultKeymap())
+	m, err := rowModel(DefaultKeymap(), in...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -679,7 +699,7 @@ func TestFoldCollapsesAndUnfolds(t *testing.T) {
 	if strings.Contains(v, "refactor auth") || strings.Contains(v, "write tests") {
 		t.Fatalf("a folded section must hide its agents:\n%s", v)
 	}
-	if !strings.Contains(v, "▸ arewa") {
+	if !strings.Contains(v, "▸ "+managedGlyph+" arewa") {
 		t.Fatalf("folded header should show the collapsed glyph and label:\n%s", v)
 	}
 
@@ -695,12 +715,11 @@ func TestFoldCollapsesAndUnfolds(t *testing.T) {
 }
 
 func TestFoldStateSurvivesRefresh(t *testing.T) {
-	src := &fakeSource{list: []Agent{
+	m, err := rowModel(DefaultKeymap(),
 		ag("arewa", "1", "a1", StatusWorking),
 		ag("arewa", "1", "a2", StatusWorking),
 		ag("web", "0", "w1", StatusWorking),
-	}}
-	m, err := nm(src, nil, DefaultKeymap())
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -716,6 +735,112 @@ func TestFoldStateSurvivesRefresh(t *testing.T) {
 	it, _ := m.currentItem()
 	if it.kind != kindSession || it.sessionKey != "arewa" {
 		t.Fatalf("selection should stay on the folded arewa header across refresh, got %+v", it)
+	}
+}
+
+// TestLocatorHint pins the cross-session locator: a row whose pane lives outside its
+// repository's be- home carries an `[in: <session>]` hint naming that session, while a row
+// in the home, a windowless row, and an ungrouped incidental agent carry none.
+func TestLocatorHint(t *testing.T) {
+	const gd = "/code/proj/.git"
+	home := dir.HomeSession(gd)
+
+	// In the be- home: no hint.
+	if h := locatorHint(Row{GitDir: gd, TmuxSession: home}); h != "" {
+		t.Errorf("a row in the be- home should have no hint, got %q", h)
+	}
+	// In a user session: hint naming that session.
+	if h := locatorHint(Row{GitDir: gd, TmuxSession: "proj"}); h != "[in: proj]" {
+		t.Errorf("an out-of-home row should be flagged, got %q", h)
+	}
+	// Windowless (no session) and ungrouped (no repo): no hint.
+	if h := locatorHint(Row{GitDir: gd}); h != "" {
+		t.Errorf("a windowless row should have no hint, got %q", h)
+	}
+	if h := locatorHint(Row{TmuxSession: "scratch"}); h != "" {
+		t.Errorf("an ungrouped incidental agent should have no hint, got %q", h)
+	}
+}
+
+// TestColumnsFlexToFitContent pins that the worktree and title columns flex to fit their widest
+// values (no clipping while space sits empty), clamped to their bands, and that the hint is its
+// own column rather than being folded into the title width.
+func TestColumnsFlexToFitContent(t *testing.T) {
+	prev := &fakePreviewer{out: map[string]string{}}
+	rows := []Row{
+		// A long worktree label and a long title, both well past the baselines.
+		{Kind: RowAgent, SessionID: "a", TmuxSession: "be", Repo: "r", GitDir: "/g", Worktree: "a-long-worktree-name", Title: "a fairly long agent title here", Status: StatusWorking, TmuxWindow: "1", TmuxPane: "%1"},
+	}
+	m, err := newModel(fixedRows{rows}, prev, DefaultKeymap(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width = 200
+
+	windowW, nameW, _ := m.colWidths()
+	if windowW <= windowColMin {
+		t.Fatalf("the worktree column should flex past the baseline %d to fit a long label, got %d", windowColMin, windowW)
+	}
+	if windowW < lipgloss.Width("a-long-worktree-name")+1 || windowW > windowColMax {
+		t.Fatalf("the worktree column should fit the label (clamped to %d), got %d", windowColMax, windowW)
+	}
+	if nameW <= nameColMin {
+		t.Fatalf("the title column should flex past the baseline %d to fit a long title, got %d", nameColMin, nameW)
+	}
+}
+
+// TestListFillsSplitShare pins that on a wide terminal the list pane fills its configured share
+// of the width (rather than collapsing to its content), so the preview is not left oversized.
+func TestListFillsSplitShare(t *testing.T) {
+	prev := &fakePreviewer{out: map[string]string{}}
+	rows := []Row{
+		{Kind: RowAgent, SessionID: "a", TmuxSession: "be", Repo: "r", GitDir: "/g", Worktree: "wt", Title: "qa", Status: StatusWorking, TmuxWindow: "1", TmuxPane: "%1"},
+	}
+	m, err := newModel(fixedRows{rows}, prev, DefaultKeymap(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width = 200
+	m.split = 0.55
+
+	rendered := cursorColWidth + m.rowContentWidth() + 4
+	want := int(float64(m.width) * m.split)
+	// The pane should sit at its share (within a small rounding/frame slack), not collapse to
+	// the narrow content of a one-row list.
+	if rendered < want-6 || rendered > want+6 {
+		t.Fatalf("the list should fill ~%d%% of %d (=%d), got %d", int(m.split*100), m.width, want, rendered)
+	}
+}
+
+// TestHintsAlignInColumn pins that every locator hint starts at the same column regardless of
+// title length: rows with a long title, a short title, and no title must align their "[in: …]".
+func TestHintsAlignInColumn(t *testing.T) {
+	prev := &fakePreviewer{out: map[string]string{}}
+	const gd = "/g"
+	rows := []Row{
+		{Kind: RowAnchor, SessionID: "x", TmuxSession: "proj", Repo: "r", GitDir: gd, Worktree: "r", IsPrimary: true},
+		{Kind: RowAgent, SessionID: "a", TmuxSession: "proj", Repo: "r", GitDir: gd, Worktree: "r", Title: "qa", Status: StatusWorking, TmuxWindow: "1", TmuxPane: "%1"},
+		{Kind: RowAgent, SessionID: "b", TmuxSession: "proj", Repo: "r", GitDir: gd, Worktree: "feature-x", Title: "a-much-longer-agent-title", Status: StatusIdle, TmuxWindow: "2", TmuxPane: "%2"},
+	}
+	m, err := newModel(fixedRows{rows}, prev, DefaultKeymap(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width = 200
+
+	var cols []int
+	for _, line := range strings.Split(stripANSI(m.renderRows()), "\n") {
+		if i := strings.Index(line, "[in:"); i >= 0 {
+			cols = append(cols, lipgloss.Width(line[:i])) // visual column, not byte offset
+		}
+	}
+	if len(cols) < 3 {
+		t.Fatalf("expected a hint on each of the 3 rows, found %d in:\n%s", len(cols), stripANSI(m.renderRows()))
+	}
+	for _, c := range cols[1:] {
+		if c != cols[0] {
+			t.Fatalf("locator hints should align in a column, got start columns %v", cols)
+		}
 	}
 }
 
@@ -762,7 +887,7 @@ func TestSectionJumpMotions(t *testing.T) {
 		ag("beta", "0", "b1", StatusWorking),
 		ag("gamma", "0", "g1", StatusWorking),
 	}
-	m, err := nm(&fakeSource{list: in}, nil, DefaultKeymap())
+	m, err := rowModel(DefaultKeymap(), in...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -814,7 +939,7 @@ func TestNavigationCrossesGroupsLeavesOnly(t *testing.T) {
 		ag("api", "1", "a2", StatusWorking),
 		ag("web", "0", "w1", StatusWorking),
 	}
-	m, err := nm(&fakeSource{list: in}, nil, DefaultKeymap())
+	m, err := rowModel(DefaultKeymap(), in...)
 	if err != nil {
 		t.Fatal(err)
 	}

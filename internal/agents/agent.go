@@ -52,6 +52,11 @@ type Agent struct {
 	// session:window it pins the right pane when a window is split, so the
 	// preview captures the agent's pane rather than whichever is active.
 	TmuxPane string
+	// CWD is the agent's working directory as reported by its hook. It is the
+	// durable signal the reconciler resolves to a repository for recognition and
+	// grouping (an agent's worktree does not flicker the way a wandering shell's
+	// path would). Empty when the hook reported no directory.
+	CWD string
 	// Title is a short human label.
 	Title string
 	// Status is the agent's current state.
@@ -93,6 +98,12 @@ type Row struct {
 	// Dir is the row's filesystem directory (the pane's start path / worktree dir),
 	// used to add or remove a worktree. Empty when unknown.
 	Dir string
+	// AgentDir is the live agent's own working directory as reported by its hook,
+	// for RowAgent rows. It is distinct from Dir (the worktree on disk): the
+	// reconciler resolves it to a repository for recognition, and it is surfaced in
+	// the headless JSON contract. Empty for anchor/slot rows and agents that
+	// reported no directory.
+	AgentDir string
 	// Worktree is the worktree's name when the row is a managed worktree (RowSlot, or
 	// a RowAgent running in a worktree window); empty for incidental agents and rows
 	// outside a managed repo. A non-empty value is what makes delete also remove the
@@ -112,12 +123,10 @@ type Row struct {
 	// the base is a RowAgent that is still IsPrimary.
 	IsPrimary bool
 	// GitDir is the repository's shared git common dir — its identity across all its
-	// worktrees — used to detect when two repos sharing a basename make a handle
-	// ambiguous. Empty for incidental agents.
+	// worktrees. It is both the handle-ambiguity guard (two repos sharing a basename)
+	// and the view's grouping key: every row of one repository shares a GitDir, so the
+	// view sections by it. Empty for incidental agents (rendered ungrouped).
 	GitDir string
-	// Managed reports whether the owning session is a recognized managed repo, so its
-	// section bar shows the indicator and `n` is available.
-	Managed bool
 	// Title is the row's display name.
 	Title string
 	// Status is the agent's status for RowAgent rows; anchor/slot rows render their
@@ -180,6 +189,8 @@ func agentRow(a Agent) Row {
 		TmuxWindow:     a.TmuxWindow,
 		TmuxWindowName: a.TmuxWindowName,
 		TmuxPane:       a.TmuxPane,
+		Dir:            a.CWD,
+		AgentDir:       a.CWD,
 		Title:          a.Title,
 		Status:         a.Status,
 		Updated:        a.Updated,

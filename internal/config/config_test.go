@@ -208,3 +208,27 @@ func TestAgentsRefreshAndCommand(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentsSplitRatio(t *testing.T) {
+	// Unset uses the built-in default.
+	if r, err := (Agents{}).SplitRatio(); err != nil || r != DefaultSplit {
+		t.Fatalf("default split = (%v,%v), want %v", r, err, DefaultSplit)
+	}
+	// An in-band value is honored verbatim.
+	if r, err := (Agents{Split: 0.6}).SplitRatio(); err != nil || r != 0.6 {
+		t.Fatalf("split 0.6 = (%v,%v), want 0.6", r, err)
+	}
+	// Out-of-band-but-valid fractions clamp to the sane range.
+	if r, _ := (Agents{Split: 0.1}).SplitRatio(); r != 0.3 {
+		t.Fatalf("split 0.1 should clamp up to 0.3, got %v", r)
+	}
+	if r, _ := (Agents{Split: 0.95}).SplitRatio(); r != 0.8 {
+		t.Fatalf("split 0.95 should clamp down to 0.8, got %v", r)
+	}
+	// Values outside (0,1) are a configuration error.
+	for _, bad := range []float64{-0.5, 1, 1.5} {
+		if _, err := (Agents{Split: bad}).SplitRatio(); err == nil {
+			t.Errorf("split %v should be rejected", bad)
+		}
+	}
+}

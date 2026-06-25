@@ -1,5 +1,7 @@
 package agents
 
+import "github.com/jbarap/birdseye/internal/providers/dir"
+
 // PaneInfo is one tmux pane the reconciler classifies. It mirrors the tmux backend's
 // pane enumeration without this package importing tmux (cli adapts the two).
 type PaneInfo struct {
@@ -112,43 +114,59 @@ func (w *Workspace) worktrees(gitDir string) []WorktreeInfo {
 }
 
 // Rows implements RowSource: it joins live agents with the tmux structure and git
-// classification into the leaf rows the view renders.
+// classification into the leaf rows the view renders. Recognition is repo-first: a
+// repository (keyed by its git-common-dir) lights up when any pane's start path or any
+// active agent's working directory resolves into it, regardless of which tmux session
+// the evidence lives in. There is no whole-session purity gate — a stray non-git pane
+// never suppresses a repository, and panes spanning two repositories yield two sections.
 func (w *Workspace) Rows() ([]Row, error) {
-	agents, err := w.src.Agents()
+	agentList, err := w.src.Agents()
 	if err != nil {
 		return nil, err
 	}
 	panes, _ := w.panes.ListPanes() // best-effort: no tmux → every agent is a plain row
 
-	byPane := map[string]Agent{}
-	for _, a := range agents {
+	byPane := map[string]Agent{}     // pane id -> agent
+	paneStart := map[string]string{} // pane id -> start path
+	for _, p := range panes {
+		paneStart[p.PaneID] = p.StartPath
+	}
+	for _, a := range agentList {
 		if a.TmuxPane != "" {
 			byPane[a.TmuxPane] = a
 		}
 	}
 
-	bySession := map[string][]PaneInfo{}
-	var sessionOrder []string
+	// Recognition: collect the repositories any pane or agent resolves into, keyed by
+	// git-common-dir. Panes come first (the stable spine), then agents (covering an
+	// auto-cd workflow where a pane is born outside the repo and the agent moves in).
+	repoInfo := map[string]RepoInfo{}
+	var repoOrder []string
+	recognize := func(info *RepoInfo) {
+		if info == nil {
+			return
+		}
+		if _, ok := repoInfo[info.GitDir]; !ok {
+			repoInfo[info.GitDir] = *info
+			repoOrder = append(repoOrder, info.GitDir)
+		}
+	}
 	for _, p := range panes {
-		if _, ok := bySession[p.Session]; !ok {
-			sessionOrder = append(sessionOrder, p.Session)
-		}
-		bySession[p.Session] = append(bySession[p.Session], p)
+		recognize(w.lookup(p.StartPath))
+	}
+	for _, a := range agentList {
+		recognize(w.lookup(a.CWD))
 	}
 
-	claimed := map[string]bool{} // agent SessionIDs already rendered as a managed row
+	claimed := map[string]bool{} // agent SessionIDs already rendered under a repo
 	var rows []Row
-
-	for _, sess := range sessionOrder {
-		repo, ok := w.managedRepoOf(bySession[sess])
-		if !ok {
-			continue // not a managed repo; its agents fall through to the plain pass
-		}
-		rows = append(rows, w.managedRows(sess, bySession[sess], repo, byPane, claimed)...)
+	for _, gd := range repoOrder {
+		rows = append(rows, w.repoRows(repoInfo[gd], agentList, panes, byPane, paneStart, claimed)...)
 	}
 
-	// Everything left: plain sessions, ungrouped agents, or agents without a pane match.
-	for _, a := range agents {
+	// Incidental agents: a live agent whose neither working directory nor pane start
+	// path resolves into any repository (no git context). Rendered flat and ungrouped.
+	for _, a := range agentList {
 		if !claimed[a.SessionID] {
 			rows = append(rows, agentRow(a))
 		}
@@ -156,92 +174,105 @@ func (w *Workspace) Rows() ([]Row, error) {
 	return rows, nil
 }
 
-// managedRepoOf decides whether a session is a managed repo and, if so, which repository
-// it is. A session is managed iff *every* one of its panes resolves to a git worktree and
-// all of them share one repository (the same git-common-dir). Any pane that is not inside
-// a git worktree, or that belongs to a different repository, disqualifies the whole
-// session — it renders as plain. The returned RepoInfo identifies that single repository;
-// its primary worktree is the anchor. ok=false means the session is plain.
-func (w *Workspace) managedRepoOf(panes []PaneInfo) (RepoInfo, bool) {
-	var chosen RepoInfo
-	found := false
-	for _, p := range panes {
-		info := w.lookup(p.StartPath)
-		if info == nil {
-			return RepoInfo{}, false // a non-git pane disqualifies the session
-		}
-		if !found {
-			chosen, found = *info, true
-			continue
-		}
-		if info.GitDir != chosen.GitDir {
-			return RepoInfo{}, false // panes span two repositories → not one managed repo
-		}
+// agentWorktree resolves the worktree an agent occupies: its recorded working directory
+// when that is inside a git worktree (the durable signal, correct for an auto-cd
+// workflow), else its pane's start path. Returns nil when neither resolves into a repo.
+func (w *Workspace) agentWorktree(a Agent, paneStart map[string]string) *RepoInfo {
+	if info := w.lookup(a.CWD); info != nil {
+		return info
 	}
-	return chosen, found
+	if sp := paneStart[a.TmuxPane]; sp != "" {
+		return w.lookup(sp)
+	}
+	return nil
 }
 
-// managedRows builds the anchor/worktree/slot rows for one managed session. It enumerates
-// the repository's full git worktree set (not just open windows), so a worktree with no
-// window still renders as a slot. Each worktree yields one row: an agent row if an agent
-// runs in its window, the `⌂ base` anchor row for the primary worktree, else an `◌ slot`
-// spawn target. Agents adopted as worktree rows are recorded in claimed.
-func (w *Workspace) managedRows(sess string, panes []PaneInfo, repo RepoInfo, byPane map[string]Agent, claimed map[string]bool) []Row {
-	// Index this repo's open windows by their worktree path, preferring a pane that has
-	// a live agent so the row carries the agent.
-	type windowed struct {
-		pane PaneInfo
-		has  bool
+// repoRows builds the rows for one recognized repository, aggregating presence across
+// every tmux session. It enumerates the repository's full git worktree set (not just
+// open windows), so a worktree with no window still renders. Row identity is repo-first:
+// one row per active agent (a worktree hosting two agents yields two rows, the worktree
+// label repeating) plus one row per agentless worktree — the `⌂ base` primary or an
+// `◌ slot` spawn target. Agents adopted as worktree rows are recorded in claimed.
+func (w *Workspace) repoRows(repo RepoInfo, agentList []Agent, panes []PaneInfo, byPane map[string]Agent, paneStart map[string]string, claimed map[string]bool) []Row {
+	home := dir.HomeSession(repo.GitDir)
+
+	// Agents belonging to this repository, bucketed by the worktree they occupy.
+	agentsByWt := map[string][]Agent{}
+	for _, a := range agentList {
+		if claimed[a.SessionID] {
+			continue
+		}
+		info := w.agentWorktree(a, paneStart)
+		if info == nil || info.GitDir != repo.GitDir {
+			continue
+		}
+		agentsByWt[info.TopLevel] = append(agentsByWt[info.TopLevel], a)
 	}
-	byPath := map[string]windowed{}
+
+	// Panes of this repository, bucketed by worktree, for windows on agentless
+	// worktrees and for the deterministic base/slot pane choice.
+	panesByWt := map[string][]PaneInfo{}
 	for _, p := range panes {
 		info := w.lookup(p.StartPath)
 		if info == nil || info.GitDir != repo.GitDir {
 			continue
 		}
-		_, has := byPane[p.PaneID]
-		if e, ok := byPath[info.TopLevel]; !ok || (has && !e.has) {
-			byPath[info.TopLevel] = windowed{pane: p, has: has}
-		}
+		panesByWt[info.TopLevel] = append(panesByWt[info.TopLevel], p)
 	}
 
 	wts := w.worktrees(repo.GitDir)
 	var out []Row
 	for _, wt := range wts {
-		win, hasWindow := byPath[wt.Path]
-		agent, hasAgent := Agent{}, false
-		if hasWindow {
-			agent, hasAgent = byPane[win.pane.PaneID]
+		if ags := agentsByWt[wt.Path]; len(ags) > 0 {
+			for _, a := range ags {
+				r := agentRow(a)
+				r.Dir, r.Worktree = wt.Path, wt.Name
+				r.Repo, r.Branch, r.GitDir = repo.Repo, wt.Branch, repo.GitDir
+				r.IsPrimary = wt.IsPrimary // a recognized agent in the base is still primary
+				out = append(out, r)
+				claimed[a.SessionID] = true
+			}
+			continue
 		}
-		switch {
-		case hasAgent:
-			r := agentRow(agent)
-			r.Dir, r.Worktree, r.Managed = wt.Path, wt.Name, true
-			r.Repo, r.Branch, r.GitDir = repo.Repo, wt.Branch, repo.GitDir
-			r.IsPrimary = wt.IsPrimary // a recognized agent in the base is still primary
-			out = append(out, r)
-			claimed[agent.SessionID] = true
-		case wt.IsPrimary:
-			r := Row{
-				Kind: RowAnchor, SessionID: "anchor:" + sess,
-				TmuxSession: sess, Dir: wt.Path, Worktree: wt.Name, Managed: true,
-				Repo: repo.Repo, Branch: wt.Branch, GitDir: repo.GitDir, IsPrimary: true,
-			}
-			if hasWindow {
-				r.TmuxWindow, r.TmuxWindowName, r.TmuxPane = win.pane.WindowIndex, win.pane.WindowName, win.pane.PaneID
-			}
-			out = append(out, r)
-		default:
-			r := Row{
-				Kind: RowSlot, SessionID: "slot:" + sess + ":" + wt.Name,
-				TmuxSession: sess, Dir: wt.Path, Worktree: wt.Name, Managed: true,
-				Repo: repo.Repo, Branch: wt.Branch, GitDir: repo.GitDir,
-			}
-			if hasWindow {
-				r.TmuxWindow, r.TmuxWindowName, r.TmuxPane = win.pane.WindowIndex, win.pane.WindowName, win.pane.PaneID
-			}
-			out = append(out, r)
+		// No agent in this worktree: a base anchor (primary) or a slot spawn target,
+		// carrying a representative pane when a window exists for it.
+		r := Row{
+			Dir: wt.Path, Worktree: wt.Name,
+			Repo: repo.Repo, Branch: wt.Branch, GitDir: repo.GitDir, IsPrimary: wt.IsPrimary,
 		}
+		if wt.IsPrimary {
+			r.Kind, r.SessionID = RowAnchor, "anchor:"+repo.GitDir
+		} else {
+			r.Kind, r.SessionID = RowSlot, "slot:"+repo.GitDir+":"+wt.Name
+		}
+		if p, ok := representativePane(panesByWt[wt.Path], byPane, home); ok {
+			r.TmuxSession = p.Session
+			r.TmuxWindow, r.TmuxWindowName, r.TmuxPane = p.WindowIndex, p.WindowName, p.PaneID
+		}
+		out = append(out, r)
 	}
 	return out
+}
+
+// representativePane picks the pane a base/slot row resolves to when its worktree has
+// windows in more than one session. The choice is deterministic: prefer an agent-bearing
+// pane, then a pane in the repository's `be-` home session, then the first in stable
+// enumeration order. ok=false when the worktree has no open window at all.
+func representativePane(panes []PaneInfo, byPane map[string]Agent, home string) (PaneInfo, bool) {
+	if len(panes) == 0 {
+		return PaneInfo{}, false
+	}
+	for _, p := range panes {
+		if _, ok := byPane[p.PaneID]; ok {
+			return p, true
+		}
+	}
+	if home != "" {
+		for _, p := range panes {
+			if p.Session == home {
+				return p, true
+			}
+		}
+	}
+	return panes[0], true
 }

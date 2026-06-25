@@ -219,4 +219,40 @@ func TestHandleHookWritesState(t *testing.T) {
 	if got[0].Title != "foo" { // no tmux session, falls back to cwd base
 		t.Errorf("expected title 'foo', got %q", got[0].Title)
 	}
+	// The working directory must survive on the record, not only feed the title:
+	// the reconciler resolves it to a repository for recognition.
+	if got[0].CWD != "/home/u/projects/foo" {
+		t.Errorf("expected agent cwd persisted, got %q", got[0].CWD)
+	}
+}
+
+// TestHandleHookPersistsCWD pins that the hook's cwd survives onto the stored
+// record across events and is exposed as the agent's working directory, and that
+// an event without a cwd leaves a previously recorded one intact.
+func TestHandleHookPersistsCWD(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", dir)
+	t.Setenv("TMUX", "")
+
+	if err := HandleHook("SessionStart", strings.NewReader(`{"session_id":"s1","cwd":"/repo/wt"}`)); err != nil {
+		t.Fatal(err)
+	}
+	// A later event with no cwd (an unexpected partial payload) must not erase it.
+	if err := HandleHook("Stop", strings.NewReader(`{"session_id":"s1"}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	rec, err := readRecord(filepath.Join(dir, "birdseye", "agents"), "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.CWD != "/repo/wt" {
+		t.Fatalf("record should retain cwd across events, got %q", rec.CWD)
+	}
+
+	// The Row built from the agent carries the working directory for the contract.
+	row := agentRow(Agent{SessionID: "s1", CWD: "/repo/wt"})
+	if row.AgentDir != "/repo/wt" {
+		t.Errorf("row should carry agent working directory, got %q", row.AgentDir)
+	}
 }

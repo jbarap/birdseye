@@ -4,6 +4,8 @@
 package dir
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -98,6 +100,22 @@ func (p *Provider) Candidates() ([]provider.Candidate, error) {
 func SessionName(base string) string {
 	r := strings.NewReplacer(".", "_", ":", "_", " ", "_")
 	return r.Replace(base)
+}
+
+// HomeSession is the deterministic tmux session name be uses as a repository's
+// agent home — its write domain. It is a pure function of the repository's
+// identity (its git-common-dir): the `be-` prefix namespaces the home from the
+// user's own sessions, the repository basename is the friendly part, and a short
+// hash of the git-common-dir is always appended so two repositories sharing a
+// basename receive distinct, stable homes. Determinism is load-bearing — ensuring
+// a repository's home always resolves to the same name regardless of what else is
+// running — so the disambiguator is derived from the git-common-dir alone, never
+// from the live session set.
+func HomeSession(gitCommonDir string) string {
+	clean := filepath.Clean(gitCommonDir)
+	base := SessionName(filepath.Base(filepath.Dir(clean)))
+	sum := sha256.Sum256([]byte(clean))
+	return "be-" + base + "-" + hex.EncodeToString(sum[:])[:6]
 }
 
 func queryZoxide() ([]string, error) {

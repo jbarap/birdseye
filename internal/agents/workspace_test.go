@@ -39,10 +39,10 @@ func rowsByKind(rows []Row) map[RowKind]int {
 	return m
 }
 
-func TestWorkspaceRecognizesManagedRepo(t *testing.T) {
+func TestWorkspaceRecognizesRepo(t *testing.T) {
 	// proj: primary clone (no agent → anchor), feat worktree (agent), spike worktree
 	// (window, no agent → slot). Every pane is a worktree of the one repo, so the
-	// session is managed.
+	// repository is recognized and rendered as one section.
 	const gd = "/code/proj/.git"
 	src := &fakeSource{list: []Agent{
 		{SessionID: "feat-agent", TmuxSession: "proj", TmuxWindow: "1", TmuxPane: "%2", Title: "feat", Status: StatusWorking},
@@ -80,20 +80,21 @@ func TestWorkspaceRecognizesManagedRepo(t *testing.T) {
 	for _, r := range rows {
 		byName[r.Worktree] = r
 	}
-	if r := byName["proj"]; r.Kind != RowAnchor || !r.Managed {
+	if r := byName["proj"]; r.Kind != RowAnchor || r.GitDir != gd {
 		t.Fatalf("the primary worktree should be the anchor, got %+v", r)
 	}
-	if r := byName["feat"]; r.Kind != RowAgent || !r.Managed || r.Dir != "/code/proj.worktrees/feat" {
-		t.Fatalf("feat should be a managed worktree agent row, got %+v", r)
+	if r := byName["feat"]; r.Kind != RowAgent || r.GitDir != gd || r.Dir != "/code/proj.worktrees/feat" {
+		t.Fatalf("feat should be a worktree agent row, got %+v", r)
 	}
 	if r := byName["spike"]; r.Kind != RowSlot || r.Dir != "/code/proj.worktrees/spike" {
 		t.Fatalf("spike should be a slot, got %+v", r)
 	}
 }
 
-func TestWorkspaceNonGitPaneDisqualifies(t *testing.T) {
-	// A session whose panes are mostly worktrees but include one non-git pane is not
-	// managed: it renders as plain agent rows, with no anchor/slot.
+func TestWorkspaceStrayPaneDoesNotSuppressRepo(t *testing.T) {
+	// A session whose panes are mostly worktrees but include one non-git pane still
+	// recognizes the repository: the stray pane never poisons it. The stray pane's agent
+	// falls through as an incidental (ungrouped) row; the repo keeps its anchor + agent.
 	const gd = "/code/proj/.git"
 	src := &fakeSource{list: []Agent{
 		{SessionID: "feat-agent", TmuxSession: "proj", TmuxWindow: "1", TmuxPane: "%2", Title: "feat", Status: StatusWorking},
@@ -119,18 +120,32 @@ func TestWorkspaceNonGitPaneDisqualifies(t *testing.T) {
 		t.Fatal(err)
 	}
 	counts := rowsByKind(rows)
-	if counts[RowAnchor] != 0 || counts[RowSlot] != 0 {
-		t.Fatalf("a non-git pane should disqualify the session (no anchor/slot), got %+v rows=%+v", counts, rows)
+	if counts[RowAnchor] != 1 {
+		t.Fatalf("the repository should still be recognized (1 anchor) despite a stray pane, got %+v rows=%+v", counts, rows)
 	}
+	byName := map[string]Row{}
 	for _, r := range rows {
-		if r.Managed {
-			t.Fatalf("a disqualified session should yield plain (unmanaged) rows, got %+v", r)
+		byName[r.Worktree] = r
+	}
+	if r := byName["feat"]; r.Kind != RowAgent || r.GitDir != gd {
+		t.Fatalf("the feat worktree agent should remain under the repo, got %+v", r)
+	}
+	// The /tmp pane is not a worktree of the repo, so it yields no worktree row; its agent
+	// surfaces as an incidental, ungrouped row (no GitDir).
+	var incidental *Row
+	for i := range rows {
+		if rows[i].SessionID == "tmp-agent" {
+			incidental = &rows[i]
 		}
+	}
+	if incidental == nil || incidental.GitDir != "" || incidental.Worktree != "" {
+		t.Fatalf("the stray-pane agent should be an incidental ungrouped row, got %+v", incidental)
 	}
 }
 
-func TestWorkspaceForeignRepoPaneDisqualifies(t *testing.T) {
-	// A session with panes resolving to two different repositories is not managed.
+func TestWorkspacePanesSpanTwoReposYieldTwoSections(t *testing.T) {
+	// A session with panes resolving to two different repositories recognizes both: each
+	// repository is an independent section, anchored by its own pane.
 	const gdA, gdB = "/code/a/.git", "/code/b/.git"
 	src := &fakeSource{list: nil}
 	panes := fakePanes{list: []PaneInfo{
@@ -151,8 +166,108 @@ func TestWorkspaceForeignRepoPaneDisqualifies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if counts := rowsByKind(rows); counts[RowAnchor] != 0 || counts[RowSlot] != 0 {
-		t.Fatalf("a two-repo session must not be managed, got %+v rows=%+v", counts, rows)
+	if counts := rowsByKind(rows); counts[RowAnchor] != 2 {
+		t.Fatalf("a two-repo session should yield two sections (2 anchors), got %+v rows=%+v", counts, rows)
+	}
+	gitDirs := map[string]bool{}
+	for _, r := range rows {
+		gitDirs[r.GitDir] = true
+	}
+	if !gitDirs[gdA] || !gitDirs[gdB] {
+		t.Fatalf("both repositories should be recognized, got gitDirs=%v", gitDirs)
+	}
+}
+
+func TestWorkspaceAgentCwdAnchorsRepo(t *testing.T) {
+	// A pane born outside the repo (a tmuxp auto-cd workflow) but whose agent reports a
+	// working directory inside it: the repository is recognized from the agent's cwd.
+	const gd = "/code/proj/.git"
+	src := &fakeSource{list: []Agent{
+		{SessionID: "feat-agent", TmuxSession: "work", TmuxWindow: "0", TmuxPane: "%1",
+			CWD: "/code/proj.worktrees/feat", Title: "feat", Status: StatusWorking},
+	}}
+	panes := fakePanes{list: []PaneInfo{
+		// The pane started in the user's home, not a worktree.
+		{Session: "work", WindowIndex: "0", PaneID: "%1", StartPath: "/home/u"},
+	}}
+	repos := &fakeRepos{
+		m: map[string]RepoInfo{
+			"/code/proj.worktrees/feat": repoAt(gd, "proj", "/code/proj.worktrees/feat", "feat", false),
+		},
+		wts: map[string][]WorktreeInfo{gd: {
+			{Path: "/code/proj", Name: "proj", IsPrimary: true},
+			{Path: "/code/proj.worktrees/feat", Name: "feat"},
+		}},
+	}
+	rows, err := NewWorkspace(src, panes, repos).Rows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]Row{}
+	for _, r := range rows {
+		byName[r.Worktree] = r
+	}
+	if r := byName["feat"]; r.Kind != RowAgent || r.GitDir != gd || r.TmuxSession != "work" {
+		t.Fatalf("the agent's cwd should anchor the repo and place its row, got %+v", r)
+	}
+	if r := byName["proj"]; r.Kind != RowAnchor {
+		t.Fatalf("the repo's primary worktree should render as the anchor, got %+v", r)
+	}
+}
+
+func TestWorkspaceNoLivePresenceNotShown(t *testing.T) {
+	// A repository with worktrees on disk but no pane and no agent resolving into it is
+	// not shown: recognition does not scan the filesystem for repositories.
+	src := &fakeSource{list: nil}
+	panes := fakePanes{list: []PaneInfo{{Session: "elsewhere", WindowIndex: "0", PaneID: "%1", StartPath: "/somewhere"}}}
+	repos := &fakeRepos{m: map[string]RepoInfo{}} // nothing resolves
+	rows, err := NewWorkspace(src, panes, repos).Rows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("a repository with no live presence should produce no rows, got %+v", rows)
+	}
+}
+
+func TestWorkspaceTwoAgentsOneWorktreeTwoRows(t *testing.T) {
+	// Two agents in the same worktree render as two rows (the worktree label repeats),
+	// rather than folding into one. Row identity is one row per agent.
+	const gd = "/code/proj/.git"
+	src := &fakeSource{list: []Agent{
+		{SessionID: "a1", TmuxSession: "be-proj-x", TmuxWindow: "1", TmuxPane: "%2", CWD: "/code/proj.worktrees/feat", Title: "a1", Status: StatusWorking},
+		{SessionID: "a2", TmuxSession: "be-proj-x", TmuxWindow: "2", TmuxPane: "%3", CWD: "/code/proj.worktrees/feat", Title: "a2", Status: StatusIdle},
+	}}
+	panes := fakePanes{list: []PaneInfo{
+		{Session: "be-proj-x", WindowIndex: "0", PaneID: "%1", StartPath: "/code/proj"},
+		{Session: "be-proj-x", WindowIndex: "1", PaneID: "%2", StartPath: "/code/proj.worktrees/feat"},
+		{Session: "be-proj-x", WindowIndex: "2", PaneID: "%3", StartPath: "/code/proj.worktrees/feat"},
+	}}
+	repos := &fakeRepos{
+		m: map[string]RepoInfo{
+			"/code/proj":                repoAt(gd, "proj", "/code/proj", "proj", true),
+			"/code/proj.worktrees/feat": repoAt(gd, "proj", "/code/proj.worktrees/feat", "feat", false),
+		},
+		wts: map[string][]WorktreeInfo{gd: {
+			{Path: "/code/proj", Name: "proj", IsPrimary: true},
+			{Path: "/code/proj.worktrees/feat", Name: "feat"},
+		}},
+	}
+	rows, err := NewWorkspace(src, panes, repos).Rows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	feat := 0
+	for _, r := range rows {
+		if r.Worktree == "feat" {
+			if r.Kind != RowAgent {
+				t.Fatalf("a feat row should be a live agent, got %+v", r)
+			}
+			feat++
+		}
+	}
+	if feat != 2 {
+		t.Fatalf("two agents in one worktree should render as two rows, got %d (rows=%+v)", feat, rows)
 	}
 }
 
@@ -172,7 +287,7 @@ func TestWorkspaceAnchorIsPrimaryRegardlessOfBranch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 1 || rows[0].Kind != RowAnchor || !rows[0].Managed {
+	if len(rows) != 1 || rows[0].Kind != RowAnchor {
 		t.Fatalf("a primary worktree on a feature branch should still be the anchor, got %+v", rows)
 	}
 }
@@ -210,7 +325,8 @@ func TestWorkspaceWindowlessWorktreeIsSlot(t *testing.T) {
 }
 
 func TestWorkspaceNoAnchorIsPlain(t *testing.T) {
-	// A session whose windows are not in any git worktree is not managed.
+	// An agent whose pane is not in any git worktree (and reports no repo cwd) is an
+	// incidental, ungrouped row.
 	src := &fakeSource{list: []Agent{
 		{SessionID: "a", TmuxSession: "plain", TmuxWindow: "0", TmuxPane: "%1", Title: "a", Status: StatusIdle},
 	}}
@@ -221,8 +337,8 @@ func TestWorkspaceNoAnchorIsPlain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 1 || rows[0].Kind != RowAgent || rows[0].Managed {
-		t.Fatalf("a non-managed session should yield one plain agent row, got %+v", rows)
+	if len(rows) != 1 || rows[0].Kind != RowAgent || rows[0].GitDir != "" {
+		t.Fatalf("a non-repo agent should yield one incidental ungrouped row, got %+v", rows)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/jbarap/birdseye/internal/agents"
+	"github.com/jbarap/birdseye/internal/providers/dir"
 	"github.com/jbarap/birdseye/internal/tmux"
 )
 
@@ -44,15 +45,15 @@ func fakeClient() *tmux.Client {
 	}, false)
 }
 
-// projFleet builds a fleet over a managed `proj` repo — a primary worktree (base, no
+// projFleet builds a fleet over a recognized `proj` repo — a primary worktree (base, no
 // agent), a `feat` worktree with a live agent, and a windowless `spike` slot — plus a
-// separate plain `misc` session holding an incidental agent in /tmp (addressed by pane
-// id). The incidental agent lives in its own session because a non-worktree pane would
-// disqualify the managed `proj` session from recognition.
+// separate `misc` session holding an incidental agent in /tmp (addressed by pane id). The
+// /tmp pane is not inside any git worktree, so its agent resolves to no repository and
+// renders as an incidental (ungrouped) row rather than under `proj`.
 func projFleet() *Fleet {
 	const gd = "/code/proj/.git"
 	src := fakeSource{list: []agents.Agent{
-		{SessionID: "feat-agent", TmuxSession: "proj", TmuxWindow: "1", TmuxPane: "%2", Title: "feat", Status: agents.StatusWorking},
+		{SessionID: "feat-agent", TmuxSession: "proj", TmuxWindow: "1", TmuxPane: "%2", CWD: "/code/proj.worktrees/feat", Title: "feat", Status: agents.StatusWorking},
 		{SessionID: "tmp-agent", TmuxSession: "misc", TmuxWindow: "0", TmuxPane: "%4", Title: "scratch", Status: agents.StatusNeedsAttention},
 	}}
 	panes := fakePanes{list: []agents.PaneInfo{
@@ -222,12 +223,80 @@ func TestRecordJSONShape(t *testing.T) {
 	s := string(b)
 	for _, key := range []string{
 		`"handle":"proj/feat"`, `"repo":"proj"`, `"worktree":"feat"`, `"branch":"feat"`,
-		`"path":"/code/proj.worktrees/feat"`, `"session":{"id":"$1","name":"proj"}`,
+		`"path":"/code/proj.worktrees/feat"`, `"agent_dir":"/code/proj.worktrees/feat"`,
+		`"session":{"id":"$1","name":"proj"}`,
 		`"window":"1"`, `"pane":"%2"`, `"status":"working"`, `"kind":"worktree"`,
 	} {
 		if !strings.Contains(s, key) {
 			t.Fatalf("record JSON missing %s\ngot %s", key, s)
 		}
+	}
+}
+
+// TestOpenRoutesToBeHome pins the write-domain rule: re-opening a worktree routes the new
+// window into the repository's deterministic `be-` home session, never into the row's prior
+// (possibly user-made) session, even when the Target names one.
+func TestOpenRoutesToBeHome(t *testing.T) {
+	const gd = "/code/proj/.git"
+	var calls []string
+	runner := func(args ...string) (string, error) {
+		calls = append(calls, strings.Join(args, " "))
+		return "", nil
+	}
+	repos := fakeRepos{m: map[string]agents.RepoInfo{
+		"/code/proj.worktrees/spike": repoAt(gd, "proj", "/code/proj.worktrees/spike", "spike", false),
+	}}
+	f := New(tmux.NewWithRunner(runner, false), "claude", fakeSource{}, fakePanes{}, repos)
+
+	// The Target carries a user session; Open must ignore it and use the be- home.
+	if _, err := f.Open(Target{Handle: "proj/spike", Dir: "/code/proj.worktrees/spike", Session: "my-user-session"}); err != nil {
+		t.Fatal(err)
+	}
+	home := dir.HomeSession(gd)
+	routed := false
+	for _, c := range calls {
+		if strings.HasPrefix(c, "new-window") && strings.Contains(c, "-t "+home+":") {
+			routed = true
+		}
+		if strings.Contains(c, "my-user-session") {
+			t.Fatalf("Open must not touch the user session, call=%q", c)
+		}
+	}
+	if !routed {
+		t.Fatalf("the new window should be created in the be- home %q, calls=%v", home, calls)
+	}
+}
+
+// TestDeleteRefusedWithCoTenant pins the sole-occupant guard at the fleet boundary: when a
+// worktree hosts two agents, Delete refuses (removing nothing) so the worktree is never
+// removed out from under a co-located agent.
+func TestDeleteRefusedWithCoTenant(t *testing.T) {
+	const gd = "/code/proj/.git"
+	src := fakeSource{list: []agents.Agent{
+		{SessionID: "a1", TmuxSession: "proj", TmuxWindow: "1", TmuxPane: "%2", CWD: "/code/proj.worktrees/feat", Title: "a1", Status: agents.StatusWorking},
+		{SessionID: "a2", TmuxSession: "proj", TmuxWindow: "2", TmuxPane: "%3", CWD: "/code/proj.worktrees/feat", Title: "a2", Status: agents.StatusIdle},
+	}}
+	panes := fakePanes{list: []agents.PaneInfo{
+		{Session: "proj", WindowIndex: "0", PaneID: "%1", StartPath: "/code/proj"},
+		{Session: "proj", WindowIndex: "1", PaneID: "%2", StartPath: "/code/proj.worktrees/feat"},
+		{Session: "proj", WindowIndex: "2", PaneID: "%3", StartPath: "/code/proj.worktrees/feat"},
+	}}
+	repos := fakeRepos{
+		m: map[string]agents.RepoInfo{
+			"/code/proj":                repoAt(gd, "proj", "/code/proj", "proj", true),
+			"/code/proj.worktrees/feat": repoAt(gd, "proj", "/code/proj.worktrees/feat", "feat", false),
+		},
+		wts: map[string][]agents.WorktreeInfo{gd: {
+			{Path: "/code/proj", Name: "proj", Branch: "main", IsPrimary: true},
+			{Path: "/code/proj.worktrees/feat", Name: "feat", Branch: "feat"},
+		}},
+	}
+	f := New(fakeClient(), "claude", src, panes, repos)
+
+	t1 := Target{Handle: "proj/feat", Repo: "proj", Worktree: "feat", Dir: "/code/proj.worktrees/feat", GitDir: gd, Pane: "%2"}
+	err := f.Delete(t1, false)
+	if err == nil || !strings.Contains(err.Error(), "shares its worktree") {
+		t.Fatalf("delete with a co-tenant should be refused, got err=%v", err)
 	}
 }
 
