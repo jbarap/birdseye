@@ -58,6 +58,120 @@ func TestStatusForNotificationMessage(t *testing.T) {
 // alwaysAlive is a liveness stub that keeps every record (treats all pids live).
 func alwaysAlive(int) bool { return true }
 
+// TestClaudeTitleLevel pins the title glyph -> level map: any Braille frame is working
+// (the spinner animates across the class), the sparkle is idle, and anything else yields
+// no signal so the caller falls back to the hook status.
+func TestClaudeTitleLevel(t *testing.T) {
+	cases := []struct {
+		title     string
+		want      Status
+		haveLevel bool
+	}{
+		{"⠂ Working on the thing", StatusWorking, true},  // U+2802
+		{"⠐ another spinner frame", StatusWorking, true}, // U+2810, a different frame
+		{"⣿ full braille", StatusWorking, true},          // U+28FF, top of range
+		{"✳ Idle at the prompt", StatusIdle, true},       // U+2733
+		{"  ✳ leading space trimmed", StatusIdle, true},
+		{"grotto", "", false}, // a plain shell title
+		{"", "", false},
+		{"~/projects/birdseye", "", false},
+	}
+	for _, c := range cases {
+		got, ok := claudeTitleLevel(c.title)
+		if got != c.want || ok != c.haveLevel {
+			t.Errorf("claudeTitleLevel(%q) = (%q,%v), want (%q,%v)", c.title, got, ok, c.want, c.haveLevel)
+		}
+	}
+}
+
+// TestReconcilePrecedence walks the status precedence table: done wins, needs-attention is
+// a latch cleared only by a working level, and otherwise the live level overrides
+// working/idle with a fallback to the hook status when there is no signal.
+func TestReconcilePrecedence(t *testing.T) {
+	cases := []struct {
+		name      string
+		hook      Status
+		level     Status
+		haveLevel bool
+		want      Status
+	}{
+		{"done wins over working level", StatusDone, StatusWorking, true, StatusDone},
+		{"attention cleared by working level", StatusNeedsAttention, StatusWorking, true, StatusWorking},
+		{"attention held by idle level", StatusNeedsAttention, StatusIdle, true, StatusNeedsAttention},
+		{"attention held with no level", StatusNeedsAttention, "", false, StatusNeedsAttention},
+		{"stale working corrected to idle", StatusWorking, StatusIdle, true, StatusIdle},
+		{"working stays working", StatusWorking, StatusWorking, true, StatusWorking},
+		{"idle promoted by working level", StatusIdle, StatusWorking, true, StatusWorking},
+		{"working with no level falls back", StatusWorking, "", false, StatusWorking},
+		{"unknown resolved by level", StatusUnknown, StatusWorking, true, StatusWorking},
+		{"unknown with no level stays unknown", StatusUnknown, "", false, StatusUnknown},
+	}
+	for _, c := range cases {
+		if got := reconcile(c.hook, c.level, c.haveLevel); got != c.want {
+			t.Errorf("%s: reconcile(%q,%q,%v) = %q, want %q", c.name, c.hook, c.level, c.haveLevel, got, c.want)
+		}
+	}
+}
+
+// TestAgentsCorrectsLevelFromTitle exercises the end-to-end read path: a stale hook status
+// is corrected by the live pane title, the attention latch is held or cleared by the
+// title, a pane with no title keeps its hook status, and the title source is read once per
+// refresh (batched), not once per agent.
+func TestAgentsCorrectsLevelFromTitle(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	for _, r := range []record{
+		{SessionID: "stale-work", PID: 1, TmuxSession: "s", TmuxPane: "%1", Title: "a", Status: StatusWorking, Updated: now},
+		{SessionID: "still-work", PID: 1, TmuxSession: "s", TmuxPane: "%2", Title: "b", Status: StatusWorking, Updated: now},
+		{SessionID: "attn-moved", PID: 1, TmuxSession: "s", TmuxPane: "%3", Title: "c", Status: StatusNeedsAttention, Updated: now},
+		{SessionID: "attn-held", PID: 1, TmuxSession: "s", TmuxPane: "%4", Title: "d", Status: StatusNeedsAttention, Updated: now},
+		{SessionID: "no-title", PID: 1, TmuxSession: "s", TmuxPane: "%9", Title: "e", Status: StatusWorking, Updated: now},
+	} {
+		if err := writeRecord(dir, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	calls := 0
+	titles := map[string]string{
+		"%1": "✳ done now",        // working record, idle title -> idle
+		"%2": "⠂ still going",     // working record, spinner title -> working
+		"%3": "⠂ resumed",         // attention record, spinner title -> working (latch cleared)
+		"%4": "✳ awaiting answer", // attention record, idle title -> needs-attention (held)
+		// %9 has no entry -> no signal -> keep hook status
+	}
+	s := &ClaudeSource{
+		dir:      dir,
+		alive:    alwaysAlive,
+		detector: titleLevelDetector{},
+		titles:   func() (map[string]string, error) { calls++; return titles, nil },
+	}
+
+	got, err := s.Agents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("title source should be read once per refresh, got %d calls", calls)
+	}
+	byID := map[string]Status{}
+	for _, a := range got {
+		byID[a.SessionID] = a.Status
+	}
+	want := map[string]Status{
+		"stale-work": StatusIdle,
+		"still-work": StatusWorking,
+		"attn-moved": StatusWorking,
+		"attn-held":  StatusNeedsAttention,
+		"no-title":   StatusWorking,
+	}
+	for id, w := range want {
+		if byID[id] != w {
+			t.Errorf("%s: status = %q, want %q", id, byID[id], w)
+		}
+	}
+}
+
 func TestProcessAlive(t *testing.T) {
 	if !processAlive(os.Getpid()) {
 		t.Fatal("the current process should report alive")

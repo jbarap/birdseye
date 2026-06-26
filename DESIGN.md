@@ -134,7 +134,8 @@ never require the user to adopt the whole. Each primitive stands alone: a user w
 worktree tool, or only the agent status view, gets exactly that. The tool layers in two tiers:
 
 - **Primitives.** Standalone, self-contained operations (`be worktree`, session listing/creation,
-  hook-driven agent status). Usable on their own; they know nothing about orchestration.
+  agent status from hooks plus the live OSC-title level signal). Usable on their own; they know
+  nothing about orchestration.
 - **Orchestration.** Pure *composition* of those primitives plus a recognition step. It owns no
   persistent state — every refresh it re-derives what it knows from tmux + the filesystem + hooks,
   the way agent liveness is already re-derived rather than tracked.

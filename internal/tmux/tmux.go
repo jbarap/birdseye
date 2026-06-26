@@ -197,6 +197,32 @@ func (c *Client) ListPanes() ([]Pane, error) {
 	return panes, nil
 }
 
+// PaneTitles returns every pane's current OSC title keyed by pane id, via a single
+// list-panes query. The title is the out-of-band channel an agent uses to broadcast
+// state (e.g. Claude's spinner glyph while working, a sparkle when idle); reading it
+// lets the status layer correct a stale hook-written working/idle level. A missing
+// server, or any query failure, yields an empty map (not an error), so a refresh
+// degrades to hook-only status rather than failing.
+func (c *Client) PaneTitles() (map[string]string, error) {
+	const format = "#{pane_id}\t#{pane_title}"
+	out, err := c.run("list-panes", "-a", "-F", format)
+	if err != nil {
+		return map[string]string{}, nil
+	}
+	titles := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line == "" {
+			continue
+		}
+		id, title, _ := strings.Cut(line, "\t")
+		if id == "" {
+			continue
+		}
+		titles[id] = title
+	}
+	return titles, nil
+}
+
 // NewWindow creates a detached window in session rooted at dir and returns its window
 // id (e.g. "@7"). name sets the window name (e.g. the worktree it holds) so it reads as
 // the work rather than the running process; empty leaves tmux's default. Naming it also

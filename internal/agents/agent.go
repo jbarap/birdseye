@@ -1,6 +1,9 @@
-// Package agents provides the Agent abstraction behind `be agents`, plus a
-// Claude Code implementation whose status comes from Claude Code hooks rather
-// than from scraping panes.
+// Package agents provides the Agent abstraction behind `be agents`, plus a Claude
+// Code implementation with a layered status model: hooks supply identity, existence
+// (process liveness), needs-attention, and done, while the working/idle level is read
+// fresh from the agent pane's current OSC title so it reflects the terminal now and
+// self-heals when no transition hook fires (an interrupt, a crash, an in-terminal
+// answer). The title is a deliberate state channel, not scraped TUI layout.
 package agents
 
 import "time"

@@ -197,6 +197,38 @@ func TestListPanesNoServerIsEmpty(t *testing.T) {
 	}
 }
 
+func TestPaneTitlesParses(t *testing.T) {
+	rec := newRecorder()
+	rec.replies["list-panes -a -F #{pane_id}\t#{pane_title}"] =
+		"%1\t\xe2\xa0\x82 Working on it\n%2\t\xe2\x9c\xb3 Idle here\n%3\t\n"
+	c := NewWithRunner(rec.run, false)
+
+	titles, err := c.PaneTitles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := titles["%1"]; got != "⠂ Working on it" {
+		t.Fatalf("title[%%1] = %q", got)
+	}
+	if got := titles["%2"]; got != "✳ Idle here" {
+		t.Fatalf("title[%%2] = %q", got)
+	}
+	// A pane with an empty title is still present, mapped to "".
+	if got, ok := titles["%3"]; !ok || got != "" {
+		t.Fatalf("title[%%3] = %q ok=%v, want empty present", got, ok)
+	}
+}
+
+func TestPaneTitlesNoServerIsEmptyMap(t *testing.T) {
+	rec := newRecorder()
+	rec.errs["list-panes -a -F #{pane_id}\t#{pane_title}"] = errors.New("no server")
+	c := NewWithRunner(rec.run, false)
+	titles, err := c.PaneTitles()
+	if err != nil || titles == nil || len(titles) != 0 {
+		t.Fatalf("no server should yield an empty (non-nil) map, got %+v err=%v", titles, err)
+	}
+}
+
 func TestLifecycleOps(t *testing.T) {
 	rec := newRecorder()
 	rec.replies["new-window -d -P -F #{window_id} -t proj: -c /tmp/wt -n wt"] = "@7\n"

@@ -18,6 +18,10 @@ birdseye draws on ideas/visuals/concepts from these projects:
 
 - [sesh](https://github.com/joshmedeski/sesh) — smart tmux session manager and picker.
 - [tmux-agent-status](https://github.com/samleeney/tmux-agent-status) — surfacing AI agent status in tmux.
+- [herdr](https://github.com/ogulcancelik/herdr) - agent multiplexer; its OSC-title approach to
+  reading agent state improved birdseye's existing hook-based status detection.
+- [agentapi](https://github.com/coder/agentapi) - HTTP API over terminal agents; its
+  terminal-activity diffing (quiescent vs changing) informs birdseye's title-less status fallback.
 - [superset](https://github.com/superset-sh/superset) — a workspace over agent sessions.
 - [tsm](https://github.com/adibhanna/tsm) — terminal session manager; its minimal, titled panels
   shaped birdseye's panel chrome.
@@ -356,6 +360,13 @@ event→status mapping:
 `Notification` is split by its message: Claude's periodic idle nudge maps to **idle**, while a
 permission/approval prompt — or any message birdseye doesn't recognize — maps to
 **needs-attention**, so an unfamiliar notification still surfaces to you.
+
+The **working ↔ idle** distinction above is then corrected on every refresh from the agent
+pane's current terminal title, which Claude updates live (a spinner glyph while working, a
+sparkle when idle). Hooks are edge-triggered and can go stale - "working" lingers after an Esc
+interrupt that fires no `Stop` - so the live title is the authority for working/idle, while
+hooks remain the authority for needs-attention and done. When no title is readable, the
+hook-written status stands.
 
 Status not refreshed within `agents.stale_after` is shown as **unknown**.
 
