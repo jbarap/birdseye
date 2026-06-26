@@ -2157,6 +2157,13 @@ func (m model) renderPreview(list string) string {
 	// padding, so set Width(w+2) to keep the text area exactly w. Otherwise
 	// each w-wide line wraps, inflating the frame height past the terminal.
 	box := frameStyle.Width(w + 2).Height(inner).Render(strings.Join(lines, "\n"))
+	// Hard ceiling: never let the preview render taller than the list beside it.
+	// Height() only pads up to a minimum — it does not clip — so a line that still
+	// wraps for any reason (an exotic grapheme, a stray control byte tmux passed
+	// through) would push the body past m.height and scroll the titles off the top.
+	// MaxHeight clips it, keeping the invariant "preview is never taller than the
+	// list" no matter what the captured pane contains.
+	box = lipgloss.NewStyle().MaxHeight(lipgloss.Height(list)).Render(box)
 	return panelTitle(box, "preview", m.accent)
 }
 
@@ -2267,15 +2274,18 @@ func padRight(s string, n int) string {
 	return s + strings.Repeat(" ", n-len(r))
 }
 
+// truncate shortens s to at most n display cells, appending an ellipsis when it
+// cuts. It is width- and ANSI-aware: a wide glyph (CJK, emoji, nerd-font icon)
+// counts as the two cells it actually occupies and escape sequences count as
+// zero, so the result never renders wider than n. A rune-count truncation would
+// undercount wide glyphs, let a line overflow a fixed-width frame, wrap, and
+// silently add a row — which (in the preview pane) inflates the frame past the
+// terminal height and scrolls the section-bar titles off the top.
 func truncate(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
+	if n <= 0 {
+		return ""
 	}
-	if n <= 1 {
-		return string(r[:max(n, 0)])
-	}
-	return string(r[:n-1]) + "…"
+	return ansi.Truncate(s, n, "…")
 }
 
 func clamp(v, lo, hi int) int {

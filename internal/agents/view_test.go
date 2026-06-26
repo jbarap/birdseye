@@ -389,20 +389,28 @@ func TestViewFitsTerminalHeightWithTallPreview(t *testing.T) {
 	// m.height; otherwise the alt-screen scrolls and the agent list (top) is
 	// pushed out of view. Lines are long on purpose: if they wrap inside the
 	// preview frame they inflate its height past the terminal.
+	// ASCII lines: cell width equals rune count, so even a naive truncation keeps
+	// them in bounds.
 	long := strings.Repeat("the quick brown fox jumps over the lazy dog ", 6)
-	var sb strings.Builder
-	for i := 0; i < 200; i++ {
-		sb.WriteString(long)
-		sb.WriteByte('\n')
-	}
-	prev := &fakePreviewer{out: map[string]string{"a": sb.String(), "b": sb.String()}}
+	// Wide-glyph lines: each rune renders as two cells, so a rune-count truncation
+	// undercounts the width by half, the line overflows the frame, wraps, and
+	// inflates the preview past the terminal — the bug this guards against.
+	wide := strings.Repeat("広い画面の日本語テキスト🚀🔥✨ ", 12)
+	for name, body := range map[string]string{"ascii": long, "wide": wide} {
+		var sb strings.Builder
+		for i := 0; i < 200; i++ {
+			sb.WriteString(body)
+			sb.WriteByte('\n')
+		}
+		prev := &fakePreviewer{out: map[string]string{"a": sb.String(), "b": sb.String()}}
 
-	for _, dim := range []struct{ w, h int }{{120, 24}, {160, 30}, {100, 40}} {
-		m := mustModel(t, agentsN(2), prev, DefaultKeymap())
-		m.width, m.height = dim.w, dim.h
-		if h := lipgloss.Height(m.View()); h > m.height {
-			t.Fatalf("at %dx%d: view height %d exceeds terminal height %d (would scroll list out of view)",
-				dim.w, dim.h, h, m.height)
+		for _, dim := range []struct{ w, h int }{{120, 24}, {160, 30}, {100, 40}} {
+			m := mustModel(t, agentsN(2), prev, DefaultKeymap())
+			m.width, m.height = dim.w, dim.h
+			if h := lipgloss.Height(m.View()); h > m.height {
+				t.Fatalf("%s at %dx%d: view height %d exceeds terminal height %d (would scroll list out of view)",
+					name, dim.w, dim.h, h, m.height)
+			}
 		}
 	}
 }
