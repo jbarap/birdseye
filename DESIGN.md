@@ -51,6 +51,11 @@ palettes are context-scoped. Only the `Accent` is cross-cutting.
 - **Color:** `theme.Accent` (magenta).
 - **Emphasis:** where a full row can be highlighted (agents view), the selected row also gets a
   `RowHL` background spanning its width, so the eye can ride from the left edge to the content.
+- **Mirror:** in the dual-lens dash, the unfocused lens echoes the focused selection with
+  `theme.MirrorGlyph` (`•`, a filled bullet) in the accent, and **without** the `RowHL`
+  background. It is deliberately not the `CursorGlyph` arrow: only the lens you are in owns the
+  pointer, so the echo reads as a passive locator, not a rival cursor. Focused and mirror stay
+  distinct by glyph shape (arrow vs bullet) and the focused row's `RowHL` bar, not by color.
 
 ## Panels
 
@@ -116,8 +121,8 @@ The dash is two always-visible lenses over the same agents, plus the preview:
 
 Exactly one lens holds focus; `h`/`l` switch between them and the focused lens's title takes
 the accent (the other reads gray). The focused selection drives the preview and shows in the
-other lens with a dimmer **mirror** of the cursor glyph, so the same agent is visibly linked
-across both. Folding (`tab`) works in **both** lenses and stays consistent: a Workspaces
+other lens with an accent **mirror** bullet (`theme.MirrorGlyph`, see Selection), so the same
+agent is visibly linked across both without the unfocused lens sprouting a rival cursor. Folding (`tab`) works in **both** lenses and stays consistent: a Workspaces
 section collapses its rows, an Agents band collapses its agents - each to a navigable header
 stand-in carrying the same `▾`/`▸` glyph and a hidden count. An empty band has nothing to
 collapse, so it is never foldable. Below a width threshold only the focused lens shows (still

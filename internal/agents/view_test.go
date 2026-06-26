@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/jbarap/birdseye/internal/providers/dir"
+	"github.com/jbarap/birdseye/internal/theme"
 )
 
 // stripANSI drops SGR escapes so a test can assert on the plain text layout (column
@@ -894,6 +895,27 @@ func TestLensFocusSwitchCarriesCounterpart(t *testing.T) {
 	}
 	if r, _ := m.currentRow(); r.SessionID != "c" {
 		t.Fatalf("the linked selection should carry c back to Workspaces, got %s", r.SessionID)
+	}
+}
+
+// TestMirrorUsesBulletNotASecondCursor pins the dual-lens highlight hierarchy: the focused
+// lens marks its selection with the cursor arrow, and the unfocused lens echoes the same
+// agent with the mirror bullet - not a second cursor arrow. Without this the mirror could
+// drift back to reusing CursorGlyph and read as a rival pointer.
+func TestMirrorUsesBulletNotASecondCursor(t *testing.T) {
+	m := mustModel(t, agentsN(3), nil, DefaultKeymap()) // focus defaults to Workspaces
+	m.width, m.height = 200, 30                         // wide → both lenses render
+	if !m.dualLens() {
+		t.Fatalf("precondition: 200 cols should be dual-lens")
+	}
+	m = send(m, key("j")) // select an agent (b) so it has a counterpart to mirror
+
+	l := m.renderLenses()
+	if n := strings.Count(l, theme.CursorGlyph); n != 1 {
+		t.Fatalf("exactly one cursor arrow expected (the focused selection), got %d:\n%s", n, l)
+	}
+	if !strings.Contains(l, theme.MirrorGlyph) {
+		t.Fatalf("unfocused lens should echo the selection with the mirror bullet:\n%s", l)
 	}
 }
 

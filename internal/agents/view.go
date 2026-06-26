@@ -247,11 +247,12 @@ var (
 	rowHL                = lipColor(theme.RowHL)
 )
 
-// cursorGlyphStyle renders the cursor indicator in the accent color; it takes the
-// model's accent so the cursor and the panel titles always match and stay
-// user-configurable.
-func cursorGlyphStyle(accent lipgloss.Color) lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(accent)
+// cursorGlyphStyle renders a gutter selection glyph in the model's accent (so the cursor
+// and the panel titles always match and stay user-configurable). Both the focused cursor
+// arrow and the unfocused mirror bullet take the accent; they stay distinct by glyph shape
+// and the focused row's RowHL bar, not by color.
+func cursorGlyphStyle(color lipgloss.Color) lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(color)
 }
 
 // panelTitle rewrites a frame's top border so the title sits embedded in it,
@@ -1939,14 +1940,14 @@ func (m model) bandHasAgent(b agentBand, id string) bool {
 }
 
 // barGutter renders the cursor-column cell over the section-bar background: the accent
-// cursor glyph on the focused selection, a faint accent glyph on its mirror, else a blank
+// cursor glyph on the focused selection, the accent mirror bullet on its mirror, else a blank
 // cell - so a section bar's distinct background runs unbroken across the gutter.
 func (m model) barGutter(hl hlState) string {
 	switch hl {
 	case hlCursor:
 		return cursorGlyphStyle(m.accent).Background(lipColor(theme.SessionBg)).Render(theme.CursorGlyph + " ")
 	case hlMirror:
-		return cursorGlyphStyle(m.accent).Faint(true).Background(lipColor(theme.SessionBg)).Render(theme.CursorGlyph + " ")
+		return cursorGlyphStyle(m.accent).Background(lipColor(theme.SessionBg)).Render(theme.MirrorGlyph + " ")
 	default:
 		return sessionBarStyle.Render(strings.Repeat(" ", cursorColWidth))
 	}
@@ -2012,14 +2013,14 @@ func (m model) agentLeaf(r Row, w int, selected bool) string {
 	return gutterSt.Render(gutter) + nameSt.Render(title)
 }
 
-// cursorCol is the leftmost column: the accent cursor glyph on the focused selection, a
-// faint accent glyph on its mirror in the other lens, else blank.
+// cursorCol is the leftmost column: the accent cursor glyph on the focused selection, the
+// accent mirror bullet on its mirror in the other lens, else blank.
 func (m model) cursorCol(hl hlState) string {
 	switch hl {
 	case hlCursor:
 		return cursorGlyphStyle(m.accent).Render(theme.CursorGlyph + " ")
 	case hlMirror:
-		return cursorGlyphStyle(m.accent).Faint(true).Render(theme.CursorGlyph + " ")
+		return cursorGlyphStyle(m.accent).Render(theme.MirrorGlyph + " ")
 	default:
 		return strings.Repeat(" ", cursorColWidth)
 	}

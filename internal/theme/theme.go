@@ -44,6 +44,12 @@ var (
 // picker's fzf --pointer. A nerd-font arrow (U+F0055).
 const CursorGlyph = "\U000f0055" // 󰁕
 
+// MirrorGlyph marks the dual-lens mirror: the row in the unfocused lens that echoes
+// the focused lens's selection. A filled bullet (plain Unicode, no nerd font needed) in
+// the Accent color - deliberately not the CursorGlyph arrow, so the unfocused echo reads
+// as a passive locator rather than a second pointer competing for focus.
+const MirrorGlyph = "•" // •
+
 const reset = "\x1b[0m"
 
 // Truecolor reports whether the terminal advertises 24-bit color via COLORTERM,
