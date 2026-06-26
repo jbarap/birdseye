@@ -405,37 +405,6 @@ terminal size.
 - **THEN** statuses, session bars, and the selected row remain distinguishable without relying
   solely on color
 
-### Requirement: Needs-attention ordering across groups
-
-The agents view SHALL order sessions by their most-urgent member so that triage stays fast: the
-session containing the highest-priority agent SHALL appear first, using the status ranking that
-surfaces needs-attention before working, idle, done, and unknown. Within a plain session, agents
-SHALL be ordered by that same status ranking (then by name) regardless of which window each
-occupies; agents that share a window SHALL NOT be forced to be adjacent. Within a **managed
-repo**, the `⌂ base` anchor row SHALL be pinned first as the repo's head, the repo's worktree rows
-SHALL follow ordered by status rank (then by name) so a blocked worktree still floats up among its
-siblings, and worktree rows in the `◌ slot` state (no agent) SHALL sort last. Ungrouped agents
-SHALL sort among the sessions by their own most-urgent member.
-
-#### Scenario: Most-urgent group floats to top
-
-- **WHEN** one session has an agent that needs attention and another session's agents are all idle
-  or done
-- **THEN** the needs-attention agent's session is rendered above the other session
-
-#### Scenario: Ordering within a session
-
-- **WHEN** a session contains agents in differing statuses across one or more windows
-- **THEN** the agents are ordered by status rank, needs-attention first, regardless of window, and
-  agents sharing a window are not specially grouped together
-
-#### Scenario: Anchor pinned and slots last in a managed repo
-
-- **WHEN** a managed repo renders with an anchor, worktrees with agents in differing statuses, and
-  empty worktree slots
-- **THEN** the `⌂ base` anchor row appears first, worktree rows follow by status rank (most-urgent
-  first), and `◌ slot` rows appear last
-
 ### Requirement: Foldable sections
 
 The agents view SHALL let the user collapse and expand a session's section through a rebindable
@@ -580,8 +549,11 @@ cache lookup); git SHALL be consulted only on a cache miss or when performing an
 
 The agents view SHALL render each recognized repository as a section whose bar carries a repository
 indicator combining the worktree glyph and the worktree count (so the indicator does not rely on
-color alone), and the bar SHALL appear even when the repository has no live agents. Beneath it the
-view SHALL render an `⌂ base` anchor row for the repository's primary worktree and one row per
+color alone), and the bar SHALL appear even when the repository has no live agents. The section bar
+SHALL additionally carry a most-urgent-status summary badge for the repository's live agents,
+combining a status glyph and a count so urgency is readable without moving the section and without
+relying on color alone; a repository with no live agents SHALL render no status badge. Beneath the bar
+the view SHALL render an `⌂ base` anchor row for the repository's primary worktree and one row per
 worktree in the repository's git worktree set, enumerated from the **git worktree set** rather than
 only from open tmux windows: a worktree with no open tmux window SHALL still render as an `◌ slot`
 spawn target.
@@ -601,6 +573,17 @@ shared theme package.
 - **WHEN** a recognized repository renders
 - **THEN** its section bar shows the worktree glyph and the worktree count, and the bar appears even
   if the repository currently has no live agents
+
+#### Scenario: Repository section bar carries a most-urgent-status badge
+
+- **WHEN** a recognized repository has live agents whose most-urgent status is, e.g., "working"
+- **THEN** its section bar additionally shows a working glyph with a count, paired so the meaning
+  does not rely on color alone, without changing the section's position
+
+#### Scenario: Repository with no live agents shows no status badge
+
+- **WHEN** a recognized repository has no live agents
+- **THEN** its section bar shows the worktree indicator but no status badge
 
 #### Scenario: Anchor row reflects the primary worktree
 
