@@ -130,6 +130,66 @@ func rowModel(km Keymap, ags ...Agent) (model, error) {
 	return m, err
 }
 
+// muterRows is a RowSource that also persists mute intent in memory and stamps it back onto
+// the rows it yields — a tiny stand-in for the ClaudeSource mute store, so the `m` toggle can
+// be driven through the model end to end.
+type muterRows struct {
+	rows  []Row
+	muted map[string]bool
+}
+
+func (s *muterRows) Rows() ([]Row, error) {
+	out := make([]Row, len(s.rows))
+	copy(out, s.rows)
+	for i := range out {
+		out[i].Muted = s.muted[out[i].muteKey()]
+	}
+	return out, nil
+}
+
+func (s *muterRows) SetMuted(key string, muted bool) error {
+	if s.muted == nil {
+		s.muted = map[string]bool{}
+	}
+	if muted {
+		s.muted[key] = true
+	} else {
+		delete(s.muted, key)
+	}
+	return nil
+}
+
+// TestMuteToggleMovesAgentToMutedBand drives the `m` key: it persists a mute for the selected
+// agent's location through the Muter seam, the reload restamps it, and the agent lands in the
+// MUTED band; pressing `m` again clears it.
+func TestMuteToggleMovesAgentToMutedBand(t *testing.T) {
+	src := &muterRows{rows: []Row{
+		{Kind: RowAgent, SessionID: "a", TmuxSession: "a", TmuxPane: "%1", Title: "a", Status: StatusWorking},
+	}}
+	m, err := newModel(src, nil, DefaultKeymap(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.focus = lensAgents
+	m.width, m.height = 200, 30
+
+	m = send(m, key("m"))
+	if !src.muted["pane:%1"] {
+		t.Fatalf("pressing m should persist a mute for the agent's location, store=%v", src.muted)
+	}
+	if got := agentsByBand(m.agentRows)[bandMuted]; len(got) != 1 || got[0].SessionID != "a" {
+		t.Fatalf("muted agent should be in the MUTED band, got %+v", got)
+	}
+
+	m = send(m, key("m"))
+	if src.muted["pane:%1"] {
+		t.Fatalf("pressing m again should clear the mute, store=%v", src.muted)
+	}
+	if got := agentsByBand(m.agentRows)[bandMuted]; len(got) != 0 {
+		t.Fatalf("MUTED band should be empty after unmuting, got %+v", got)
+	}
+}
+
 func TestNavigationVimMotions(t *testing.T) {
 	m := mustModel(t, agentsN(5), nil, DefaultKeymap())
 
@@ -617,7 +677,7 @@ func TestGroupAgentsFlatSessionOrderAndWindowLabels(t *testing.T) {
 		ag("api-server", "1", "write tests", StatusWorking),
 		ag("api-server", "1", "refactor auth", StatusNeedsAttention),
 		ag("api-server", "2", "migrate db", StatusIdle),
-		ag("web", "0", "ship landing", StatusDone),
+		ag("web", "0", "ship landing", StatusIdle),
 	}
 	ordered, items := groupRows(rowsOf(in...))
 
@@ -680,7 +740,7 @@ func TestGroupAgentsUsesWindowName(t *testing.T) {
 
 func TestGroupAgentsUngroupedBucket(t *testing.T) {
 	in := []Agent{
-		ag("api", "0", "real one", StatusDone),
+		ag("api", "0", "real one", StatusIdle),
 		{SessionID: "loose-id", Title: "loose", Status: StatusWorking}, // no tmux session
 	}
 	ordered, items := groupRows(rowsOf(in...))
@@ -729,20 +789,23 @@ func TestGroupWithinSectionAnchorFirstSlotsLast(t *testing.T) {
 	}
 }
 
-// TestAgentsByBand checks the Agents-lens projection: agents bucket by status band, only
-// RowAgent rows appear, and within a band the most-recently-changed agent comes first.
+// TestAgentsByBand checks the Agents-lens projection: agents bucket by band, only RowAgent
+// rows appear, a muted agent lands in MUTED regardless of its status, and within a band the
+// most-recently-changed agent comes first.
 func TestAgentsByBand(t *testing.T) {
 	t0 := time.Now()
 	mk := func(title string, st Status, ageSec int) Row {
 		return Row{Kind: RowAgent, SessionID: title, Title: title, Status: st, Updated: t0.Add(-time.Duration(ageSec) * time.Second)}
 	}
+	muted := mk("parked", StatusWorking, 0)
+	muted.Muted = true
 	in := []Row{
 		mk("w-old", StatusWorking, 30),
 		mk("w-new", StatusWorking, 1),
 		mk("blocked", StatusNeedsAttention, 10),
 		mk("quiet", StatusIdle, 5),
-		mk("stale", StatusUnknown, 2), // unknown reads as quiet → IDLE band
-		mk("finished", StatusDone, 0),
+		mk("stale", StatusUnknown, 2),       // unknown reads as quiet → IDLE band
+		muted,                               // working, but muted → MUTED band
 		{Kind: RowAnchor, Worktree: "main"}, // structural rows are excluded
 		{Kind: RowSlot, Worktree: "spike"},
 	}
@@ -765,8 +828,8 @@ func TestAgentsByBand(t *testing.T) {
 		// stale (2s) is newer than quiet (5s); unknown lands in IDLE.
 		t.Fatalf("IDLE = %v", got)
 	}
-	if got := titles(bandDone); !reflect.DeepEqual(got, []string{"finished"}) {
-		t.Fatalf("DONE = %v", got)
+	if got := titles(bandMuted); !reflect.DeepEqual(got, []string{"parked"}) {
+		t.Fatalf("MUTED should hold the muted agent regardless of status, got %v", got)
 	}
 }
 
@@ -830,6 +893,59 @@ func TestSectionBadgeAndIncidentalNote(t *testing.T) {
 		if items2[i].kind == kindSession && items2[i].badgeStatus != "" {
 			t.Fatalf("a no-agent section should have no badge, got %q", items2[i].badgeStatus)
 		}
+	}
+}
+
+// TestSectionSummaryOnlyWhenFolded: a section bar's right-side summary (urgency badge +
+// worktree count) is shown only when the section is folded, where the rows are hidden.
+// Expanded, the rows speak for themselves so the bar carries no summary.
+func TestSectionSummaryOnlyWhenFolded(t *testing.T) {
+	rows := []Row{
+		{Kind: RowAnchor, SessionID: "anchor", TmuxSession: "proj", Repo: "proj", GitDir: "/g", Worktree: "main", IsPrimary: true},
+		{Kind: RowAgent, SessionID: "a", TmuxSession: "proj", Repo: "proj", GitDir: "/g", Worktree: "feat", Title: "x", Status: StatusNeedsAttention, TmuxWindow: "1", TmuxPane: "%1"},
+	}
+	m, err := newModel(fixedRows{rows}, nil, DefaultKeymap(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.width, m.height = 200, 30
+	m.focus = lensWorkspaces
+
+	// The managed section header is the one line carrying the worktree-source glyph.
+	header := func() string {
+		for _, line := range strings.Split(stripANSI(m.renderRows()), "\n") {
+			if strings.Contains(line, managedGlyph) {
+				return line
+			}
+		}
+		return ""
+	}
+	badge := statusGlyph[StatusNeedsAttention]
+
+	if exp := header(); strings.Contains(exp, "wt") || strings.Contains(exp, badge) {
+		t.Fatalf("expanded section bar should carry no badge/wt summary, got %q", exp)
+	}
+	m.folded["/g"] = true
+	if fol := header(); !strings.Contains(fol, "wt") || !strings.Contains(fol, badge) {
+		t.Fatalf("folded section bar should carry the badge + wt summary, got %q", fol)
+	}
+}
+
+// TestSectionBadgeExcludesMuted: a muted agent does not raise its section's most-urgent
+// badge, so a section whose only live agent is muted shows no badge at all.
+func TestSectionBadgeExcludesMuted(t *testing.T) {
+	// A muted needs-attention agent alongside an unmuted working one: the badge reflects the
+	// working agent, not the louder-but-muted one.
+	st, n := sectionBadge([]Row{
+		{Kind: RowAgent, SessionID: "a", Title: "x", Status: StatusNeedsAttention, Muted: true},
+		{Kind: RowAgent, SessionID: "b", Title: "y", Status: StatusWorking},
+	})
+	if st != StatusWorking || n != 1 {
+		t.Fatalf("muted agent should not raise the badge; want (working,1), got (%q,%d)", st, n)
+	}
+	// A section whose only live agent is muted carries no badge.
+	if st, n := sectionBadge([]Row{{Kind: RowAgent, SessionID: "a", Title: "x", Status: StatusNeedsAttention, Muted: true}}); st != "" || n != 0 {
+		t.Fatalf("a muted-only section should have no badge, got (%q,%d)", st, n)
 	}
 }
 
@@ -1005,7 +1121,7 @@ func TestFoldCollapsesAndUnfolds(t *testing.T) {
 	in := []Agent{
 		ag("arewa", "1", "refactor auth", StatusNeedsAttention),
 		ag("arewa", "1", "write tests", StatusWorking),
-		ag("web", "0", "ship landing", StatusDone),
+		ag("web", "0", "ship landing", StatusIdle),
 	}
 	m, err := rowModel(DefaultKeymap(), in...)
 	if err != nil {

@@ -31,6 +31,44 @@ func repoAt(gitDir, repo, top, name string, primary bool) RepoInfo {
 	return RepoInfo{GitDir: gitDir, Repo: repo, TopLevel: top, Worktree: name, IsPrimary: primary}
 }
 
+// muterSource is an agent Source that also records mute writes, to prove the Muter seam is
+// forwarded through the row adapters rather than dropped.
+type muterSource struct {
+	last string
+	on   bool
+}
+
+func (m *muterSource) Agents() ([]Agent, error) { return nil, nil }
+func (m *muterSource) SetMuted(key string, muted bool) error {
+	m.last, m.on = key, muted
+	return nil
+}
+
+// TestMuterDelegation pins that the view's Muter seam reaches the underlying source through
+// both row adapters. Without it mute is silently a no-op in the real dash (which wraps the
+// source in a Workspace) even though the direct toggle test passes - the gap that the live
+// smoke test caught.
+func TestMuterDelegation(t *testing.T) {
+	cases := []struct {
+		name string
+		wrap func(Source) Muter
+	}{
+		{"workspace", func(s Source) Muter { return NewWorkspace(s, fakePanes{}, &fakeRepos{}) }},
+		{"agents-as-rows", func(s Source) Muter { return AgentsAsRows(s).(Muter) }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := &muterSource{}
+			if err := tc.wrap(src).SetMuted("pane:%9", true); err != nil {
+				t.Fatal(err)
+			}
+			if src.last != "pane:%9" || !src.on {
+				t.Fatalf("%s should forward SetMuted to the source, got last=%q on=%v", tc.name, src.last, src.on)
+			}
+		})
+	}
+}
+
 func rowsByKind(rows []Row) map[RowKind]int {
 	m := map[RowKind]int{}
 	for _, r := range rows {

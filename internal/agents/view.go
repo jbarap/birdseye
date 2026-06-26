@@ -206,11 +206,10 @@ var statusStyle = map[Status]lipgloss.Style{
 	StatusNeedsAttention: lipgloss.NewStyle().Bold(true).Foreground(lipColor(theme.Red)),
 	StatusWorking:        lipgloss.NewStyle().Foreground(lipColor(theme.Gold)),
 	StatusIdle:           lipgloss.NewStyle().Foreground(lipColor(theme.Blue)),
-	StatusDone:           lipgloss.NewStyle().Foreground(lipColor(theme.Gray)),
 	StatusUnknown:        lipgloss.NewStyle().Faint(true),
 }
 
-// markerStyle renders the anchor/slot gutter tokens — gray, like done/unknown, since
+// markerStyle renders the anchor/slot gutter tokens — gray, like the unknown status, since
 // they are structural markers rather than live statuses.
 var markerStyle = lipgloss.NewStyle().Foreground(lipColor(theme.Gray))
 
@@ -220,7 +219,6 @@ var statusGlyph = map[Status]string{
 	StatusNeedsAttention: "●",
 	StatusWorking:        "◐",
 	StatusIdle:           "○",
-	StatusDone:           "✓",
 	StatusUnknown:        "·",
 }
 
@@ -228,7 +226,6 @@ var statusWord = map[Status]string{
 	StatusNeedsAttention: "attn",
 	StatusWorking:        "work",
 	StatusIdle:           "idle",
-	StatusDone:           "done",
 	StatusUnknown:        "unkn",
 }
 
@@ -322,7 +319,7 @@ func validHex(s string) bool {
 
 // helpOrder is the order actions appear in the help line. Focus-switch comes right after
 // navigation; the two focus keys collapse to one "h/l lens" hint (see renderHelp).
-var helpOrder = []Action{ActionDown, ActionUp, ActionTop, ActionBottom, ActionPrevSection, ActionNextSection, ActionFocusLeft, ActionFold, ActionNewSession, ActionNewAgent, ActionClose, ActionDelete, ActionSelect, ActionQuit}
+var helpOrder = []Action{ActionDown, ActionUp, ActionTop, ActionBottom, ActionPrevSection, ActionNextSection, ActionFocusLeft, ActionFold, ActionNewSession, ActionNewAgent, ActionClose, ActionDelete, ActionMute, ActionSelect, ActionQuit}
 
 var actionLabel = map[Action]string{
 	ActionUp:          "up",
@@ -341,6 +338,7 @@ var actionLabel = map[Action]string{
 	ActionNewAgent:    "new",
 	ActionClose:       "close",
 	ActionDelete:      "delete",
+	ActionMute:        "mute",
 	ActionQuit:        "quit",
 }
 
@@ -983,6 +981,8 @@ func (m model) applyAction(a Action) (tea.Model, tea.Cmd) {
 		return m.startClose()
 	case ActionDelete:
 		return m.startDelete()
+	case ActionMute:
+		return m.toggleMute()
 	case ActionSelect:
 		if r, ok := m.currentRow(); ok {
 			// A windowless base or slot has no window to jump to; jumping would land on
@@ -1635,25 +1635,27 @@ func groupRows(in []Row) ([]Row, []renderItem) {
 	return ordered, items
 }
 
-// agentBand is a fixed triage band in the Agents lens. Bands render in this order, are
-// always shown (dimmed when empty), and an agent's band follows only its status, so a
-// status change moves an agent between bands without reordering its band peers.
+// agentBand is a fixed triage band in the Agents lens. Bands render in this order - by how
+// much an agent wants the user's attention: blocked first, then waiting on the user, then
+// busy, then muted - are always shown (dimmed when empty), and an unmuted agent's band
+// follows only its status, so a status change moves it between bands without reordering its
+// peers. The MUTED band instead holds whatever the user has muted, regardless of status.
 type agentBand int
 
 const (
 	bandNeedsYou agentBand = iota
-	bandWorking
 	bandIdle
-	bandDone
+	bandWorking
+	bandMuted
 	numBands
 )
 
 // bandLabels are the band headers, in render order.
 var bandLabels = [numBands]string{
 	bandNeedsYou: "NEEDS YOU",
-	bandWorking:  "WORKING",
 	bandIdle:     "IDLE",
-	bandDone:     "DONE",
+	bandWorking:  "WORKING",
+	bandMuted:    "MUTED",
 }
 
 // lensID names the two always-visible lenses over the same row set.
@@ -1673,16 +1675,18 @@ type agentItem struct {
 	rowIdx int  // index into model.agentRows when !header
 }
 
-// bandOf maps a status to its triage band. needs-attention, working, and done map to
-// their own bands; idle and unknown (no fresh state) both read as quiet and fall in IDLE.
-func bandOf(s Status) agentBand {
-	switch s {
+// bandOfRow maps a row to its triage band. A muted row goes to MUTED regardless of its
+// status (the user's intent overrides). Otherwise needs-attention and working map to their
+// own bands; idle and unknown (no fresh state) both read as quiet and fall in IDLE.
+func bandOfRow(r Row) agentBand {
+	if r.Muted {
+		return bandMuted
+	}
+	switch r.Status {
 	case StatusNeedsAttention:
 		return bandNeedsYou
 	case StatusWorking:
 		return bandWorking
-	case StatusDone:
-		return bandDone
 	default:
 		return bandIdle
 	}
@@ -1690,16 +1694,16 @@ func bandOf(s Status) agentBand {
 
 // agentsByBand projects rows into the Agents lens: only RowAgent rows, bucketed by band
 // and ordered within each band by most-recent status change (newest first), falling back
-// to worktree then title when the change time is absent (zero Updated). The DONE band's
-// membership is governed by the existing process-liveness GC upstream - a done agent is
-// present here only while its process lives - so this projection adds no time window.
+// to worktree then title when the change time is absent (zero Updated). A muted row lands
+// in MUTED regardless of status; an unmuted row's band follows its status. Membership is
+// otherwise governed by the upstream liveness GC, so this projection adds no time window.
 func agentsByBand(in []Row) [numBands][]Row {
 	var bands [numBands][]Row
 	for _, r := range in {
 		if r.Kind != RowAgent {
 			continue
 		}
-		b := bandOf(r.Status)
+		b := bandOfRow(r)
 		bands[b] = append(bands[b], r)
 	}
 	for b := range bands {
@@ -1718,14 +1722,16 @@ func agentsByBand(in []Row) [numBands][]Row {
 }
 
 // sectionBadge summarizes a section's live agents for the bar's status badge: the
-// most-urgent status present and how many agents share it. It returns ("", 0) when the
-// section has no live agents, so a quiet section shows no badge and is not ranked by it.
+// most-urgent status present and how many agents share it. Muted agents are excluded -
+// muting is a request to stop competing for attention, so a muted agent does not raise the
+// badge. It returns ("", 0) when the section has no unmuted live agents, so a quiet (or
+// fully muted) section shows no badge and is not ranked by it.
 func sectionBadge(rows []Row) (Status, int) {
 	best := Status("")
 	bestRank := int(^uint(0) >> 1)
 	count := 0
 	for _, r := range rows {
-		if r.Kind != RowAgent {
+		if r.Kind != RowAgent || r.Muted {
 			continue
 		}
 		if rk := r.Status.rank(); rk < bestRank {
@@ -2014,11 +2020,14 @@ func (m model) agentLeaf(r Row, w int, selected bool) string {
 }
 
 // cursorCol is the leftmost column: the accent cursor glyph on the focused selection, the
-// accent mirror bullet on its mirror in the other lens, else blank.
+// accent mirror bullet on its mirror in the other lens, else blank. The focused glyph carries
+// the row's RowHL background so the gutter and the highlighted row read as one continuous bar
+// (the section-bar gutter does the same over SessionBg). The mirror has no row fill, so its
+// gutter stays background-less to match its plain row.
 func (m model) cursorCol(hl hlState) string {
 	switch hl {
 	case hlCursor:
-		return cursorGlyphStyle(m.accent).Render(theme.CursorGlyph + " ")
+		return cursorGlyphStyle(m.accent).Background(rowHL).Render(theme.CursorGlyph + " ")
 	case hlMirror:
 		return cursorGlyphStyle(m.accent).Render(theme.MirrorGlyph + " ")
 	default:
@@ -2028,8 +2037,11 @@ func (m model) cursorCol(hl hlState) string {
 
 // sessionBar renders a session header as an edge-to-edge section bar (see sectionBar),
 // left-aligned to the start of the list. A managed repo carries the worktree-source
-// indicator and its right-pinned badge/worktree count; a folded section shows a collapsed
-// glyph and its hidden-row count. The cursor/mirror glyph sits in the gutter over the bar.
+// indicator. The right-pinned annotation is a summary of the section's content - the urgency
+// badge and worktree count - so it is shown only when the section is FOLDED, where the rows
+// are hidden and the summary is the only window into them. When expanded the rows speak for
+// themselves, so the bar drops the summary and keeps only an incidental section's reason
+// (which the rows do not otherwise convey). The cursor/mirror glyph sits in the gutter.
 func (m model) sessionBar(it renderItem, hl hlState) string {
 	name := it.label
 	if it.managed {
@@ -2037,9 +2049,9 @@ func (m model) sessionBar(it renderItem, hl hlState) string {
 	}
 	w := m.rowContentWidth()
 	if m.folded[it.sessionKey] {
-		return m.sectionBar("▸ "+name, fmt.Sprintf("%d", it.count), w, hl, false)
+		return m.sectionBar("▸ "+name, m.sessionBarRight(it), w, hl, false)
 	}
-	return m.sectionBar("▾ "+name, m.sessionBarRight(it), w, hl, false)
+	return m.sectionBar("▾ "+name, it.note, w, hl, false)
 }
 
 // sessionBarRight builds the bar's right-pinned annotation: the most-urgent-status badge

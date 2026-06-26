@@ -1,6 +1,6 @@
 // Package agents provides the Agent abstraction behind `be agents`, plus a Claude
 // Code implementation with a layered status model: hooks supply identity, existence
-// (process liveness), needs-attention, and done, while the working/idle level is read
+// (process liveness), and needs-attention, while the working/idle level is read
 // fresh from the agent pane's current OSC title so it reflects the terminal now and
 // self-heals when no transition hook fires (an interrupt, a crash, an in-terminal
 // answer). The title is a deliberate state channel, not scraped TUI layout.
@@ -19,25 +19,23 @@ const (
 	StatusWorking Status = "working"
 	// StatusIdle: the agent finished its turn and is waiting.
 	StatusIdle Status = "idle"
-	// StatusDone: the agent's session ended.
-	StatusDone Status = "done"
 	// StatusUnknown: no fresh state is available (hook missing or stale).
 	StatusUnknown Status = "unknown"
 )
 
-// rank orders statuses for display: needs-attention first.
+// rank orders statuses by how much the agent wants the user's attention: a blocked
+// agent first, then one that has yielded its turn and is waiting on the user, then one
+// that is busy and needs nothing. Unknown (no fresh signal) sorts last.
 func (s Status) rank() int {
 	switch s {
 	case StatusNeedsAttention:
 		return 0
-	case StatusWorking:
-		return 1
 	case StatusIdle:
+		return 1
+	case StatusWorking:
 		return 2
-	case StatusDone:
-		return 3
 	default:
-		return 4
+		return 3
 	}
 }
 
@@ -64,6 +62,11 @@ type Agent struct {
 	Title string
 	// Status is the agent's current state.
 	Status Status
+	// Muted is the user's "leave this alone for now" intent: a flag distinct from
+	// Status that deprioritizes the agent to the bottom band without changing what it
+	// reports. It is sourced per-location (so it survives a session rotating in place),
+	// not from the agent's own hook record.
+	Muted bool
 	// Updated is when the status was last written.
 	Updated time.Time
 }
@@ -135,9 +138,21 @@ type Row struct {
 	// Status is the agent's status for RowAgent rows; anchor/slot rows render their
 	// own marker and ignore this.
 	Status Status
+	// Muted is the user's mute intent for a RowAgent row: a flag orthogonal to Status
+	// that sends the agent to the MUTED band at the bottom while it keeps showing its
+	// real status. Sourced per tmux location, so it survives a session rotating in place.
+	Muted bool
 	// Updated is when the backing state was last written (RowAgent); used for the
 	// most-recent dedup and selection stability.
 	Updated time.Time
+}
+
+// muteKey is the row's per-location identity, used to persist the user's mute intent so
+// it follows the tmux location rather than a single session id (it survives a session
+// rotating into the same pane). It mirrors dedupKey so the view and the source agree on
+// which location a mute targets.
+func (r Row) muteKey() string {
+	return locationKey(r.TmuxPane, r.TmuxSession, r.TmuxWindow, r.SessionID)
 }
 
 // isManagedWorktree reports whether the row is a removable managed worktree (not the
@@ -164,6 +179,13 @@ type RowSource interface {
 	Rows() ([]Row, error)
 }
 
+// Muter persists the user's mute intent for a tmux location so it survives refreshes and a
+// session rotating in place. It is optional: a RowSource that does not implement it makes
+// the mute toggle a no-op (the read-only / test paths). locKey is a Row.muteKey value.
+type Muter interface {
+	SetMuted(locKey string, muted bool) error
+}
+
 // agentsAsRows adapts a plain Source into a RowSource — every agent a RowAgent — for
 // the non-orchestration path and for tests.
 type agentsAsRows struct{ src Source }
@@ -178,6 +200,16 @@ func (a agentsAsRows) Rows() ([]Row, error) {
 		rows = append(rows, agentRow(ag))
 	}
 	return rows, nil
+}
+
+// SetMuted forwards the view's mute write to the underlying agent source when it persists
+// mute (a ClaudeSource), so the Muter seam reaches the store through the row adapter. A
+// source that is not a Muter makes mute a no-op.
+func (a agentsAsRows) SetMuted(locKey string, muted bool) error {
+	if mu, ok := a.src.(Muter); ok {
+		return mu.SetMuted(locKey, muted)
+	}
+	return nil
 }
 
 // AgentsAsRows wraps a Source so it can drive the view without orchestration.
@@ -196,6 +228,7 @@ func agentRow(a Agent) Row {
 		AgentDir:       a.CWD,
 		Title:          a.Title,
 		Status:         a.Status,
+		Muted:          a.Muted,
 		Updated:        a.Updated,
 	}
 }

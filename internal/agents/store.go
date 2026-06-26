@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -79,6 +80,56 @@ func readRecord(dir, sessionID string) (record, error) {
 		return record{SessionID: sessionID}, nil
 	}
 	return r, nil
+}
+
+// muteFile is the single per-state-dir file holding the user's mute intents: a set of
+// location keys (see locationKey) the user has muted. It is keyed by location rather than
+// by session id so a mute follows the tmux location and survives a session rotating in
+// place. Only the view writes it; the source reads and prunes it.
+const muteFile = "mutes.json"
+
+// readMutes loads the set of muted location keys under dir. A missing file yields an empty
+// set, so mute is simply off until the user mutes something.
+func readMutes(dir string) (map[string]bool, error) {
+	data, err := os.ReadFile(filepath.Join(dir, muteFile))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]bool{}, nil
+		}
+		return nil, err
+	}
+	var keys []string
+	if err := json.Unmarshal(data, &keys); err != nil {
+		return map[string]bool{}, nil
+	}
+	set := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		set[k] = true
+	}
+	return set, nil
+}
+
+// writeMutes persists the muted location-key set atomically under dir, sorted for a stable
+// file. An empty set still writes (an empty list), so unmuting the last agent clears cleanly.
+func writeMutes(dir string, set map[string]bool) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	keys := make([]string, 0, len(set))
+	for k := range set {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	data, err := json.MarshalIndent(keys, "", "  ")
+	if err != nil {
+		return err
+	}
+	final := filepath.Join(dir, muteFile)
+	tmp := final + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, final)
 }
 
 // readRecords loads all records under dir. A missing dir yields no records.

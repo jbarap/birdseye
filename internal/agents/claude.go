@@ -183,7 +183,13 @@ func (s *ClaudeSource) Agents() ([]Agent, error) {
 		out = append(out, a)
 	}
 	out = dropSupersededByPane(out)
+	s.applyMutes(out)
 	sort.SliceStable(out, func(i, j int) bool {
+		// Muted agents sort below every unmuted one regardless of status, so they settle
+		// into the bottom band; mute is the highest-priority ordering term.
+		if out[i].Muted != out[j].Muted {
+			return !out[i].Muted
+		}
 		if out[i].Status.rank() != out[j].Status.rank() {
 			return out[i].Status.rank() < out[j].Status.rank()
 		}
@@ -192,19 +198,83 @@ func (s *ClaudeSource) Agents() ([]Agent, error) {
 	return out, nil
 }
 
+// applyMutes stamps the user's persisted mute intent onto the live agents and reconciles
+// the mute store against them: a needs-attention agent is force-unmuted (a genuine block
+// is never hidden - the snooze "wake me on something new" rule), and a stored key with no
+// live agent is pruned (mute is reclaimed by the same liveness GC that drops the agent).
+// It writes the store back only when it changed, so a steady state touches no disk.
+func (s *ClaudeSource) applyMutes(out []Agent) {
+	mutes, err := readMutes(s.dir)
+	if err != nil || len(mutes) == 0 {
+		// Nothing muted (or unreadable): leave every agent unmuted and write nothing.
+		return
+	}
+	live := make(map[string]bool, len(out))
+	dirty := false
+	for i := range out {
+		key := dedupKey(out[i])
+		live[key] = true
+		if !mutes[key] {
+			continue
+		}
+		if out[i].Status == StatusNeedsAttention {
+			delete(mutes, key) // a new block wins: auto-unmute
+			dirty = true
+			continue
+		}
+		out[i].Muted = true
+	}
+	for key := range mutes {
+		if !live[key] {
+			delete(mutes, key) // location gone (process exited): reclaim the mute
+			dirty = true
+		}
+	}
+	if dirty {
+		_ = writeMutes(s.dir, mutes)
+	}
+}
+
+// SetMuted records or clears the user's mute intent for a tmux location, keyed so it
+// follows the location rather than a single session id. It is the write side of the mute
+// store the view drives from the `m` toggle; Agents stamps the result back onto rows.
+func (s *ClaudeSource) SetMuted(locKey string, muted bool) error {
+	mutes, err := readMutes(s.dir)
+	if err != nil {
+		return err
+	}
+	if mutes[locKey] == muted {
+		return nil
+	}
+	if muted {
+		mutes[locKey] = true
+	} else {
+		delete(mutes, locKey)
+	}
+	return writeMutes(s.dir, mutes)
+}
+
 // dedupKey identifies the tmux location an agent occupies, so records that share
 // a pane (or window, for older records without a pane id) collapse to one row.
 // Agents with no tmux location stay distinct, keyed by their own session id.
 func dedupKey(a Agent) string {
+	return locationKey(a.TmuxPane, a.TmuxSession, a.TmuxWindow, a.SessionID)
+}
+
+// locationKey is the shared identity of a tmux location: the pane when known, else the
+// window, else the session, else the agent's own id. dedupKey (collapsing records that
+// share a location) and Row.muteKey (persisting mute against a location) both derive
+// from it so they cannot drift apart.
+func locationKey(pane, session, window, id string) string {
 	switch {
-	case a.TmuxPane != "":
-		return "pane:" + a.TmuxPane
-	case a.TmuxSession != "" && a.TmuxWindow != "":
-		return "win:" + a.TmuxSession + ":" + a.TmuxWindow
-	case a.TmuxSession != "":
-		return "sess:" + a.TmuxSession
+	case pane != "":
+		return "pane:" + pane
+	case session != "" && window != "":
+		return "win:" + session + ":" + window
+	case session != "":
+		return "sess:" + session
 	default:
-		return "id:" + a.SessionID
+		return "id:" + id
 	}
 }
 
@@ -271,15 +341,13 @@ func (titleLevelDetector) Level(paneID string, titles map[string]string) (Status
 }
 
 // reconcile resolves an agent's displayed status from its hook-written status and a live
-// working/idle level. done always wins. needs-attention is a latch: it holds until the
-// level shows the agent working (it resumed, so the user answered) - an idle or absent
-// level does not clear it, keeping a real pending prompt visible. For every other hook
-// status the live level overrides working/idle when present, and we fall back to the hook
-// status when no level is available.
+// working/idle level. needs-attention is a latch: it holds until the level shows the agent
+// working (it resumed, so the user answered) - an idle or absent level does not clear it,
+// keeping a real pending prompt visible. For every other hook status the live level
+// overrides working/idle when present, and we fall back to the hook status when no level
+// is available.
 func reconcile(hookStatus, level Status, haveLevel bool) Status {
 	switch hookStatus {
-	case StatusDone:
-		return StatusDone
 	case StatusNeedsAttention:
 		if haveLevel && level == StatusWorking {
 			return StatusWorking
@@ -308,11 +376,12 @@ const idleNotification = "waiting for your input"
 //	Notification (idle "waiting for your input" message)                  -> idle
 //	Notification (permission/approval or any unrecognized message)        -> needs-attention
 //	Stop                                                                  -> idle
-//	SessionEnd                                                            -> done
 //
-// The Notification split is deliberately downgrade-only and conservative: only a
-// recognized idle message becomes idle; everything else stays needs-attention,
-// so an unfamiliar notification still reaches the user rather than being hidden.
+// A SessionEnd event produces no terminal status: an ended session keeps its last status
+// until its Claude process exits, at which point the liveness GC removes it. The
+// Notification split is deliberately downgrade-only and conservative: only a recognized
+// idle message becomes idle; everything else stays needs-attention, so an unfamiliar
+// notification still reaches the user rather than being hidden.
 func StatusFor(event string, in hookInput) Status {
 	switch event {
 	case "Notification":
@@ -322,8 +391,6 @@ func StatusFor(event string, in hookInput) Status {
 		return StatusNeedsAttention
 	case "Stop":
 		return StatusIdle
-	case "SessionEnd":
-		return StatusDone
 	case "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "SubagentStop":
 		return StatusWorking
 	default:
@@ -357,7 +424,11 @@ func HandleHook(event string, r io.Reader) error {
 
 	rec, _ := readRecord(dir, in.SessionID)
 	rec.SessionID = in.SessionID
-	rec.Status = StatusFor(event, in)
+	// SessionEnd produces no terminal status: the session keeps its last status until its
+	// Claude process exits and the liveness GC reclaims it. Every other event maps to one.
+	if event != "SessionEnd" {
+		rec.Status = StatusFor(event, in)
+	}
 	rec.Updated = time.Now()
 	// Record the Claude session process so `be agents` can treat that process's
 	// liveness as the agent's liveness (a closed Claude → its entry is reclaimed).

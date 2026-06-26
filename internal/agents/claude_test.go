@@ -14,7 +14,6 @@ func TestStatusForEventName(t *testing.T) {
 	cases := map[string]Status{
 		"Notification":     StatusNeedsAttention,
 		"Stop":             StatusIdle,
-		"SessionEnd":       StatusDone,
 		"PreToolUse":       StatusWorking,
 		"UserPromptSubmit": StatusWorking,
 		"Whatever":         StatusWorking,
@@ -84,9 +83,9 @@ func TestClaudeTitleLevel(t *testing.T) {
 	}
 }
 
-// TestReconcilePrecedence walks the status precedence table: done wins, needs-attention is
-// a latch cleared only by a working level, and otherwise the live level overrides
-// working/idle with a fallback to the hook status when there is no signal.
+// TestReconcilePrecedence walks the status precedence table: needs-attention is a latch
+// cleared only by a working level, and otherwise the live level overrides working/idle with
+// a fallback to the hook status when there is no signal.
 func TestReconcilePrecedence(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -95,7 +94,6 @@ func TestReconcilePrecedence(t *testing.T) {
 		haveLevel bool
 		want      Status
 	}{
-		{"done wins over working level", StatusDone, StatusWorking, true, StatusDone},
 		{"attention cleared by working level", StatusNeedsAttention, StatusWorking, true, StatusWorking},
 		{"attention held by idle level", StatusNeedsAttention, StatusIdle, true, StatusNeedsAttention},
 		{"attention held with no level", StatusNeedsAttention, "", false, StatusNeedsAttention},
@@ -226,7 +224,7 @@ func TestAgentsReclaimsDeadProcesses(t *testing.T) {
 		// Pane still open (a leftover shell), but the Claude process is gone.
 		{SessionID: "dead", PID: 200, TmuxSession: "s", TmuxPane: "%2", Title: "dead", Status: StatusIdle, Updated: now},
 		// Legacy record with no pid: cannot be confirmed live, so reclaimed.
-		{SessionID: "legacy", PID: 0, Title: "legacy", Status: StatusDone, Updated: now},
+		{SessionID: "legacy", PID: 0, Title: "legacy", Status: StatusIdle, Updated: now},
 	} {
 		if err := writeRecord(dir, r); err != nil {
 			t.Fatal(err)
@@ -248,6 +246,69 @@ func TestAgentsReclaimsDeadProcesses(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, sanitize("live")+".json")); err != nil {
 		t.Fatalf("live record must remain: %v", err)
+	}
+}
+
+// TestMutePersistsSnoozeAndReclaims pins the mute store's three rules: a mute persists and
+// stamps the agent (sorting it last), a needs-attention agent is force-unmuted with its key
+// pruned (the snooze "wake me on something new" rule), and a dead location's mute is
+// reclaimed by the same liveness GC that drops the agent.
+func TestMutePersistsSnoozeAndReclaims(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	for _, r := range []record{
+		{SessionID: "work", PID: 1, TmuxSession: "s", TmuxPane: "%1", Title: "work", Status: StatusWorking, Updated: now},
+		{SessionID: "block", PID: 1, TmuxSession: "s", TmuxPane: "%2", Title: "block", Status: StatusNeedsAttention, Updated: now},
+	} {
+		if err := writeRecord(dir, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := &ClaudeSource{dir: dir, alive: alwaysAlive}
+
+	workKey := locationKey("%1", "s", "", "work")
+	if err := s.SetMuted(workKey, true); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Agents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]Agent{}
+	for _, a := range got {
+		byID[a.SessionID] = a
+	}
+	if !byID["work"].Muted {
+		t.Fatalf("the working agent should be muted after SetMuted")
+	}
+	if got[len(got)-1].SessionID != "work" {
+		t.Fatalf("a muted agent should sort last, got order %+v", got)
+	}
+
+	// Snooze: muting a needs-attention agent is overridden — the block wins and its key is
+	// pruned from the store, while the working agent's mute persists.
+	blockKey := locationKey("%2", "s", "", "block")
+	if err := s.SetMuted(blockKey, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Agents(); err != nil {
+		t.Fatal(err)
+	}
+	mutes, _ := readMutes(dir)
+	if mutes[blockKey] {
+		t.Fatalf("auto-unmute should prune the needs-attention key, store=%v", mutes)
+	}
+	if !mutes[workKey] {
+		t.Fatalf("the working agent's mute should persist, store=%v", mutes)
+	}
+
+	// Reclamation: the working agent's process dies → its record and mute are both reclaimed.
+	s.alive = func(int) bool { return false }
+	if _, err := s.Agents(); err != nil {
+		t.Fatal(err)
+	}
+	if mutes, _ := readMutes(dir); len(mutes) != 0 {
+		t.Fatalf("a dead location's mute should be reclaimed, store=%v", mutes)
 	}
 }
 
@@ -274,10 +335,10 @@ func TestAgentsDedupsSharedLocation(t *testing.T) {
 	now := time.Now()
 	for _, r := range []record{
 		// Two Claude sessions that ran in the same pane (a restart): keep newest.
-		{SessionID: "old", TmuxSession: "arewa", TmuxWindow: "2", TmuxPane: "%5", Title: "arewa", Status: StatusDone, Updated: now.Add(-time.Hour)},
+		{SessionID: "old", TmuxSession: "arewa", TmuxWindow: "2", TmuxPane: "%5", Title: "arewa", Status: StatusIdle, Updated: now.Add(-time.Hour)},
 		{SessionID: "new", TmuxSession: "arewa", TmuxWindow: "2", TmuxPane: "%5", Title: "arewa", Status: StatusWorking, Updated: now},
 		// A pre-upgrade record (no pane) in the same window is superseded.
-		{SessionID: "legacy", TmuxSession: "arewa", TmuxWindow: "2", Title: "arewa", Status: StatusDone, Updated: now.Add(-2 * time.Hour)},
+		{SessionID: "legacy", TmuxSession: "arewa", TmuxWindow: "2", Title: "arewa", Status: StatusIdle, Updated: now.Add(-2 * time.Hour)},
 		// A genuinely separate pane in the same window survives.
 		{SessionID: "other", TmuxSession: "arewa", TmuxWindow: "2", TmuxPane: "%6", Title: "arewa", Status: StatusIdle, Updated: now},
 	} {

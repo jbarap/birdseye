@@ -76,6 +76,16 @@ func NewWorkspace(src Source, panes PaneLister, repos RepoResolver) *Workspace {
 	}
 }
 
+// SetMuted forwards the view's mute write to the underlying agent source when it persists
+// mute (a ClaudeSource), so the Muter seam reaches the store through the reconciler. A
+// source that is not a Muter makes mute a no-op.
+func (w *Workspace) SetMuted(locKey string, muted bool) error {
+	if mu, ok := w.src.(Muter); ok {
+		return mu.SetMuted(locKey, muted)
+	}
+	return nil
+}
+
 // Invalidate drops the cached git facts so the next Rows() re-reads git. Called by the
 // view after a spawn or remove changes the on-disk worktree set.
 func (w *Workspace) Invalidate() {

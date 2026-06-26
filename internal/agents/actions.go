@@ -394,6 +394,28 @@ func (m model) runDelete(force bool) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// toggleMute flips the user's mute intent on the selected agent and persists it through the
+// source's Muter seam, so it follows the agent's tmux location and survives refreshes. It is
+// a no-op on a non-agent row (a header, anchor, or slot) or a source that is not a Muter
+// (the read-only and test paths). The reload restamps the flag onto the rows.
+func (m model) toggleMute() (tea.Model, tea.Cmd) {
+	muter, ok := m.src.(Muter)
+	if !ok {
+		return m, nil
+	}
+	r, ok := m.currentRow()
+	if !ok || r.Kind != RowAgent {
+		return m, nil
+	}
+	if err := muter.SetMuted(r.muteKey(), !r.Muted); err != nil {
+		m.setError("mute: " + err.Error())
+		return m, nil
+	}
+	m.clearNotice()
+	m.reloadAfterAction()
+	return m, nil
+}
+
 // cancelConfirm dismisses either confirm modal without acting, reporting the cancel.
 func (m model) cancelConfirm() (tea.Model, tea.Cmd) {
 	m.mode = modeNormal

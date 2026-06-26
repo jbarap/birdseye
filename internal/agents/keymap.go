@@ -26,6 +26,7 @@ const (
 	ActionNewAgent    Action = "new_agent"
 	ActionClose       Action = "close"
 	ActionDelete      Action = "delete"
+	ActionMute        Action = "mute"
 	ActionQuit        Action = "quit"
 )
 
@@ -34,7 +35,7 @@ var AllActions = []Action{
 	ActionUp, ActionDown, ActionTop, ActionBottom,
 	ActionHalfUp, ActionHalfDown, ActionPrevSection, ActionNextSection,
 	ActionFocusLeft, ActionFocusRight,
-	ActionSelect, ActionFold, ActionNewSession, ActionNewAgent, ActionClose, ActionDelete, ActionQuit,
+	ActionSelect, ActionFold, ActionNewSession, ActionNewAgent, ActionClose, ActionDelete, ActionMute, ActionQuit,
 }
 
 // Keymap maps each action to the keys that trigger it. Keys are Bubble Tea
@@ -63,6 +64,7 @@ func DefaultKeymap() Keymap {
 		ActionNewAgent:    {"n"},
 		ActionClose:       {"dd"},
 		ActionDelete:      {"dD"},
+		ActionMute:        {"m"},
 		ActionQuit:        {"q", "esc", "ctrl+c"},
 	}
 }
