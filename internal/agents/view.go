@@ -40,6 +40,66 @@ const (
 // sensibly.
 const defaultSplit = 0.4
 
+// Dual-lens layout. The Agents lens is a fixed-ish column carved off the terminal before
+// the Workspaces+preview layout is computed; below dualLensMinWidth only the focused lens
+// shows (the narrow-terminal fallback), still toggled by the focus keys.
+const (
+	agentsNameMin    = 14  // agents-lens title column: baseline, flexes to content
+	agentsNameMax    = 32  // ... but never past this
+	dualLensMinWidth = 140 // below this, show one lens at a time; at/above it, both fit with a preview
+)
+
+// dualLens reports whether both lenses render side by side. Below the threshold (or before
+// the first size message) the view shows a single lens - the focused one - plus the preview.
+func (m model) dualLens() bool { return m.width >= dualLensMinWidth }
+
+// agentNameWidth is the agents-lens title column: the widest agent title (and band label),
+// clamped to a sane band so a long title never starves the rest of the layout.
+func (m model) agentNameWidth() int {
+	w := agentsNameMin
+	for i := range m.agentRows {
+		if t := lipgloss.Width(displayTitle(m.agentRows[i].Title, m.agentRows[i].TmuxSession)); t > w {
+			w = t
+		}
+	}
+	for _, lbl := range bandLabels {
+		if l := lipgloss.Width(lbl) + 2; l > w {
+			w = l
+		}
+	}
+	if w > agentsNameMax {
+		w = agentsNameMax
+	}
+	return w
+}
+
+// agentsContentWidth is the agents-lens body width (status gutter + title column); the
+// outer panel adds the cursor column and the frame.
+func (m model) agentsContentWidth() int { return statusColWidth + m.agentNameWidth() }
+
+// agentsPaneOuter is the rendered width of the Agents lens panel (cursor column + body +
+// frame border/padding).
+func (m model) agentsPaneOuter() int { return cursorColWidth + m.agentsContentWidth() + 4 }
+
+// agentsReserve is the terminal width the Agents lens claims (its panel plus the inter-pane
+// gap), removed from the terminal before the Workspaces+preview split is computed. Zero when
+// the Agents lens is not shown alongside Workspaces.
+func (m model) agentsReserve() int {
+	if !m.dualLens() {
+		return 0
+	}
+	return m.agentsPaneOuter() + 2 // inter-pane gap
+}
+
+// mainWidth is the terminal width available to the Workspaces lens and the preview, after
+// the Agents lens has claimed its column.
+func (m model) mainWidth() int {
+	if w := m.width - m.agentsReserve(); w > 0 {
+		return w
+	}
+	return m.width
+}
+
 // listCapWidth is the largest the list content (after the cursor column and the frame) may
 // grow to while still leaving the preview its minimum width. Zero means no preview is shown
 // (or the size isn't known yet), so the list is uncapped. The shrink loop in colWidths trims
@@ -48,7 +108,7 @@ func (m model) listCapWidth() int {
 	if m.width <= 0 || !m.showPreview() {
 		return 0
 	}
-	return m.width - 2 /*inter-pane gap*/ - (minPreviewCols + 4) /*preview frame*/ - cursorColWidth - 4 /*list frame*/
+	return m.mainWidth() - 2 /*inter-pane gap*/ - (minPreviewCols + 4) /*preview frame*/ - cursorColWidth - 4 /*list frame*/
 }
 
 // listTargetWidth is the list content width the configured split asks for: the agents pane's
@@ -59,7 +119,7 @@ func (m model) listTargetWidth() int {
 	if m.width <= 0 || m.split <= 0 || !m.showPreview() {
 		return 0
 	}
-	t := int(float64(m.width)*m.split+0.5) - cursorColWidth - 4
+	t := int(float64(m.mainWidth())*m.split+0.5) - cursorColWidth - 4
 	if cap := m.listCapWidth(); cap > 0 && t > cap {
 		t = cap
 	}
@@ -259,8 +319,9 @@ func validHex(s string) bool {
 	return true
 }
 
-// helpOrder is the order actions appear in the help line.
-var helpOrder = []Action{ActionDown, ActionUp, ActionTop, ActionBottom, ActionPrevSection, ActionNextSection, ActionFold, ActionNewSession, ActionNewAgent, ActionClose, ActionDelete, ActionSelect, ActionQuit}
+// helpOrder is the order actions appear in the help line. Focus-switch comes right after
+// navigation; the two focus keys collapse to one "h/l lens" hint (see renderHelp).
+var helpOrder = []Action{ActionDown, ActionUp, ActionTop, ActionBottom, ActionPrevSection, ActionNextSection, ActionFocusLeft, ActionFold, ActionNewSession, ActionNewAgent, ActionClose, ActionDelete, ActionSelect, ActionQuit}
 
 var actionLabel = map[Action]string{
 	ActionUp:          "up",
@@ -271,6 +332,8 @@ var actionLabel = map[Action]string{
 	ActionHalfDown:    "half-down",
 	ActionPrevSection: "prev",
 	ActionNextSection: "next session",
+	ActionFocusLeft:   "lens",
+	ActionFocusRight:  "lens",
 	ActionSelect:      "jump",
 	ActionFold:        "fold",
 	ActionNewSession:  "open",
@@ -322,12 +385,25 @@ type model struct {
 	refresh time.Duration
 	orch    Orchestrator // optional; nil disables n/d
 
-	rows    []Row           // leaf rows in render order
-	items   []renderItem    // full tree: headers + leaf rows interleaved
-	folded  map[string]bool // session keys whose section is collapsed
-	nav     []int           // item indices the cursor can land on, given fold state
-	cursor  int             // index into nav (a leaf, or a folded session header)
-	top     int             // first visible item (scroll offset into the rendered list)
+	// Workspaces lens: the repository→row tree, stable-ordered, foldable.
+	rows   []Row           // leaf rows in render order
+	items  []renderItem    // full tree: headers + leaf rows interleaved
+	folded map[string]bool // session keys whose section is collapsed
+	nav    []int           // item indices the cursor can land on, given fold state
+	cursor int             // index into nav (a leaf, or a folded session header)
+	top    int             // first visible item (scroll offset into the rendered list)
+
+	// Agents lens: a flat triage list of agents in fixed status bands. It is a second
+	// projection of the same rows. Band headers are always rendered; a populated band folds
+	// like a Workspaces section, collapsing its agents to a navigable header stand-in.
+	focus       lensID         // which lens the cursor and actions act on
+	agentRows   []Row          // agent rows in band order (the Agents lens leaves)
+	agentItems  []agentItem    // band headers + agent rows interleaved
+	agentNav    []int          // agentItems indices the agents cursor can land on
+	agentCursor int            // index into agentNav (an agent, or a folded band header)
+	agentTop    int            // scroll offset into the visible agent items
+	bandFolded  [numBands]bool // bands whose agents are collapsed under the header
+
 	chosen  *Row
 	pending string // armed first key of a chord ("" = none)
 
@@ -358,7 +434,7 @@ func newModel(src RowSource, prev Previewer, keys Keymap, refresh time.Duration)
 	if refresh <= 0 {
 		refresh = defaultRefresh
 	}
-	m := model{src: src, prev: prev, keys: keys, res: res, refresh: refresh, folded: map[string]bool{}, accent: lipColor(theme.Accent), split: defaultSplit}
+	m := model{src: src, prev: prev, keys: keys, res: res, refresh: refresh, folded: map[string]bool{}, accent: lipColor(theme.Accent), split: defaultSplit, focus: lensAgents}
 	list, err := src.Rows()
 	if err != nil {
 		return model{}, err
@@ -375,6 +451,46 @@ func (m *model) setRows(list []Row) {
 	m.rows, m.items = groupRows(list)
 	m.pruneFolded()
 	m.recomputeNav()
+	m.buildAgentsLens(list)
+}
+
+// buildAgentsLens projects the rows into the Agents lens: band headers (always present)
+// interleaved with their agents in band order. agentRows holds the agent leaves; agentItems
+// is the rendered sequence; agentNav lists the navigable (agent) positions.
+func (m *model) buildAgentsLens(list []Row) {
+	bands := agentsByBand(list)
+	m.agentRows = m.agentRows[:0]
+	m.agentItems = m.agentItems[:0]
+	for b := agentBand(0); b < numBands; b++ {
+		m.agentItems = append(m.agentItems, agentItem{band: b, header: true, count: len(bands[b])})
+		for _, r := range bands[b] {
+			m.agentRows = append(m.agentRows, r)
+			m.agentItems = append(m.agentItems, agentItem{band: b, rowIdx: len(m.agentRows) - 1})
+		}
+	}
+	m.recomputeAgentNav()
+}
+
+// recomputeAgentNav lists the agentItems indices the agents cursor can land on: every agent
+// of an unfolded band, plus the header of each folded band (its single navigable stand-in,
+// mirroring the Workspaces fold). An empty band has no agents and is never folded, so its
+// header stays unselectable.
+func (m *model) recomputeAgentNav() {
+	m.agentNav = m.agentNav[:0]
+	for i, it := range m.agentItems {
+		if it.header {
+			if m.bandFolded[it.band] && it.count > 0 {
+				m.agentNav = append(m.agentNav, i)
+			}
+			continue
+		}
+		if !m.bandFolded[it.band] {
+			m.agentNav = append(m.agentNav, i)
+		}
+	}
+	if m.agentCursor > len(m.agentNav)-1 {
+		m.agentCursor = max(len(m.agentNav)-1, 0)
+	}
 }
 
 // pruneFolded keeps fold state only for sessions still present, so the map does
@@ -539,9 +655,36 @@ func (m *model) reload() {
 	}
 	m.err = nil
 	selKey := m.currentRowKey()
+	agentSel := m.agentSelID()
 	m.setRows(list)
 	m.cursor = relocate(m, selKey, m.cursor)
+	m.agentCursor = m.relocateAgent(agentSel, m.agentCursor)
 	m.refreshPreview()
+}
+
+// agentSelID is the SessionID of the agent under the Agents lens cursor, or "" - used to
+// follow that selection across a refresh by identity rather than by index.
+func (m model) agentSelID() string {
+	if m.agentCursor < 0 || m.agentCursor >= len(m.agentNav) {
+		return ""
+	}
+	return m.agentRows[m.agentItems[m.agentNav[m.agentCursor]].rowIdx].SessionID
+}
+
+// relocateAgent finds the agents-cursor position for the agent with the given SessionID in
+// the rebuilt Agents lens, else clamps the old cursor into bounds.
+func (m model) relocateAgent(id string, old int) int {
+	if len(m.agentNav) == 0 {
+		return 0
+	}
+	if id != "" {
+		for i, itemIdx := range m.agentNav {
+			if m.agentRows[m.agentItems[itemIdx].rowIdx].SessionID == id {
+				return i
+			}
+		}
+	}
+	return clamp(old, 0, len(m.agentNav)-1)
 }
 
 // rowKey identifies a navigable row by what it represents — a leaf (by its row id) or
@@ -596,10 +739,15 @@ func (m model) currentItem() (renderItem, bool) {
 	return m.items[m.nav[m.cursor]], true
 }
 
-// currentRow returns the row the cursor points at: the selected leaf, or the
-// first row of a folded session whose header is selected. The second case lets the
-// preview and jump still target something useful while folded.
+// currentRow returns the row the focused lens's cursor points at. In the Workspaces lens
+// that is the selected leaf, or the first row of a folded session whose header is selected
+// (so preview and jump still target something useful while folded). In the Agents lens it
+// is the selected agent. Routing every action through this one accessor is what makes the
+// actions (jump, close, delete, new agent) work from whichever lens holds focus.
 func (m model) currentRow() (Row, bool) {
+	if m.focus == lensAgents {
+		return m.agentsCurrentRow()
+	}
 	it, ok := m.currentItem()
 	if !ok {
 		return Row{}, false
@@ -611,6 +759,99 @@ func (m model) currentRow() (Row, bool) {
 		return m.firstRowOfSession(it.sessionKey)
 	}
 	return Row{}, false
+}
+
+// agentsCurrentRow returns the agent under the Agents lens cursor. A folded band header is
+// a stand-in for many agents, not one row, so it reports no current row (like a folded
+// Workspaces section header).
+func (m model) agentsCurrentRow() (Row, bool) {
+	if m.agentCursor < 0 || m.agentCursor >= len(m.agentNav) {
+		return Row{}, false
+	}
+	it := m.agentItems[m.agentNav[m.agentCursor]]
+	if it.header {
+		return Row{}, false
+	}
+	return m.agentRows[it.rowIdx], true
+}
+
+// selectedAgentID is the SessionID of the focused lens's current selection when it is a
+// live agent, else "". It is the link between the lenses: the counterpart to highlight in
+// the other lens, and the agent to land on when focus switches.
+func (m model) selectedAgentID() string {
+	if r, ok := m.currentRow(); ok && r.Kind == RowAgent {
+		return r.SessionID
+	}
+	return ""
+}
+
+// activeCursor returns a pointer to the focused lens's cursor and that lens's nav length,
+// so the shared navigation actions move whichever lens holds focus.
+func (m *model) activeCursor() (*int, int) {
+	if m.focus == lensAgents {
+		return &m.agentCursor, len(m.agentNav)
+	}
+	return &m.cursor, len(m.nav)
+}
+
+// setFocus switches the focused lens, carrying the selected agent across when it has a
+// counterpart (so the switch feels linked, not like jumping to a disjoint list); when there
+// is no counterpart the target lens keeps its own cursor (a sensible last-position default).
+func (m *model) setFocus(to lensID) {
+	if m.focus == to {
+		return
+	}
+	id := m.selectedAgentID()
+	m.focus = to
+	if id != "" {
+		m.selectAgentInFocusedLens(id)
+	}
+	m.dismissNotice()
+	m.refreshPreview()
+}
+
+// selectAgentInFocusedLens moves the focused lens's cursor onto the agent with the given
+// SessionID when present; otherwise it leaves the cursor where it is. In either lens a
+// counterpart inside a folded section/band is reached by selecting that header (the fold is
+// left collapsed), per the resolved design question.
+func (m *model) selectAgentInFocusedLens(id string) {
+	if m.focus == lensAgents {
+		for i, itemIdx := range m.agentNav {
+			it := m.agentItems[itemIdx]
+			if !it.header && m.agentRows[it.rowIdx].SessionID == id {
+				m.agentCursor = i
+				return
+			}
+			// Folded band: its header stands in for the agents it hides, so land there.
+			if it.header && m.bandFolded[it.band] && m.bandHasAgent(it.band, id) {
+				m.agentCursor = i
+				return
+			}
+		}
+		return
+	}
+	for i, itemIdx := range m.nav {
+		it := m.items[itemIdx]
+		if it.kind == kindRow && m.rows[it.rowIdx].SessionID == id {
+			m.cursor = i
+			return
+		}
+		// Folded section: its header stands in for the rows it hides, so land there.
+		if it.kind == kindSession && m.folded[it.sessionKey] && m.sessionHasAgent(it.sessionKey, id) {
+			m.cursor = i
+			return
+		}
+	}
+}
+
+// sessionHasAgent reports whether a (folded) section contains the agent with the given id.
+func (m model) sessionHasAgent(key, id string) bool {
+	for _, it := range m.items {
+		if it.kind == kindRow && it.sessionKey == key && m.rows[it.rowIdx].SessionID == id {
+			return true
+		}
+	}
+	return false
 }
 
 // firstRowOfSession returns the first row (in render order) of a session.
@@ -689,32 +930,49 @@ func (m model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) applyAction(a Action) (tea.Model, tea.Cmd) {
-	old := m.cursor
-	last := len(m.nav) - 1
+	cur, n := m.activeCursor()
+	old := *cur
+	last := n - 1
 	switch a {
 	case ActionUp:
-		if m.cursor > 0 {
-			m.cursor--
+		if *cur > 0 {
+			*cur--
 		}
 	case ActionDown:
-		if m.cursor < last {
-			m.cursor++
+		if *cur < last {
+			*cur++
 		}
 	case ActionTop:
-		m.cursor = 0
+		*cur = 0
 	case ActionBottom:
 		if last >= 0 {
-			m.cursor = last
+			*cur = last
 		}
 	case ActionHalfUp:
-		m.cursor = clamp(m.cursor-m.halfPage(), 0, max(last, 0))
+		*cur = clamp(*cur-m.halfPage(), 0, max(last, 0))
 	case ActionHalfDown:
-		m.cursor = clamp(m.cursor+m.halfPage(), 0, max(last, 0))
+		*cur = clamp(*cur+m.halfPage(), 0, max(last, 0))
 	case ActionPrevSection:
-		m.cursor = m.prevSection()
+		// Section jumps are a Workspaces-lens motion; the Agents lens is a flat list.
+		if m.focus == lensWorkspaces {
+			m.cursor = m.prevSection()
+		}
 	case ActionNextSection:
-		m.cursor = m.nextSection()
+		if m.focus == lensWorkspaces {
+			m.cursor = m.nextSection()
+		}
+	case ActionFocusLeft:
+		m.setFocus(lensAgents)
+		return m, nil
+	case ActionFocusRight:
+		m.setFocus(lensWorkspaces)
+		return m, nil
 	case ActionFold:
+		// Both lenses fold: a Workspaces section collapses its rows, an Agents band collapses
+		// its agents. Each leaves the cursor on the now-collapsed header.
+		if m.focus == lensAgents {
+			return m.toggleAgentFold()
+		}
 		return m.toggleFold()
 	case ActionNewSession:
 		return m.startNewSession()
@@ -739,7 +997,7 @@ func (m model) applyAction(a Action) (tea.Model, tea.Cmd) {
 	case ActionQuit:
 		return m, tea.Quit
 	}
-	if m.cursor != old {
+	if *cur != old {
 		m.dismissNotice()
 		m.refreshPreview()
 	}
@@ -770,6 +1028,34 @@ func (m model) toggleFold() (tea.Model, tea.Cmd) {
 	m.dismissNotice()
 	m.refreshPreview()
 	return m, nil
+}
+
+// toggleAgentFold collapses or expands the band under the agents cursor, mirroring
+// toggleFold: folding from one of a band's agents leaves the cursor on the now-collapsed
+// band header; unfolding from that header drops the cursor onto the band's first agent.
+func (m model) toggleAgentFold() (tea.Model, tea.Cmd) {
+	if m.agentCursor < 0 || m.agentCursor >= len(m.agentNav) {
+		return m, nil
+	}
+	b := m.agentItems[m.agentNav[m.agentCursor]].band
+	m.bandFolded[b] = !m.bandFolded[b]
+	m.recomputeAgentNav()
+	m.agentCursor = m.agentNavIndexForBand(b)
+	m.dismissNotice()
+	m.refreshPreview()
+	return m, nil
+}
+
+// agentNavIndexForBand returns the agentNav index of band b's navigable stand-in: its header
+// when folded, otherwise its first agent. agentNav is in band order, so the first nav entry
+// in band b is exactly that stand-in. Falls back to the clamped cursor when b has none.
+func (m model) agentNavIndexForBand(b agentBand) int {
+	for ci, ii := range m.agentNav {
+		if m.agentItems[ii].band == b {
+			return ci
+		}
+	}
+	return clamp(m.agentCursor, 0, max(len(m.agentNav)-1, 0))
 }
 
 // focusSession moves the cursor onto the first navigable row whose pane lives in the
@@ -945,6 +1231,37 @@ func (m model) selVisiblePos(vis []int) int {
 func (m *model) syncViewport() {
 	vis := m.visibleItems()
 	m.top = windowTop(m.top, m.selVisiblePos(vis), m.listCap(), len(vis))
+	avis := m.visibleAgentItems()
+	m.agentTop = windowTop(m.agentTop, m.agentSelVisiblePos(avis), m.listCap(), len(avis))
+}
+
+// visibleAgentItems is the agentItems indices that render, in order: every item except
+// agents hidden beneath a folded band. This is the sequence the agents scroll window slides
+// over.
+func (m model) visibleAgentItems() []int {
+	out := make([]int, 0, len(m.agentItems))
+	for i, it := range m.agentItems {
+		if !it.header && m.bandFolded[it.band] {
+			continue
+		}
+		out = append(out, i)
+	}
+	return out
+}
+
+// agentSelVisiblePos is the position of the selected agent item within visibleAgentItems
+// (0 when none).
+func (m model) agentSelVisiblePos(vis []int) int {
+	if m.agentCursor < 0 || m.agentCursor >= len(m.agentNav) {
+		return 0
+	}
+	target := m.agentNav[m.agentCursor]
+	for p, i := range vis {
+		if i == target {
+			return p
+		}
+	}
+	return 0
 }
 
 // windowTop returns the first-visible index for a list of n items with a window of h
@@ -977,11 +1294,11 @@ func (m model) View() string {
 		return m.emptyView()
 	}
 
-	list := panelTitle(frameStyle.Render(m.renderRows()), "agents", m.accent)
+	left := m.renderLenses()
 
-	body := list
+	body := left
 	if m.showPreview() {
-		body = lipgloss.JoinHorizontal(lipgloss.Top, list, "  ", m.renderPreview(list))
+		body = lipgloss.JoinHorizontal(lipgloss.Top, left, "  ", m.renderPreview(left))
 	}
 	if m.mode == modeNewAgent {
 		body = overlayCenter(body, m.newAgentModal())
@@ -1204,13 +1521,18 @@ const (
 // its window label for the gray window column.
 type renderItem struct {
 	kind       renderKind
-	label      string // session name or "ungrouped" (session header)
+	label      string // session name or "(no-repo)" (session header)
+	note       string // an explanatory annotation for the bar (e.g. the incidental reason)
 	sessionKey string // owning tmux session (its own key for a session header)
 	window     string // the row's window/worktree label (gray column)
 	count      int    // leaves in the session, for the folded header's count
 	managed    bool   // the session is a recognized managed repo (session header)
 	worktrees  int    // worktree count, for the managed indicator (session header)
 	rowIdx     int    // index into model.rows, for kindRow
+	// badgeStatus/badgeCount summarize a section's most-urgent live agent status for the
+	// bar's non-positional status badge. badgeStatus is "" when the section has no agents.
+	badgeStatus Status
+	badgeCount  int
 }
 
 // windowLabel is how a row's window is shown in the gray column: its tmux window name
@@ -1241,9 +1563,10 @@ type repoGroup struct {
 // order alongside the interleaved header/row items the view draws. Grouping is by
 // repository (git-common-dir), not tmux session: a repository's rows may come from
 // panes in several sessions and still collect under one section. Sections are ordered by
-// their most-urgent agent (lowest status rank), then by name. Within a section the anchor
-// (if any) is pinned first, agents follow by status rank then title, and empty worktree
-// slots sort last. Incidental agents (no repository) collect under a "(no-repo)" heading.
+// a stable key (repository name), never by status, so a watched section holds position;
+// the incidental "(no-repo)" bucket sorts last. Within a section the anchor (if any) is
+// pinned first, agents follow by worktree name then title, and empty worktree slots sort
+// last. Status is conveyed by a per-row indicator, not by position.
 func groupRows(in []Row) ([]Row, []renderItem) {
 	if len(in) == 0 {
 		return nil, nil
@@ -1272,20 +1595,32 @@ func groupRows(in []Row) ([]Row, []renderItem) {
 		}
 	}
 	sort.SliceStable(groups, func(i, j int) bool {
-		if ri, rj := groupRank(groups[i].rows), groupRank(groups[j].rows); ri != rj {
-			return ri < rj
+		// Stable identity order: named repositories by name, with the incidental
+		// (no-repo) bucket last. A section's position never depends on its agents'
+		// status, so a section a user is watching holds still when its agent changes
+		// state; cross-group urgency lives in the Agents lens instead (see dash-lenses).
+		li, lj := groups[i].label, groups[j].label
+		if ei, ej := li == "", lj == ""; ei != ej {
+			return ej // a named section sorts before the empty (incidental) bucket
 		}
-		return groups[i].label < groups[j].label
+		return li < lj
 	})
 
 	ordered := make([]Row, 0, len(in))
 	items := make([]renderItem, 0, len(in)+len(groups))
 	for _, g := range groups {
 		label := g.label
+		note := ""
 		if label == "" {
+			// The incidental bucket: every row here failed git-native recognition, so it
+			// states why it offers no worktrees or slots rather than an opaque label.
 			label = "(no-repo)"
+			if len(g.rows) > 0 {
+				note = incidentalReason(g.rows[0])
+			}
 		}
-		items = append(items, renderItem{kind: kindSession, label: label, sessionKey: g.key, count: len(g.rows), managed: g.isRepo, worktrees: g.worktrees})
+		badgeStatus, badgeCount := sectionBadge(g.rows)
+		items = append(items, renderItem{kind: kindSession, label: label, note: note, sessionKey: g.key, count: len(g.rows), managed: g.isRepo, worktrees: g.worktrees, badgeStatus: badgeStatus, badgeCount: badgeCount})
 		for _, r := range g.rows {
 			ordered = append(ordered, r)
 			items = append(items, renderItem{
@@ -1297,6 +1632,119 @@ func groupRows(in []Row) ([]Row, []renderItem) {
 		}
 	}
 	return ordered, items
+}
+
+// agentBand is a fixed triage band in the Agents lens. Bands render in this order, are
+// always shown (dimmed when empty), and an agent's band follows only its status, so a
+// status change moves an agent between bands without reordering its band peers.
+type agentBand int
+
+const (
+	bandNeedsYou agentBand = iota
+	bandWorking
+	bandIdle
+	bandDone
+	numBands
+)
+
+// bandLabels are the band headers, in render order.
+var bandLabels = [numBands]string{
+	bandNeedsYou: "NEEDS YOU",
+	bandWorking:  "WORKING",
+	bandIdle:     "IDLE",
+	bandDone:     "DONE",
+}
+
+// lensID names the two always-visible lenses over the same row set.
+type lensID int
+
+const (
+	lensWorkspaces lensID = iota // right: repository→row tree, stable-ordered
+	lensAgents                   // left: flat triage list in status bands
+)
+
+// agentItem is one line of the Agents lens: a band header (always shown, not navigable)
+// or an agent leaf pointing into model.agentRows.
+type agentItem struct {
+	band   agentBand
+	header bool // a band header line rather than an agent row
+	count  int  // agents in the band, for a header line
+	rowIdx int  // index into model.agentRows when !header
+}
+
+// bandOf maps a status to its triage band. needs-attention, working, and done map to
+// their own bands; idle and unknown (no fresh state) both read as quiet and fall in IDLE.
+func bandOf(s Status) agentBand {
+	switch s {
+	case StatusNeedsAttention:
+		return bandNeedsYou
+	case StatusWorking:
+		return bandWorking
+	case StatusDone:
+		return bandDone
+	default:
+		return bandIdle
+	}
+}
+
+// agentsByBand projects rows into the Agents lens: only RowAgent rows, bucketed by band
+// and ordered within each band by most-recent status change (newest first), falling back
+// to worktree then title when the change time is absent (zero Updated). The DONE band's
+// membership is governed by the existing process-liveness GC upstream - a done agent is
+// present here only while its process lives - so this projection adds no time window.
+func agentsByBand(in []Row) [numBands][]Row {
+	var bands [numBands][]Row
+	for _, r := range in {
+		if r.Kind != RowAgent {
+			continue
+		}
+		b := bandOf(r.Status)
+		bands[b] = append(bands[b], r)
+	}
+	for b := range bands {
+		rows := bands[b]
+		sort.SliceStable(rows, func(i, j int) bool {
+			if !rows[i].Updated.Equal(rows[j].Updated) {
+				return rows[i].Updated.After(rows[j].Updated) // newest first
+			}
+			if rows[i].Worktree != rows[j].Worktree {
+				return rows[i].Worktree < rows[j].Worktree
+			}
+			return rows[i].Title < rows[j].Title
+		})
+	}
+	return bands
+}
+
+// sectionBadge summarizes a section's live agents for the bar's status badge: the
+// most-urgent status present and how many agents share it. It returns ("", 0) when the
+// section has no live agents, so a quiet section shows no badge and is not ranked by it.
+func sectionBadge(rows []Row) (Status, int) {
+	best := Status("")
+	bestRank := int(^uint(0) >> 1)
+	count := 0
+	for _, r := range rows {
+		if r.Kind != RowAgent {
+			continue
+		}
+		if rk := r.Status.rank(); rk < bestRank {
+			best, bestRank, count = r.Status, rk, 1
+		} else if r.Status == best {
+			count++
+		}
+	}
+	return best, count
+}
+
+// incidentalReason explains why a row is not grouped under a recognized repository, shown
+// on the incidental (no-repo) section. Recognition is git-native (any pane or agent path
+// resolving to a git worktree is recognized), so the only reason a row lands here is that
+// its directory is not a git repository. Empty when the row belongs to a recognized repo.
+func incidentalReason(r Row) string {
+	if r.GitDir != "" {
+		return ""
+	}
+	return "not a git repo"
 }
 
 // locatorHint returns the `[in: <session>]` suffix for a row whose pane lives outside its
@@ -1322,17 +1770,24 @@ func rowLabel(r Row) string {
 	return windowLabel(r.TmuxWindow, r.TmuxWindowName)
 }
 
-// rowLess orders rows within a session: the anchor first, then by status rank, with
-// empty slots last; ties break by title.
+// rowLess orders rows within a section stably: the anchor first, empty slots last, and
+// agents in between by worktree name then title. Status is deliberately absent from the
+// key - it is shown as a per-row indicator, so a row does not move when its agent's state
+// changes. Ordering by worktree (before title) keeps a worktree's co-located agents
+// adjacent at that worktree's name position.
 func rowLess(a, b Row) bool {
 	if ra, rb := rowRank(a), rowRank(b); ra != rb {
 		return ra < rb
 	}
+	if a.Worktree != b.Worktree {
+		return a.Worktree < b.Worktree
+	}
 	return a.Title < b.Title
 }
 
-// rowRank ranks a row for within-session ordering: anchor before everything, slots
-// after everything, agents by their status rank in between.
+// rowRank ranks a row for within-section ordering: anchor before everything, slots after
+// everything, agents in between. Agents share one rank so they sort among themselves by
+// name (see rowLess), never by status.
 func rowRank(r Row) int {
 	switch r.Kind {
 	case RowAnchor:
@@ -1340,29 +1795,8 @@ func rowRank(r Row) int {
 	case RowSlot:
 		return 100
 	default:
-		return r.Status.rank()
+		return 0
 	}
-}
-
-// groupRank is the urgency of a session: the lowest (most-urgent) status rank among
-// its live agents. A session with no live agents (e.g. a managed repo of only an
-// anchor and slots) sorts as if idle so it sits among quiet sessions.
-func groupRank(rows []Row) int {
-	r := int(^uint(0) >> 1) // max int
-	has := false
-	for _, row := range rows {
-		if row.Kind != RowAgent {
-			continue
-		}
-		has = true
-		if rk := row.Status.rank(); rk < r {
-			r = rk
-		}
-	}
-	if !has {
-		return StatusIdle.rank()
-	}
-	return r
 }
 
 // renderRows draws the visible window of items: a leftmost cursor column, then the
@@ -1370,6 +1804,42 @@ func groupRank(rows []Row) int {
 // and only the slice [top, top+cap) is drawn so the list never overflows the panel.
 // The window top is recomputed here (not just trusted from the model) so a View called
 // without a prior Update — e.g. directly in a test — still keeps the cursor on-screen.
+// hlState is a row's highlight in a lens: the focused cursor, the dimmer mirror of the
+// focused selection shown in the *other* lens, or none.
+type hlState int
+
+const (
+	hlNone   hlState = iota
+	hlCursor         // this lens holds focus and this is its selected row
+	hlMirror         // the focused lens's selection, shown in the non-focused lens
+)
+
+// renderLenses composes the left side of the body: both lenses side by side when the
+// terminal is wide enough, otherwise just the focused lens (the narrow-terminal fallback,
+// still toggled with the focus keys). The focused lens's panel title carries the accent; the
+// other reads gray, so focus is visible without color alone via the cursor glyph too.
+func (m model) renderLenses() string {
+	if !m.dualLens() {
+		if m.focus == lensAgents {
+			return m.lensPanel(lensAgents, "agents", m.renderAgents())
+		}
+		return m.lensPanel(lensWorkspaces, "workspaces", m.renderRows())
+	}
+	ws := m.lensPanel(lensWorkspaces, "workspaces", m.renderRows())
+	ag := m.lensPanel(lensAgents, "agents", m.renderAgents())
+	return lipgloss.JoinHorizontal(lipgloss.Top, ag, "  ", ws)
+}
+
+// lensPanel frames a lens's body with its title, accenting the title when the lens is
+// focused and graying it otherwise.
+func (m model) lensPanel(lens lensID, title, body string) string {
+	color := lipColor(theme.Gray)
+	if m.focus == lens {
+		color = m.accent
+	}
+	return panelTitle(frameStyle.Render(body), title, color)
+}
+
 func (m model) renderRows() string {
 	vis := m.visibleItems()
 	h := m.listCap()
@@ -1377,69 +1847,215 @@ func (m model) renderRows() string {
 	end := min(top+h, len(vis))
 
 	selItem := -1
-	if m.cursor >= 0 && m.cursor < len(m.nav) {
+	if m.focus == lensWorkspaces && m.cursor >= 0 && m.cursor < len(m.nav) {
 		selItem = m.nav[m.cursor]
+	}
+	mirrorID := ""
+	if m.focus == lensAgents {
+		mirrorID = m.selectedAgentID()
 	}
 	rows := make([]string, 0, end-top)
 	for _, i := range vis[top:end] {
 		it := m.items[i]
-		selected := i == selItem
-		rows = append(rows, m.cursorCol(selected)+m.rowBody(it, selected))
+		hl := hlNone
+		switch {
+		case i == selItem:
+			hl = hlCursor
+		case mirrorID != "" && it.kind == kindRow && m.rows[it.rowIdx].SessionID == mirrorID:
+			hl = hlMirror
+		}
+		if it.kind == kindSession {
+			rows = append(rows, m.sessionBar(it, hl))
+			continue
+		}
+		rows = append(rows, m.cursorCol(hl)+m.leafRow(it, hl == hlCursor))
 	}
 	return strings.Join(rows, "\n")
 }
 
-// cursorCol is the leftmost column: the cursor glyph on the selected row, else blank.
-// It applies to whatever row the cursor is on, including a folded session header.
-func (m model) cursorCol(selected bool) string {
+// renderAgents draws the Agents lens: always all four band headers (a section bar when
+// populated, faint when empty), with each unfolded band's agents beneath, windowed to the
+// visible height. A folded band collapses to its header. The focused cursor highlights the
+// selected agent (or folded band header); when the Workspaces lens is focused instead, its
+// selected agent shows here with the dimmer mirror highlight (on the band header if that
+// band is folded).
+func (m model) renderAgents() string {
+	cw := m.agentsContentWidth()
+	if !m.dualLens() {
+		if t := m.listTargetWidth(); t > cw {
+			cw = t // sole panel in the fallback: fill like the workspaces list would
+		}
+	}
+	h := m.listCap()
+	vis := m.visibleAgentItems()
+	top := windowTop(m.agentTop, m.agentSelVisiblePos(vis), h, len(vis))
+	end := min(top+h, len(vis))
+
+	selItem := -1
+	if m.focus == lensAgents && m.agentCursor >= 0 && m.agentCursor < len(m.agentNav) {
+		selItem = m.agentNav[m.agentCursor]
+	}
+	mirrorID := ""
+	if m.focus == lensWorkspaces {
+		mirrorID = m.selectedAgentID()
+	}
+	rows := make([]string, 0, end-top)
+	for _, i := range vis[top:end] {
+		it := m.agentItems[i]
+		if it.header {
+			folded := m.bandFolded[it.band] && it.count > 0
+			hl := hlNone
+			switch {
+			case folded && i == selItem:
+				hl = hlCursor
+			case folded && mirrorID != "" && m.bandHasAgent(it.band, mirrorID):
+				hl = hlMirror
+			}
+			rows = append(rows, m.bandBar(it.band, it.count, cw, folded, hl))
+			continue
+		}
+		r := m.agentRows[it.rowIdx]
+		hl := hlNone
+		switch {
+		case i == selItem:
+			hl = hlCursor
+		case mirrorID != "" && r.SessionID == mirrorID:
+			hl = hlMirror
+		}
+		rows = append(rows, m.cursorCol(hl)+m.agentLeaf(r, cw, hl == hlCursor))
+	}
+	return strings.Join(rows, "\n")
+}
+
+// bandHasAgent reports whether band b currently holds the agent with the given session id
+// (used to mirror a Workspaces selection onto a folded band's header).
+func (m model) bandHasAgent(b agentBand, id string) bool {
+	for _, it := range m.agentItems {
+		if !it.header && it.band == b && m.agentRows[it.rowIdx].SessionID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// barGutter renders the cursor-column cell over the section-bar background: the accent
+// cursor glyph on the focused selection, a faint accent glyph on its mirror, else a blank
+// cell - so a section bar's distinct background runs unbroken across the gutter.
+func (m model) barGutter(hl hlState) string {
+	switch hl {
+	case hlCursor:
+		return cursorGlyphStyle(m.accent).Background(lipColor(theme.SessionBg)).Render(theme.CursorGlyph + " ")
+	case hlMirror:
+		return cursorGlyphStyle(m.accent).Faint(true).Background(lipColor(theme.SessionBg)).Render(theme.CursorGlyph + " ")
+	default:
+		return sessionBarStyle.Render(strings.Repeat(" ", cursorColWidth))
+	}
+}
+
+// sectionBar renders an edge-to-edge section header over the full list width (cursor gutter
+// included), shared by both lenses so a repository header and a status band read as the same
+// kind of thing. left is pinned to the start (after the gutter), right (a count or badge, may
+// be "") is pinned to the right edge, and the cursor/mirror glyph sits in the gutter over the
+// bar. A faint bar (an empty band) drops to dim text with a blank gutter.
+func (m model) sectionBar(left, right string, contentW int, hl hlState, faint bool) string {
+	fullW := cursorColWidth + contentW
+	if faint {
+		body := strings.Repeat(" ", cursorColWidth) + left
+		return sessionBarStyle.Bold(false).Faint(true).Width(fullW).Render(truncate(body, fullW))
+	}
+	leftSeg := m.barGutter(hl) + sessionBarStyle.Render(left)
+	gap := fullW - lipgloss.Width(leftSeg) - lipgloss.Width(right)
+	if gap < 1 {
+		body := strings.Repeat(" ", cursorColWidth) + left
+		if right != "" {
+			body += "  " + right
+		}
+		return sessionBarStyle.Width(fullW).Render(truncate(body, fullW))
+	}
+	out := leftSeg + sessionBarStyle.Render(strings.Repeat(" ", gap))
+	if right != "" {
+		out += sessionBarCountStyle.Render(right)
+	}
+	return out
+}
+
+// bandBar renders a triage band's header as a section bar. A populated band is bold, carries
+// the ▾/▸ fold caret, and pins its count to the right edge (a folded band shows the collapsed
+// caret and its hidden-agent count). An empty band keeps the bar but goes faint with no caret
+// or count - still clearly a section, just a quiet "all clear". It is not foldable.
+func (m model) bandBar(b agentBand, count, contentW int, folded bool, hl hlState) string {
+	label := bandLabels[b]
+	if count == 0 {
+		// Indent by the caret's width ("▾ ") so an empty band's label lines up with the
+		// populated bands' labels rather than sitting two columns to its left.
+		return m.sectionBar("  "+label, "", contentW, hlNone, true)
+	}
+	caret := "▾"
+	if folded {
+		caret = "▸"
+	}
+	return m.sectionBar(caret+" "+label, fmt.Sprintf("%d", count), contentW, hl, false)
+}
+
+// agentLeaf renders one agent row in the Agents lens: the status gutter (glyph + word) then
+// the title, padded to the panel width. The focused selection carries the full-row
+// highlight; the cursor/mirror glyph is drawn separately in the cursor column.
+func (m model) agentLeaf(r Row, w int, selected bool) string {
+	gutter, st := gutterFor(r)
+	nameW := max(w-statusColWidth, 1)
+	title := padRight(truncate(displayTitle(r.Title, r.TmuxSession), nameW), nameW)
+	gutterSt, nameSt := st, nameColStyle
 	if selected {
+		gutterSt = gutterSt.Background(rowHL)
+		nameSt = nameSt.Background(rowHL).Bold(true)
+	}
+	return gutterSt.Render(gutter) + nameSt.Render(title)
+}
+
+// cursorCol is the leftmost column: the accent cursor glyph on the focused selection, a
+// faint accent glyph on its mirror in the other lens, else blank.
+func (m model) cursorCol(hl hlState) string {
+	switch hl {
+	case hlCursor:
 		return cursorGlyphStyle(m.accent).Render(theme.CursorGlyph + " ")
+	case hlMirror:
+		return cursorGlyphStyle(m.accent).Faint(true).Render(theme.CursorGlyph + " ")
+	default:
+		return strings.Repeat(" ", cursorColWidth)
 	}
-	return strings.Repeat(" ", cursorColWidth)
 }
 
-// rowBody renders an item's content to the right of the cursor column.
-func (m model) rowBody(it renderItem, selected bool) string {
-	switch it.kind {
-	case kindSession:
-		return m.sessionBar(it)
-	case kindRow:
-		return m.leafRow(it, selected)
-	}
-	return ""
-}
-
-// sessionBar renders a session header as a full-width bar, left-aligned to the start
-// of the list. A managed repo carries the worktree-source indicator and its worktree
-// count; a folded section shows a collapsed glyph and its hidden-row count.
-func (m model) sessionBar(it renderItem) string {
+// sessionBar renders a session header as an edge-to-edge section bar (see sectionBar),
+// left-aligned to the start of the list. A managed repo carries the worktree-source
+// indicator and its right-pinned badge/worktree count; a folded section shows a collapsed
+// glyph and its hidden-row count. The cursor/mirror glyph sits in the gutter over the bar.
+func (m model) sessionBar(it renderItem, hl hlState) string {
 	name := it.label
 	if it.managed {
 		name = managedGlyph + " " + it.label
 	}
 	w := m.rowContentWidth()
-	switch {
-	case m.folded[it.sessionKey]:
-		return sessionBarStyle.Width(w).Render(truncate(fmt.Sprintf("▸ %s  (%d)", name, it.count), w))
-	case it.managed && it.worktrees > 0:
-		return m.barWithCount("▾ "+name, fmt.Sprintf("%d wt", it.worktrees))
-	default:
-		return sessionBarStyle.Width(w).Render(truncate("▾ "+name, w))
+	if m.folded[it.sessionKey] {
+		return m.sectionBar("▸ "+name, fmt.Sprintf("%d", it.count), w, hl, false)
 	}
+	return m.sectionBar("▾ "+name, m.sessionBarRight(it), w, hl, false)
 }
 
-// barWithCount renders a full-width session bar with left pinned to the start and a
-// subtle count pinned to the right edge, over a continuous bar background. When the
-// two would not fit, it degrades to a single left-aligned, truncated label.
-func (m model) barWithCount(left, count string) string {
-	w := m.rowContentWidth()
-	gap := w - lipgloss.Width(left) - lipgloss.Width(count)
-	if gap < 1 {
-		return sessionBarStyle.Width(w).Render(truncate(left+"  "+count, w))
+// sessionBarRight builds the bar's right-pinned annotation: the most-urgent-status badge
+// (a status glyph + count, paired so it never relies on color alone) followed by the
+// worktree count for a managed repo. Either part may be absent.
+func (m model) sessionBarRight(it renderItem) string {
+	var parts []string
+	if it.badgeStatus != "" {
+		parts = append(parts, statusGlyph[it.badgeStatus]+" "+fmt.Sprintf("%d", it.badgeCount))
 	}
-	return sessionBarStyle.Render(left) +
-		sessionBarStyle.Render(strings.Repeat(" ", gap)) +
-		sessionBarCountStyle.Render(count)
+	if it.note != "" {
+		parts = append(parts, it.note)
+	}
+	if it.managed && it.worktrees > 0 {
+		parts = append(parts, fmt.Sprintf("%d wt", it.worktrees))
+	}
+	return strings.Join(parts, "  ")
 }
 
 // leafRow renders one row at fixed columns: the status/marker gutter (glyph + word), an
@@ -1514,7 +2130,7 @@ func (m model) showPreview() bool {
 	if _, isNoop := m.prev.(NoopPreviewer); isNoop {
 		return false
 	}
-	return m.width >= previewMinWidth
+	return m.mainWidth() >= previewMinWidth
 }
 
 // renderPreview renders the preview pane beside the list. It fills the leftover
@@ -1597,9 +2213,23 @@ func (m model) renderHelp() string {
 		if len(keys) == 0 {
 			continue
 		}
+		if a == ActionFocusLeft {
+			// Show both directions as one hint: the primary left/right keys joined.
+			left, right := firstKey(m.keys[ActionFocusLeft]), firstKey(m.keys[ActionFocusRight])
+			parts = append(parts, prettyKey(left)+"/"+prettyKey(right)+" "+actionLabel[a])
+			continue
+		}
 		parts = append(parts, prettyKeys(keys)+" "+actionLabel[a])
 	}
 	return helpStyle.Render(strings.Join(parts, " · "))
+}
+
+// firstKey returns the first bound key, or "" when none.
+func firstKey(keys []string) string {
+	if len(keys) == 0 {
+		return ""
+	}
+	return keys[0]
 }
 
 // prettyKeys renders up to the first two bound keys for a help hint.

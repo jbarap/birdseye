@@ -82,12 +82,17 @@ func send(m model, msg tea.Msg) model {
 	return nm.(model)
 }
 
+// mustModel builds a test model focused on the Workspaces lens. Most interaction tests
+// drive that lens (its tree, sections, slots, base, fold, and cross-group motions), so it
+// is the convenient default here; production opens on the Agents lens instead (pinned by
+// TestDefaultFocusIsAgents). Lens-focus tests set m.focus explicitly.
 func mustModel(t *testing.T, list []Agent, prev Previewer, km Keymap) model {
 	t.Helper()
 	m, err := nm(&fakeSource{list: list}, prev, km)
 	if err != nil {
 		t.Fatal(err)
 	}
+	m.focus = lensWorkspaces
 	return m
 }
 
@@ -115,8 +120,13 @@ func rowsOf(ags ...Agent) []Row {
 
 // rowModel builds a model over fixed, repo-tagged rows (rowsOf), for the section/fold
 // mechanics tests that need repository-keyed grouping rather than the plain agent source.
+// Like mustModel it focuses the Workspaces lens (see mustModel); production opens on Agents.
 func rowModel(km Keymap, ags ...Agent) (model, error) {
-	return newModel(fixedRows{rowsOf(ags...)}, nil, km, 0)
+	m, err := newModel(fixedRows{rowsOf(ags...)}, nil, km, 0)
+	if err == nil {
+		m.focus = lensWorkspaces
+	}
+	return m, err
 }
 
 func TestNavigationVimMotions(t *testing.T) {
@@ -202,8 +212,8 @@ func TestRebindReplacesDefaultKey(t *testing.T) {
 	}
 }
 
-func TestRefreshPreservesSelectionAcrossResort(t *testing.T) {
-	src := &fakeSource{list: agentsN(3)} // sessions a,b,c all working → grouped order a,b,c
+func TestRefreshKeepsStableOrderAndSelection(t *testing.T) {
+	src := &fakeSource{list: agentsN(3)} // sessions a,b,c all working → name order a,b,c
 	m, err := nm(src, nil, DefaultKeymap())
 	if err != nil {
 		t.Fatal(err)
@@ -213,14 +223,18 @@ func TestRefreshPreservesSelectionAcrossResort(t *testing.T) {
 	}
 	m.cursor = 1 // on "b"
 
-	// b's session now needs attention, so its group floats to the top and b moves
-	// to index 0. Selection must follow b by identity, not cling to index 1.
+	// b's agent now needs attention. Ordering is by name, not status, so b must NOT
+	// move - the section a user is watching holds position - and selection stays on it.
 	updated := agentsN(3)
 	updated[1].Status = StatusNeedsAttention
 	src.list = updated
 	m = send(m, tickMsg(time.Now()))
-	if m.cursor != 0 || m.rows[m.cursor].SessionID != "b" {
-		t.Fatalf("selection should follow agent b to index 0, got %d (%s)", m.cursor, m.rows[m.cursor].SessionID)
+	if m.rows[0].SessionID != "a" || m.rows[1].SessionID != "b" || m.rows[2].SessionID != "c" {
+		t.Fatalf("order must stay a,b,c regardless of status, got %s,%s,%s",
+			m.rows[0].SessionID, m.rows[1].SessionID, m.rows[2].SessionID)
+	}
+	if m.cursor != 1 || m.rows[m.cursor].SessionID != "b" {
+		t.Fatalf("selection should stay on b at index 1, got %d (%s)", m.cursor, m.rows[m.cursor].SessionID)
 	}
 }
 
@@ -303,6 +317,7 @@ func TestPreviewPlaceholderByRowKind(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			m.focus = lensWorkspaces // slot/base are Workspaces-lens rows
 			got := m.previewPlaceholder()
 			if !strings.Contains(got, tc.want) {
 				t.Fatalf("placeholder %q should contain %q", got, tc.want)
@@ -598,10 +613,10 @@ func TestGroupAgentsFlatSessionOrderAndWindowLabels(t *testing.T) {
 	ordered, items := groupRows(rowsOf(in...))
 
 	want := []string{
-		"S:api-server",          // needs-attn session floats above web (all-done)
-		"A:refactor auth@win 1", // agents ordered by urgency within the session, window is
-		"A:write tests@win 1",   // just a label (here win 1's two agents happen to be adjacent)
-		"A:migrate db@win 2",    // no window headers, no inline-collapse special case
+		"S:api-server",          // sections by name: api-server before web (not by status)
+		"A:migrate db@win 2",    // agents ordered by title within the section, independent of
+		"A:refactor auth@win 1", // status and of which window they occupy (no window headers,
+		"A:write tests@win 1",   // no inline-collapse special case)
 		"S:web",
 		"A:ship landing@win 0",
 	}
@@ -610,9 +625,10 @@ func TestGroupAgentsFlatSessionOrderAndWindowLabels(t *testing.T) {
 	}
 }
 
-func TestGroupAgentsWindowLabelNotForcedContiguous(t *testing.T) {
-	// Within one session, urgency ordering wins: two agents sharing a window are not
-	// pulled adjacent — a more-urgent agent from another window sits between them.
+func TestGroupAgentsWithinSectionNameOrderIndependentOfStatus(t *testing.T) {
+	// Within one section, agents order by name (title here), independent of status and of
+	// which window they occupy. Titles are deliberately in the reverse of status-rank order
+	// to prove status no longer participates in the sort.
 	in := []Agent{
 		ag("s", "1", "low", StatusIdle),
 		ag("s", "1", "high", StatusNeedsAttention),
@@ -621,12 +637,12 @@ func TestGroupAgentsWindowLabelNotForcedContiguous(t *testing.T) {
 	ordered, items := groupRows(rowsOf(in...))
 	want := []string{
 		"S:s",
-		"A:high@win 1", // needs-attn
-		"A:mid@win 2",  // working sits between the two win 1 agents
-		"A:low@win 1",  // idle
+		"A:high@win 1", // h < l < m by title, regardless of attn/idle/work
+		"A:low@win 1",
+		"A:mid@win 2",
 	}
 	if got := shape(ordered, items); !reflect.DeepEqual(got, want) {
-		t.Fatalf("non-contiguity shape mismatch:\n got %v\nwant %v", got, want)
+		t.Fatalf("within-section name-order shape mismatch:\n got %v\nwant %v", got, want)
 	}
 }
 
@@ -660,15 +676,298 @@ func TestGroupAgentsUngroupedBucket(t *testing.T) {
 	}
 	ordered, items := groupRows(rowsOf(in...))
 
-	// The no-repo bucket (working, more urgent) floats above the done session.
+	// The incidental no-repo bucket always sorts last, after named repositories,
+	// regardless of its agents' status.
 	want := []string{
-		"S:(no-repo)",
-		"A:loose", // no tmux window → no inline label
 		"S:api",
 		"A:real one@win 0",
+		"S:(no-repo)",
+		"A:loose", // no tmux window → no inline label
 	}
 	if got := shape(ordered, items); !reflect.DeepEqual(got, want) {
 		t.Fatalf("no-repo bucket shape mismatch:\n got %v\nwant %v", got, want)
+	}
+}
+
+// TestGroupWithinSectionAnchorFirstSlotsLast pins the managed-repo within-section order:
+// the anchor first, agents (by worktree name) in the middle, empty slots last - all
+// independent of status.
+func TestGroupWithinSectionAnchorFirstSlotsLast(t *testing.T) {
+	gd := "/repo/.git"
+	kindName := map[RowKind]string{RowAgent: "agent", RowAnchor: "anchor", RowSlot: "slot"}
+	mk := func(kind RowKind, wt string, st Status) Row {
+		return Row{Kind: kind, SessionID: kindName[kind] + wt, TmuxSession: "proj", Repo: "proj", GitDir: gd, Worktree: wt, Status: st}
+	}
+	in := []Row{
+		mk(RowSlot, "zeta", StatusUnknown),
+		mk(RowAgent, "delta", StatusIdle),
+		mk(RowAgent, "alpha", StatusNeedsAttention), // most urgent, but must NOT float
+		mk(RowAnchor, "main", StatusUnknown),
+	}
+	ordered, _ := groupRows(in)
+	var got []string
+	for _, r := range ordered {
+		got = append(got, kindName[r.Kind]+":"+r.Worktree)
+	}
+	want := []string{
+		"anchor:main", // anchor pinned first
+		"agent:alpha", // agents by worktree name (alpha < delta), not status
+		"agent:delta",
+		"slot:zeta", // empty slot last
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("within-section order mismatch:\n got %v\nwant %v", got, want)
+	}
+}
+
+// TestAgentsByBand checks the Agents-lens projection: agents bucket by status band, only
+// RowAgent rows appear, and within a band the most-recently-changed agent comes first.
+func TestAgentsByBand(t *testing.T) {
+	t0 := time.Now()
+	mk := func(title string, st Status, ageSec int) Row {
+		return Row{Kind: RowAgent, SessionID: title, Title: title, Status: st, Updated: t0.Add(-time.Duration(ageSec) * time.Second)}
+	}
+	in := []Row{
+		mk("w-old", StatusWorking, 30),
+		mk("w-new", StatusWorking, 1),
+		mk("blocked", StatusNeedsAttention, 10),
+		mk("quiet", StatusIdle, 5),
+		mk("stale", StatusUnknown, 2), // unknown reads as quiet → IDLE band
+		mk("finished", StatusDone, 0),
+		{Kind: RowAnchor, Worktree: "main"}, // structural rows are excluded
+		{Kind: RowSlot, Worktree: "spike"},
+	}
+	bands := agentsByBand(in)
+
+	titles := func(b agentBand) []string {
+		var out []string
+		for _, r := range bands[b] {
+			out = append(out, r.Title)
+		}
+		return out
+	}
+	if got := titles(bandNeedsYou); !reflect.DeepEqual(got, []string{"blocked"}) {
+		t.Fatalf("NEEDS YOU = %v", got)
+	}
+	if got := titles(bandWorking); !reflect.DeepEqual(got, []string{"w-new", "w-old"}) {
+		t.Fatalf("WORKING should be newest-first, got %v", got)
+	}
+	if got := titles(bandIdle); !reflect.DeepEqual(got, []string{"stale", "quiet"}) {
+		// stale (2s) is newer than quiet (5s); unknown lands in IDLE.
+		t.Fatalf("IDLE = %v", got)
+	}
+	if got := titles(bandDone); !reflect.DeepEqual(got, []string{"finished"}) {
+		t.Fatalf("DONE = %v", got)
+	}
+}
+
+// TestAgentsByBandNameFallback: when status-change times are absent (zero Updated), a
+// band orders by worktree then title instead of recency.
+func TestAgentsByBandNameFallback(t *testing.T) {
+	mk := func(wt, title string) Row {
+		return Row{Kind: RowAgent, Title: title, Status: StatusWorking, Worktree: wt}
+	}
+	in := []Row{mk("b", "z"), mk("a", "y"), mk("a", "x")}
+	got := agentsByBand(in)[bandWorking]
+	var labels []string
+	for _, r := range got {
+		labels = append(labels, r.Worktree+"/"+r.Title)
+	}
+	if !reflect.DeepEqual(labels, []string{"a/x", "a/y", "b/z"}) {
+		t.Fatalf("name fallback order = %v", labels)
+	}
+}
+
+func TestIncidentalReason(t *testing.T) {
+	if got := incidentalReason(Row{GitDir: "/repo/.git"}); got != "" {
+		t.Fatalf("a recognized repo row has no incidental reason, got %q", got)
+	}
+	if got := incidentalReason(Row{GitDir: ""}); got != "not a git repo" {
+		t.Fatalf("a no-repo row explains itself, got %q", got)
+	}
+}
+
+// TestSectionBadgeAndIncidentalNote: a section bar carries its most-urgent-status badge
+// (glyph status + count), a no-agent section carries none, and the incidental bucket states
+// its reason.
+func TestSectionBadgeAndIncidentalNote(t *testing.T) {
+	rows := []Row{
+		{Kind: RowAgent, SessionID: "a", Repo: "r", GitDir: "/g", Worktree: "main", Title: "x", Status: StatusNeedsAttention},
+		{Kind: RowAgent, SessionID: "b", Repo: "r", GitDir: "/g", Worktree: "feat", Title: "y", Status: StatusWorking},
+		{Kind: RowAgent, SessionID: "c", Title: "loose", Status: StatusIdle}, // no-repo
+	}
+	_, items := groupRows(rows)
+	var repoHdr, incHdr *renderItem
+	for i := range items {
+		if items[i].kind != kindSession {
+			continue
+		}
+		if items[i].label == "(no-repo)" {
+			incHdr = &items[i]
+		} else {
+			repoHdr = &items[i]
+		}
+	}
+	if repoHdr == nil || repoHdr.badgeStatus != StatusNeedsAttention || repoHdr.badgeCount != 1 {
+		t.Fatalf("repo bar should badge the most-urgent status (attn, 1), got %+v", repoHdr)
+	}
+	if incHdr == nil || incHdr.note != "not a git repo" {
+		t.Fatalf("incidental bar should state its reason, got %+v", incHdr)
+	}
+
+	// A section with only structural rows (no live agents) carries no status badge.
+	_, items2 := groupRows([]Row{{Kind: RowAnchor, Repo: "r", GitDir: "/g2", Worktree: "main", IsPrimary: true}})
+	for i := range items2 {
+		if items2[i].kind == kindSession && items2[i].badgeStatus != "" {
+			t.Fatalf("a no-agent section should have no badge, got %q", items2[i].badgeStatus)
+		}
+	}
+}
+
+// TestAgentsLensStructure: the Agents lens always carries all four band headers, with the
+// live agents as navigable leaves beneath them.
+func TestAgentsLensStructure(t *testing.T) {
+	m := mustModel(t, agentsN(2), nil, DefaultKeymap()) // a,b both working
+	headers, agents := 0, 0
+	for _, it := range m.agentItems {
+		if it.header {
+			headers++
+		} else {
+			agents++
+		}
+	}
+	if headers != int(numBands) {
+		t.Fatalf("want %d band headers always present, got %d", numBands, headers)
+	}
+	if agents != 2 || len(m.agentNav) != 2 {
+		t.Fatalf("want 2 navigable agents, got %d items / %d nav", agents, len(m.agentNav))
+	}
+}
+
+// TestDefaultFocusIsAgents pins the production initial state: the dash opens focused on
+// the Agents (left) triage lens. (mustModel overrides this to Workspaces for the bulk of
+// interaction tests; here we build the model directly to assert the real default.)
+func TestDefaultFocusIsAgents(t *testing.T) {
+	m, err := nm(&fakeSource{list: agentsN(2)}, nil, DefaultKeymap())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.focus != lensAgents {
+		t.Fatalf("dash should open focused on the Agents lens, got %v", m.focus)
+	}
+}
+
+// TestLensFocusSwitchCarriesCounterpart: h focuses the left (Agents) lens and lands on the
+// same agent selected in Workspaces; l returns focus to the right (Workspaces) lens.
+// Navigation routes to the focused lens.
+func TestLensFocusSwitchCarriesCounterpart(t *testing.T) {
+	m := mustModel(t, agentsN(3), nil, DefaultKeymap()) // a,b,c working, stable order
+	m = send(m, key("j"))                               // workspaces cursor → b
+	if r, _ := m.currentRow(); r.SessionID != "b" {
+		t.Fatalf("precondition: workspaces should select b, got %s", r.SessionID)
+	}
+
+	m = send(m, key("h")) // focus the left (Agents) lens
+	if m.focus != lensAgents {
+		t.Fatalf("h should focus the Agents lens")
+	}
+	if r, ok := m.currentRow(); !ok || r.SessionID != "b" {
+		t.Fatalf("Agents lens should land on the counterpart b, got ok=%v id=%s", ok, r.SessionID)
+	}
+
+	m = send(m, key("j")) // navigation now moves the Agents cursor
+	if r, _ := m.currentRow(); r.SessionID != "c" {
+		t.Fatalf("j in the Agents lens should advance to c, got %s", r.SessionID)
+	}
+
+	m = send(m, key("l")) // back to Workspaces; selection is linked, so it follows to c
+	if m.focus != lensWorkspaces {
+		t.Fatalf("l should focus the Workspaces lens")
+	}
+	if r, _ := m.currentRow(); r.SessionID != "c" {
+		t.Fatalf("the linked selection should carry c back to Workspaces, got %s", r.SessionID)
+	}
+}
+
+// TestAgentBandFoldCollapsesAndUnfolds: tab in the Agents lens folds the band under the
+// cursor (collapsing its agents onto the header stand-in) and unfolds it again, mirroring
+// the Workspaces fold.
+func TestAgentBandFoldCollapsesAndUnfolds(t *testing.T) {
+	in := []Agent{
+		{SessionID: "u", Title: "urgent", Status: StatusNeedsAttention, TmuxSession: "u"},
+		{SessionID: "w1", Title: "busyone", Status: StatusWorking, TmuxSession: "w1"},
+		{SessionID: "w2", Title: "busytwo", Status: StatusWorking, TmuxSession: "w2"},
+	}
+	m, err := nm(&fakeSource{list: in}, nil, DefaultKeymap())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.focus = lensAgents
+	m.width, m.height = 80, 30 // narrow → only the focused (agents) lens renders
+
+	if len(m.agentNav) != 3 {
+		t.Fatalf("unfolded: want 3 navigable agents, got %d", len(m.agentNav))
+	}
+
+	m = send(m, key("j")) // cursor: u (NEEDS YOU) → w1 (WORKING)
+	if r, ok := m.agentsCurrentRow(); !ok || r.SessionID != "w1" {
+		t.Fatalf("precondition: cursor should be on w1, got ok=%v id=%s", ok, r.SessionID)
+	}
+
+	m = send(m, key("tab")) // fold WORKING
+	if len(m.agentNav) != 2 {
+		t.Fatalf("after fold: want 2 navigable items (u + folded WORKING header), got %d", len(m.agentNav))
+	}
+	if _, ok := m.agentsCurrentRow(); ok {
+		t.Fatalf("cursor should rest on the folded WORKING header, not a single agent row")
+	}
+	if it := m.agentItems[m.agentNav[m.agentCursor]]; !it.header || it.band != bandWorking {
+		t.Fatalf("cursor should rest on the WORKING band header, got %+v", it)
+	}
+	v := m.View()
+	if strings.Contains(v, "busyone") || strings.Contains(v, "busytwo") {
+		t.Fatalf("a folded band must hide its agents:\n%s", v)
+	}
+	if !strings.Contains(v, "▸ WORKING") {
+		t.Fatalf("folded band header should show the collapsed glyph and label:\n%s", v)
+	}
+
+	m = send(m, key("tab")) // unfold
+	if len(m.agentNav) != 3 {
+		t.Fatalf("after unfold: want 3 navigable agents again, got %d", len(m.agentNav))
+	}
+	if r, ok := m.agentsCurrentRow(); !ok || r.SessionID != "w1" {
+		t.Fatalf("unfolding should land on the band's first agent w1, got ok=%v id=%s", ok, r.SessionID)
+	}
+	if v := m.View(); !strings.Contains(v, "busyone") {
+		t.Fatalf("unfolded band must show its agents again:\n%s", v)
+	}
+}
+
+// TestDualLensLayoutAndNarrowFallback: a wide terminal shows both lens panels; a narrow one
+// shows only the focused lens (the fallback), still switchable with the focus keys.
+func TestDualLensLayoutAndNarrowFallback(t *testing.T) {
+	prev := &fakePreviewer{out: map[string]string{}}
+	m := mustModel(t, agentsN(2), prev, DefaultKeymap())
+
+	// Assert on renderLenses (the lens area) rather than View, so the help legend's
+	// "fold (workspaces)" hint doesn't masquerade as a lens title.
+	m.width, m.height = 200, 30
+	if l := m.renderLenses(); !strings.Contains(l, "workspaces") || !strings.Contains(l, "agents") {
+		t.Fatalf("wide layout should show both lens titles")
+	}
+
+	m.width, m.height = 80, 30 // below dualLensMinWidth → single lens
+	if m.dualLens() {
+		t.Fatalf("80 cols should not be dual-lens")
+	}
+	if l := m.renderLenses(); !strings.Contains(l, "workspaces") || strings.Contains(l, "agents") {
+		t.Fatalf("narrow layout should show only the focused (workspaces) lens")
+	}
+	// Toggling focus swaps which single lens shows; h focuses the left (agents) lens.
+	m = send(m, key("h"))
+	if l := m.renderLenses(); !strings.Contains(l, "agents") || strings.Contains(l, "workspaces") {
+		t.Fatalf("narrow layout after focus-left should show only the agents lens")
 	}
 }
 
@@ -804,11 +1103,13 @@ func TestListFillsSplitShare(t *testing.T) {
 	m.split = 0.55
 
 	rendered := cursorColWidth + m.rowContentWidth() + 4
-	want := int(float64(m.width) * m.split)
+	// The Workspaces list fills its share of the region left after the Agents lens claims its
+	// column (mainWidth), not the full terminal - the two lenses share the list area now.
+	want := int(float64(m.mainWidth()) * m.split)
 	// The pane should sit at its share (within a small rounding/frame slack), not collapse to
 	// the narrow content of a one-row list.
 	if rendered < want-6 || rendered > want+6 {
-		t.Fatalf("the list should fill ~%d%% of %d (=%d), got %d", int(m.split*100), m.width, want, rendered)
+		t.Fatalf("the list should fill ~%d%% of mainWidth %d (=%d), got %d", int(m.split*100), m.mainWidth(), want, rendered)
 	}
 }
 

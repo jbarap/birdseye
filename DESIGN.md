@@ -92,9 +92,36 @@ structural **markers** (not statuses — they mark the absence/role of an agent)
 | base | `⌂ base` | the repo's primary worktree (git's main worktree; no agent) |
 | slot | `◌ slot` | a worktree with no agent — a spawn target (windowed or windowless) |
 
-A managed repo's section bar additionally carries a source-control indicator (`󱘎`) and its
-worktree count, so recognition reads from a glyph and a word, never color. Within the repo
-the base pins first and slots sort last, while live worktrees keep the status ordering.
+A managed repo's section bar additionally carries a source-control indicator (`󱘎`), its
+worktree count, and a most-urgent-status badge (a status glyph + count), so recognition and
+urgency both read from a glyph and a word, never color. Within the repo the base pins first
+and slots sort last, with live worktrees ordered by **name** in between - section and row
+position are stable identity, never status, so a row a user is watching never moves when its
+agent changes state.
+
+## Two lenses
+
+The dash is two always-visible lenses over the same agents, plus the preview:
+
+- **Agents** (left): a flat triage list in four fixed bands - `NEEDS YOU`, `WORKING`,
+  `IDLE`, `DONE` - always rendered in that order, each band drawn as a full-width section
+  bar (the same distinct-background bar the Workspaces lens uses for repositories): a
+  populated band is bold and carries its count, an empty band keeps the bar but goes faint
+  (so an empty `NEEDS YOU` still reads as a section, just a quiet "all clear"). Agents are
+  ordered newest-changed first within each band. Here urgency *does* move: a status change
+  re-bands an agent, but never reorders its band peers.
+- **Workspaces** (right): the repository→worktree→slot tree, ordered by name and held stable.
+  Status is a per-row indicator and a section-bar badge, never a position. The incidental
+  `(no-repo)` bucket states why it offers no worktrees (e.g. `not a git repo`).
+
+Exactly one lens holds focus; `h`/`l` switch between them and the focused lens's title takes
+the accent (the other reads gray). The focused selection drives the preview and shows in the
+other lens with a dimmer **mirror** of the cursor glyph, so the same agent is visibly linked
+across both. Folding (`tab`) works in **both** lenses and stays consistent: a Workspaces
+section collapses its rows, an Agents band collapses its agents - each to a navigable header
+stand-in carrying the same `▾`/`▸` glyph and a hidden count. An empty band has nothing to
+collapse, so it is never foldable. Below a width threshold only the focused lens shows (still
+toggled by `h`/`l`), sharing the preview.
 
 **Action feedback** (a rejected action, an error, a confirmation) is *notable*, never the
 faint help line — otherwise a no-op looks like nothing happened. It renders on a fixed line

@@ -18,6 +18,8 @@ const (
 	ActionHalfDown    Action = "half_down"
 	ActionPrevSection Action = "prev_section"
 	ActionNextSection Action = "next_section"
+	ActionFocusLeft   Action = "focus_left"
+	ActionFocusRight  Action = "focus_right"
 	ActionSelect      Action = "select"
 	ActionFold        Action = "fold"
 	ActionNewSession  Action = "new_session"
@@ -31,6 +33,7 @@ const (
 var AllActions = []Action{
 	ActionUp, ActionDown, ActionTop, ActionBottom,
 	ActionHalfUp, ActionHalfDown, ActionPrevSection, ActionNextSection,
+	ActionFocusLeft, ActionFocusRight,
 	ActionSelect, ActionFold, ActionNewSession, ActionNewAgent, ActionClose, ActionDelete, ActionQuit,
 }
 
@@ -52,6 +55,8 @@ func DefaultKeymap() Keymap {
 		ActionHalfDown:    {"ctrl+d"},
 		ActionPrevSection: {"{"},
 		ActionNextSection: {"}"},
+		ActionFocusLeft:   {"h", "left"},
+		ActionFocusRight:  {"l", "right"},
 		ActionSelect:      {"enter"},
 		ActionFold:        {"tab"},
 		ActionNewSession:  {"s"},

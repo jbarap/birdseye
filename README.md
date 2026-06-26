@@ -30,11 +30,16 @@ birdseye draws on ideas/visuals/concepts from these projects:
 
 - **`be dash`** — a tmux-popup-friendly view of your Claude Code sessions and
   their status (needs-attention / working / idle / done), so you know which need
-  you. It **updates live** as sessions change, shows a **preview** of the selected
-  session's terminal, and navigates with **vim-native, configurable** keys. It groups
-  what it shows by **repository** (see below), surfacing each recognized repo's worktrees
-  and letting you spin agents up and tear them down in place. Press `s` to open a new
-  session from the same fuzzy picker without leaving the view.
+  you. It shows two always-visible **lenses** over the same agents: an **Agents** lens
+  on the left (a flat triage list in fixed `NEEDS YOU` / `WORKING` / `IDLE` / `DONE`
+  section bands, most-urgent on top) and a **Workspaces** lens on the right (the
+  repository→worktree tree, ordered by name and held stable so a row never jumps when
+  its agent changes state). `h`/`l` switch focus; the selected agent is
+  mirror-highlighted in the other lens. It **updates
+  live** as sessions change, shows a **preview** of the selected session's terminal, and
+  navigates with **vim-native, configurable** keys. It groups what it shows by
+  **repository** (see below), letting you spin agents up and tear them down in place.
+  Press `s` to open a new session from the same fuzzy picker without leaving the view.
 - **`be agents`** — the same agent lifecycle headlessly, for scripts and orchestrating
   agents: `list`, `status`, `spawn`, `send`, `jump`, `close`, `delete`. Data verbs emit
   `--json`. Work is addressed by a derived `repo/worktree` handle (a worktreeless agent
