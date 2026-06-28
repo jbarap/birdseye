@@ -28,10 +28,19 @@ type Config struct {
 	// type to "" to hide its icon.
 	Icons map[string]string `toml:"icons"`
 
-	Tmuxp  Tmuxp  `toml:"tmuxp"`
-	Dir    Dir    `toml:"dir"`
-	Repo   Repo   `toml:"repo"`
-	Agents Agents `toml:"agents"`
+	Tmuxp    Tmuxp    `toml:"tmuxp"`
+	Dir      Dir      `toml:"dir"`
+	Repo     Repo     `toml:"repo"`
+	Agents   Agents   `toml:"agents"`
+	Worktree Worktree `toml:"worktree"`
+}
+
+// Worktree configures worktree creation. Like every section it can be set in the user
+// config and overridden per-repository via .birdseye/config.toml (see Overlay).
+type Worktree struct {
+	// Setup is the command run on every worktree creation (after the .worktreeinclude
+	// copy). Empty means no setup command runs.
+	Setup string `toml:"setup"`
 }
 
 // Tmuxp configures the tmuxp templates provider.
@@ -174,26 +183,88 @@ func Load() (Config, string, error) {
 // defaults; a malformed file yields an error naming the file.
 func LoadFrom(path string) (Config, error) {
 	cfg := Default()
+	if err := mergeFile(&cfg, path); err != nil {
+		return Default(), err
+	}
+	cfg.expandPaths()
+	return cfg, nil
+}
+
+// RepoConfigName is the repository-local config file, found at <repo-root>/.birdseye/config.toml.
+const RepoConfigName = ".birdseye/config.toml"
+
+// Overlay returns base with a repository's local .birdseye/config.toml layered on top, so a
+// project can override any user-level setting where it chooses to and inherit the rest. It is
+// the effective configuration for repository-scoped operations (worktree add, agent spawn).
+// Merge semantics follow the TOML decoder: a scalar set by the repo overrides, a scalar it
+// omits is inherited, maps merge key-by-key, and lists are replaced wholesale. base is left
+// unmodified (it is deep-copied first); a missing repo config yields base unchanged, and a
+// malformed one is reported as an error.
+func Overlay(base Config, repoRoot string) (Config, error) {
+	eff := base.clone()
+	if err := mergeFile(&eff, filepath.Join(repoRoot, RepoConfigName)); err != nil {
+		return base, err
+	}
+	eff.expandPaths()
+	return eff, nil
+}
+
+// mergeFile decodes a TOML config file into cfg, layering its keys over whatever cfg already
+// holds (so callers can stack defaults, the user config, and a repo config). A missing file is
+// a no-op; a malformed file, or one still using the retired [worktree] provider keys, is an
+// error naming the file.
+func mergeFile(cfg *Config, path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return cfg, nil
+			return nil
 		}
-		return Default(), fmt.Errorf("reading config %s: %w", path, err)
+		return fmt.Errorf("reading config %s: %w", path, err)
 	}
-	md, err := toml.Decode(string(data), &cfg)
+	md, err := toml.Decode(string(data), cfg)
 	if err != nil {
-		return Default(), fmt.Errorf("invalid config %s: %w", path, err)
+		return fmt.Errorf("invalid config %s: %w", path, err)
 	}
 	// The provider's config moved from `[worktree]` (and its earlier single `root` key)
 	// to `[repo] roots`. Fail loudly rather than silently ignoring an old config.
 	for _, key := range md.Undecoded() {
 		if strings.HasPrefix(key.String(), "worktree.") {
-			return Default(), fmt.Errorf("invalid config %s: the [worktree] section has been renamed; use [repo] with a roots list, e.g. roots = [\"~/code\"]", path)
+			return fmt.Errorf("invalid config %s: the [worktree] provider roots moved to [repo]; use [repo] with a roots list, e.g. roots = [\"~/code\"]", path)
 		}
 	}
-	cfg.expandPaths()
-	return cfg, nil
+	return nil
+}
+
+// clone returns a deep copy of c whose maps and slices are independent of the original, so
+// Overlay can decode a repo config onto it without mutating the shared base config.
+func (c Config) clone() Config {
+	d := c
+	d.Order = append([]string(nil), c.Order...)
+	d.Dir.Roots = append([]string(nil), c.Dir.Roots...)
+	d.Repo.Roots = append([]string(nil), c.Repo.Roots...)
+	d.Providers = cloneMap(c.Providers)
+	d.Labels = cloneMap(c.Labels)
+	d.Icons = cloneMap(c.Icons)
+	if c.Agents.Keys != nil {
+		keys := make(map[string][]string, len(c.Agents.Keys))
+		for k, v := range c.Agents.Keys {
+			keys[k] = append([]string(nil), v...)
+		}
+		d.Agents.Keys = keys
+	}
+	return d
+}
+
+// cloneMap returns a shallow copy of m, or nil when m is nil.
+func cloneMap[K comparable, V any](m map[K]V) map[K]V {
+	if m == nil {
+		return nil
+	}
+	d := make(map[K]V, len(m))
+	for k, v := range m {
+		d[k] = v
+	}
+	return d
 }
 
 // expandPaths rewrites every path-typed config field through expandTilde, so a

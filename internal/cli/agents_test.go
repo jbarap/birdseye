@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/jbarap/birdseye/internal/agents"
+	"github.com/jbarap/birdseye/internal/config"
 	"github.com/jbarap/birdseye/internal/fleet"
 	"github.com/jbarap/birdseye/internal/tmux"
 )
@@ -20,7 +21,7 @@ func TestRemoveTargetsWindowByPaneID(t *testing.T) {
 		return "", nil
 	}
 	client := tmux.NewWithRunner(run, true)
-	o := orchestrator{fleet: fleet.New(client, "", nil, nil, nil), client: client}
+	o := orchestrator{fleet: fleet.New(client, config.Config{}, nil, nil, nil), client: client}
 
 	// An incidental agent row (no worktree, so no git removal): the recorded window
 	// index "4" is stale, but the pane id "%154" still resolves to the live window.

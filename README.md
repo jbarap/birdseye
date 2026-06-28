@@ -281,7 +281,59 @@ new_agent    = ["n"]
 close        = ["dd"]                   # close the window (safe, no disk effect); "dd" is a chord
 delete       = ["dD"]                   # close + git worktree remove, behind a popup; "dD" is a chord
 quit      = ["q", "esc", "ctrl+c"]
+
+[worktree]
+# Global fallback setup command, run on every worktree creation when a repo does not
+# define its own (see "Worktree provisioning" below). Empty means no global default.
+# setup = "make bootstrap"
 ```
+
+### Worktree provisioning
+
+A freshly created worktree is a clean checkout, so anything git-ignored (your `.env`,
+installed dependencies, generated files) is missing. birdseye provisions a new worktree at
+creation time — on both `be worktree add` and `be agents spawn` / the dash `n` action — so
+it is ready to work in. Provisioning runs only when a worktree is **created**, never when a
+dormant slot is re-opened.
+
+Two complementary, repo-root files drive it:
+
+- **`.worktreeinclude`** — the cross-tool convention (also honored by Claude Code, Codex,
+  Conductor, …). It uses `.gitignore` syntax and lists the local files to carry over from the
+  repository's primary worktree. A file is copied only when it both matches a pattern **and**
+  is git-ignored, so tracked files are never duplicated. Use it for small, irreplaceable local
+  files (secrets, certs, local config) — not for `node_modules`/`.venv`, which the setup
+  command should regenerate.
+
+  ```text
+  # .worktreeinclude
+  .env
+  .env.local
+  config/secrets.json
+  ```
+
+- **`.birdseye/config.toml`** — a repo-local config (commit it) that uses the **same schema as
+  the user config** and overrides any user-level setting for repository-scoped operations
+  (`be worktree add`, `be agents spawn`, the dash `n`). A key the project sets wins; everything
+  else is inherited. The `[worktree] setup` command runs in the new worktree after the copy
+  step; a project can equally pin its own `[agents] command`, etc.
+
+  ```toml
+  # .birdseye/config.toml
+  [worktree]
+  setup = "./scripts/worktree-setup.sh"
+
+  [agents]
+  command = "claude --permission-mode=auto"   # this repo's agent, overriding the user default
+  ```
+
+The setup command runs with the new worktree as its working directory and these variables
+exported: `BIRDSEYE_WORKTREE` (the new worktree's path), `BIRDSEYE_REPO` (the primary
+worktree's path — the copy source), and `BIRDSEYE_BRANCH` (the branch checked out). On
+`be worktree add` it runs inline and a non-zero exit fails the command (the worktree is kept
+so you can fix and retry); pass `--no-setup` to skip it. On an agent spawn it is chained into
+the agent's tmux window (`<setup> && <agent>`), so setup output is visible in the pane and the
+agent starts only if setup succeeds.
 
 ## Claude Code integration (`be agents install`)
 

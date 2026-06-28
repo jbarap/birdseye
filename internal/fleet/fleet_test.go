@@ -2,10 +2,14 @@ package fleet
 
 import (
 	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/jbarap/birdseye/internal/agents"
+	"github.com/jbarap/birdseye/internal/config"
 	"github.com/jbarap/birdseye/internal/providers/dir"
 	"github.com/jbarap/birdseye/internal/tmux"
 )
@@ -75,7 +79,7 @@ func projFleet() *Fleet {
 			},
 		},
 	}
-	return New(fakeClient(), "claude", src, panes, repos)
+	return New(fakeClient(), config.Config{}, src, panes, repos)
 }
 
 // TestHandlesAndKinds checks the handle scheme and kind vocabulary round-trip: every
@@ -144,7 +148,7 @@ func TestPrimaryWorktreeWithAgentAddressesAsBase(t *testing.T) {
 		m:   map[string]agents.RepoInfo{"/code/proj": repoAt(gd, "proj", "/code/proj", "proj", true)},
 		wts: map[string][]agents.WorktreeInfo{gd: {{Path: "/code/proj", Name: "proj", Branch: "main", IsPrimary: true}}},
 	}
-	f := New(fakeClient(), "claude", src, panes, repos)
+	f := New(fakeClient(), config.Config{}, src, panes, repos)
 
 	recs, err := f.List()
 	if err != nil {
@@ -183,7 +187,7 @@ func TestOpenNamesWindowAfterWorktree(t *testing.T) {
 		"/code/proj":                 repoAt(gd, "proj", "/code/proj", "proj", true),
 		"/code/proj.worktrees/spike": repoAt(gd, "proj", "/code/proj.worktrees/spike", "spike", false),
 	}}
-	f := New(tmux.NewWithRunner(runner, false), "claude", fakeSource{}, fakePanes{}, repos)
+	f := New(tmux.NewWithRunner(runner, false), config.Config{}, fakeSource{}, fakePanes{}, repos)
 
 	called := func(substr string) bool {
 		for _, c := range calls {
@@ -246,7 +250,7 @@ func TestOpenRoutesToHome(t *testing.T) {
 	repos := fakeRepos{m: map[string]agents.RepoInfo{
 		"/code/proj.worktrees/spike": repoAt(gd, "proj", "/code/proj.worktrees/spike", "spike", false),
 	}}
-	f := New(tmux.NewWithRunner(runner, false), "claude", fakeSource{}, fakePanes{}, repos)
+	f := New(tmux.NewWithRunner(runner, false), config.Config{}, fakeSource{}, fakePanes{}, repos)
 
 	// The Target carries a user session; Open must ignore it and use the home session.
 	if _, err := f.Open(Target{Handle: "proj/spike", Dir: "/code/proj.worktrees/spike", Session: "my-user-session"}); err != nil {
@@ -291,7 +295,7 @@ func TestDeleteRefusedWithCoTenant(t *testing.T) {
 			{Path: "/code/proj.worktrees/feat", Name: "feat", Branch: "feat"},
 		}},
 	}
-	f := New(fakeClient(), "claude", src, panes, repos)
+	f := New(fakeClient(), config.Config{}, src, panes, repos)
 
 	t1 := Target{Handle: "proj/feat", Repo: "proj", Worktree: "feat", Dir: "/code/proj.worktrees/feat", GitDir: gd, Pane: "%2"}
 	err := f.Delete(t1, false)
@@ -318,12 +322,110 @@ func TestAmbiguousHandleRefused(t *testing.T) {
 			"/other/b/proj/.git": {{Path: "/other/b/proj", Name: "proj", IsPrimary: true}},
 		},
 	}
-	f := New(fakeClient(), "claude", src, panes, repos)
+	f := New(fakeClient(), config.Config{}, src, panes, repos)
 	_, err := f.Resolve("proj")
 	if err == nil {
 		t.Fatal("expected an ambiguous-handle error")
 	}
 	if !strings.Contains(err.Error(), "/work/a/proj") || !strings.Contains(err.Error(), "/other/b/proj") {
 		t.Fatalf("ambiguity error should list both paths, got: %v", err)
+	}
+}
+
+// TestChainSetupComposesWindowCommand pins the spawn path's setup chaining: when a setup
+// command is configured, the window runs the env-prefixed setup and then the agent via `&&`,
+// so the agent starts only if setup succeeds and the env contract is exported to setup.
+func TestChainSetupComposesWindowCommand(t *testing.T) {
+	got := chainSetup("claude", "make setup", "/wt", "/repo", "feat")
+	want := "BIRDSEYE_WORKTREE='/wt' BIRDSEYE_REPO='/repo' BIRDSEYE_BRANCH='feat' make setup && claude"
+	if got != want {
+		t.Fatalf("chainSetup =\n  %q\nwant\n  %q", got, want)
+	}
+}
+
+// TestChainSetupNoSetupLeavesAgentCommand pins that with no setup configured the window runs
+// the bare agent command, unchanged from today's behavior.
+func TestChainSetupNoSetupLeavesAgentCommand(t *testing.T) {
+	if got := chainSetup("claude 'do it'", "", "/wt", "/repo", "feat"); got != "claude 'do it'" {
+		t.Fatalf("chainSetup with no setup = %q, want the bare agent command", got)
+	}
+}
+
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	c := exec.Command("git", args...)
+	c.Dir = dir
+	if out, err := c.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+func initGitRepo(t *testing.T, dir string) {
+	t.Helper()
+	runGit(t, dir, "init", "-q", "-b", "main")
+	runGit(t, dir, "config", "user.email", "t@t")
+	runGit(t, dir, "config", "user.name", "t")
+	if err := os.WriteFile(filepath.Join(dir, "README"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, dir, "add", "-A")
+	runGit(t, dir, "commit", "-qm", "init")
+}
+
+// spawnWindowCommand spawns over a real git repo carrying the given .birdseye/config.toml and
+// returns the command typed into the new window's pane, so a test can assert the effective
+// agent command and chained setup the production wiring produces.
+func spawnWindowCommand(t *testing.T, repoConfig string) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	repo := t.TempDir()
+	initGitRepo(t, repo)
+	if repoConfig != "" {
+		if err := os.MkdirAll(filepath.Join(repo, ".birdseye"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(repo, ".birdseye", "config.toml"), []byte(repoConfig), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gd := filepath.Join(repo, ".git")
+	var sent []string
+	runner := func(args ...string) (string, error) {
+		if len(args) > 0 && args[0] == "send-keys" {
+			sent = append(sent, strings.Join(args, " "))
+		}
+		return "", nil
+	}
+	repos := fakeRepos{m: map[string]agents.RepoInfo{repo: repoAt(gd, "repo", repo, "repo", true)}}
+	f := New(tmux.NewWithRunner(runner, false), config.Config{}, fakeSource{}, fakePanes{}, repos)
+	if _, err := f.Spawn(repo, "feat", "feat", ""); err != nil {
+		t.Fatal(err)
+	}
+	if len(sent) != 1 {
+		t.Fatalf("expected exactly one window command, got %v", sent)
+	}
+	return sent[0]
+}
+
+// TestSpawnChainsSetupIntoWindow exercises the agent spawn path end to end over a real git
+// repo and a fake tmux runner: the window command runs the repo's setup command before the
+// agent (`<setup> && <agent>`) with the env contract exported, so the agent starts only after
+// setup succeeds. This is the production wiring the TUI and headless `be agents spawn` use.
+func TestSpawnChainsSetupIntoWindow(t *testing.T) {
+	got := spawnWindowCommand(t, "[worktree]\nsetup = \"echo provisioning\"\n")
+	if !strings.Contains(got, "echo provisioning && claude") || !strings.Contains(got, "BIRDSEYE_BRANCH='feat'") {
+		t.Fatalf("window should run setup && agent with the env contract, got %q", got)
+	}
+}
+
+// TestSpawnHonorsRepoAgentCommand pins that a repository's .birdseye/config.toml overrides any
+// user-level setting for a repo-scoped operation: setting [agents] command makes spawn start
+// that agent instead of the default.
+func TestSpawnHonorsRepoAgentCommand(t *testing.T) {
+	got := spawnWindowCommand(t, "[agents]\ncommand = \"codex\"\n")
+	if !strings.Contains(got, "codex Enter") || strings.Contains(got, "claude") {
+		t.Fatalf("repo agent command should win, got %q", got)
 	}
 }

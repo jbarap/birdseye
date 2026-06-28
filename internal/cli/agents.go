@@ -61,7 +61,7 @@ func buildFleet() (*fleet.Fleet, error) {
 		return nil, err
 	}
 	src.SetTitleSource(client.PaneTitles)
-	return fleet.New(client, cfg.Agents.AgentCommand(), src, paneLister{client}, repoResolver{}), nil
+	return fleet.New(client, cfg, src, paneLister{client}, repoResolver{}), nil
 }
 
 func newAgentsListCmd() *cobra.Command {
@@ -326,7 +326,7 @@ func runDash() error {
 		src.SetTitleSource(client.PaneTitles)
 		prev = agents.NewTmuxPreviewer(client, 200)
 		rowSrc = agents.NewWorkspace(src, paneLister{client}, repoResolver{})
-		f := fleet.New(client, cfg.Agents.AgentCommand(), src, paneLister{client}, repoResolver{})
+		f := fleet.New(client, cfg, src, paneLister{client}, repoResolver{})
 		orch = orchestrator{fleet: f, client: client, cfg: cfg}
 	}
 

@@ -232,3 +232,107 @@ func TestAgentsSplitRatio(t *testing.T) {
 		}
 	}
 }
+
+func writeRepoConfig(t *testing.T, repoRoot, body string) {
+	t.Helper()
+	dir := filepath.Join(repoRoot, ".birdseye")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOverlayNoRepoConfigInheritsBase(t *testing.T) {
+	base := Default()
+	base.Worktree.Setup = "make bootstrap"
+	base.Agents.Command = "claude"
+	got, err := Overlay(base, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Worktree.Setup != "make bootstrap" || got.Agents.Command != "claude" {
+		t.Fatalf("with no repo config the base should be inherited verbatim, got %+v", got)
+	}
+}
+
+func TestOverlayRepoOverridesAndInherits(t *testing.T) {
+	base := Default()
+	base.Worktree.Setup = "make bootstrap"
+	base.Agents.Command = "claude"
+	base.Agents.Refresh = "2s"
+	repo := t.TempDir()
+	writeRepoConfig(t, repo, "[worktree]\nsetup = \"./scripts/setup.sh\"\n[agents]\ncommand = \"codex\"\n")
+	got, err := Overlay(base, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Worktree.Setup != "./scripts/setup.sh" {
+		t.Errorf("repo setup should override, got %q", got.Worktree.Setup)
+	}
+	if got.Agents.Command != "codex" {
+		t.Errorf("repo agent command should override, got %q", got.Agents.Command)
+	}
+	if got.Agents.Refresh != "2s" {
+		t.Errorf("a key the repo omits should be inherited, got %q", got.Agents.Refresh)
+	}
+}
+
+func TestOverlayDoesNotMutateBase(t *testing.T) {
+	base := Default()
+	base.Worktree.Setup = "make bootstrap"
+	repo := t.TempDir()
+	writeRepoConfig(t, repo, "[worktree]\nsetup = \"override\"\n[labels]\ntmux = \"changed\"\n")
+	if _, err := Overlay(base, repo); err != nil {
+		t.Fatal(err)
+	}
+	if base.Worktree.Setup != "make bootstrap" {
+		t.Errorf("Overlay must not mutate the base scalar, got %q", base.Worktree.Setup)
+	}
+	if base.Labels["tmux"] != "session" {
+		t.Errorf("Overlay must not mutate the base map, got %q", base.Labels["tmux"])
+	}
+}
+
+func TestOverlayMergesMaps(t *testing.T) {
+	base := Default()
+	repo := t.TempDir()
+	writeRepoConfig(t, repo, "[labels]\ntmux = \"box\"\nextra = \"new\"\n")
+	got, err := Overlay(base, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Labels["tmux"] != "box" {
+		t.Errorf("repo should override an existing label, got %q", got.Labels["tmux"])
+	}
+	if got.Labels["extra"] != "new" {
+		t.Errorf("repo should add a new label, got %q", got.Labels["extra"])
+	}
+	if got.Labels["dir"] != "dir" {
+		t.Errorf("a label the repo omits should be inherited, got %q", got.Labels["dir"])
+	}
+}
+
+func TestOverlayMalformedRepoConfigRejected(t *testing.T) {
+	repo := t.TempDir()
+	writeRepoConfig(t, repo, "setup = \n")
+	if _, err := Overlay(Default(), repo); err == nil {
+		t.Fatal("expected a malformed repo-local config to be rejected")
+	}
+}
+
+func TestLoadAcceptsWorktreeSetupKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte("[worktree]\nsetup = \"make setup\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadFrom(path)
+	if err != nil {
+		t.Fatalf("[worktree] setup should be accepted, got %v", err)
+	}
+	if cfg.Worktree.Setup != "make setup" {
+		t.Fatalf("expected global setup default, got %q", cfg.Worktree.Setup)
+	}
+}

@@ -22,7 +22,7 @@ func TestAddGroupedSibling(t *testing.T) {
 	mustGit(t, repo, "branch", "existing")
 
 	// add with no branch creates a new branch off the default branch, in a slug dir.
-	featDir, err := Add(repo, "feat", "")
+	featDir, _, err := Add(repo, "feat", "")
 	if err != nil {
 		t.Fatalf("add feat: %v", err)
 	}
@@ -34,7 +34,7 @@ func TestAddGroupedSibling(t *testing.T) {
 	}
 
 	// a slashed branch slugifies into the directory name but keeps the branch as given.
-	loginDir, err := Add(repo, "feature/login", "")
+	loginDir, _, err := Add(repo, "feature/login", "")
 	if err != nil {
 		t.Fatalf("add feature/login: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestAddGroupedSibling(t *testing.T) {
 	}
 
 	// a name matching an existing branch checks that branch out (no new branch).
-	exDir, err := Add(repo, "existing", "")
+	exDir, _, err := Add(repo, "existing", "")
 	if err != nil {
 		t.Fatalf("add existing: %v", err)
 	}
@@ -55,12 +55,12 @@ func TestAddGroupedSibling(t *testing.T) {
 	}
 
 	// a slug collision is refused rather than overwritten.
-	if _, err := Add(repo, "feat", ""); err == nil {
+	if _, _, err := Add(repo, "feat", ""); err == nil {
 		t.Fatal("expected a slug collision to error")
 	}
 
 	// add outside a git worktree errors clearly.
-	if _, err := Add(t.TempDir(), "nope", ""); err == nil {
+	if _, _, err := Add(t.TempDir(), "nope", ""); err == nil {
 		t.Fatal("expected add outside a repo to error")
 	}
 }
@@ -79,7 +79,7 @@ func TestAddContainerFromGitNotCheckoutParent(t *testing.T) {
 	stray := filepath.Join(t.TempDir(), "stray")
 	mustGit(t, repo, "worktree", "add", stray)
 
-	got, err := Add(stray, "x", "")
+	got, _, err := Add(stray, "x", "")
 	if err != nil {
 		t.Fatalf("add from stray worktree: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestRemoveCleanAndDirty(t *testing.T) {
 	gitCommit(t, src)
 
 	// A clean linked worktree removes without force.
-	cleanDir, err := Add(src, "clean", "")
+	cleanDir, _, err := Add(src, "clean", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestRemoveCleanAndDirty(t *testing.T) {
 	}
 
 	// A dirty worktree is refused without force, removed with it.
-	dirtyDir, err := Add(src, "dirty", "")
+	dirtyDir, _, err := Add(src, "dirty", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,4 +287,84 @@ func branchOf(t *testing.T, dir string) string {
 		t.Fatalf("branchOf %q: %v", dir, err)
 	}
 	return out
+}
+
+func writeAt(t *testing.T, base, rel, content string) {
+	t.Helper()
+	p := filepath.Join(base, rel)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func exists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
+
+// TestCopyIncludes pins the .worktreeinclude guardrail: a file is carried into the new
+// worktree only when it both matches an include pattern and is git-ignored. A matched
+// git-ignored file (including a nested one) is copied preserving its relative path; an
+// unmatched git-ignored file and a tracked file are never copied.
+func TestCopyIncludes(t *testing.T) {
+	requireGitBinary(t)
+	primary := t.TempDir()
+	gitInit(t, primary, "main")
+	gitCommit(t, primary)
+	writeAt(t, primary, ".gitignore", ".env\nlocal/\nbuild/\n")
+	writeAt(t, primary, ".worktreeinclude", ".env\nlocal/\ntracked.txt\n")
+	writeAt(t, primary, ".env", "SECRET=1\n")
+	writeAt(t, primary, "local/cfg.json", "{}\n")
+	writeAt(t, primary, "build/out.o", "junk\n")
+	writeAt(t, primary, "tracked.txt", "tracked\n")
+	mustGit(t, primary, "add", "tracked.txt")
+	mustGit(t, primary, "commit", "-m", "add tracked")
+
+	dst := t.TempDir()
+	if w := CopyIncludes(primary, dst); len(w) != 0 {
+		t.Fatalf("unexpected warnings: %v", w)
+	}
+
+	if got, err := os.ReadFile(filepath.Join(dst, ".env")); err != nil || string(got) != "SECRET=1\n" {
+		t.Errorf("matched git-ignored .env should be copied verbatim, got %q err %v", got, err)
+	}
+	if !exists(filepath.Join(dst, "local", "cfg.json")) {
+		t.Error("nested local/cfg.json should be copied preserving its relative path")
+	}
+	if exists(filepath.Join(dst, "build", "out.o")) {
+		t.Error("an unmatched git-ignored file must not be copied")
+	}
+	if exists(filepath.Join(dst, "tracked.txt")) {
+		t.Error("a tracked file must never be copied even when an include pattern matches it")
+	}
+}
+
+// TestCopyIncludesAbsentIsNoop pins that a repository without a .worktreeinclude provisions
+// nothing and reports no warning.
+func TestCopyIncludesAbsentIsNoop(t *testing.T) {
+	requireGitBinary(t)
+	primary := t.TempDir()
+	gitInit(t, primary, "main")
+	gitCommit(t, primary)
+	if w := CopyIncludes(primary, t.TempDir()); w != nil {
+		t.Fatalf("expected a no-op with no .worktreeinclude, got %v", w)
+	}
+}
+
+// TestSetupEnv pins the setup command's env contract: the new worktree, the copy-source
+// repository, and the branch, as KEY=VALUE assignments.
+func TestSetupEnv(t *testing.T) {
+	got := SetupEnv("/wt", "/repo", "feat")
+	want := []string{"BIRDSEYE_WORKTREE=/wt", "BIRDSEYE_REPO=/repo", "BIRDSEYE_BRANCH=feat"}
+	if len(got) != len(want) {
+		t.Fatalf("SetupEnv = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("SetupEnv[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
 }

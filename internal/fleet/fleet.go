@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/jbarap/birdseye/internal/agents"
+	"github.com/jbarap/birdseye/internal/config"
 	"github.com/jbarap/birdseye/internal/providers/dir"
 	"github.com/jbarap/birdseye/internal/tmux"
 	"github.com/jbarap/birdseye/internal/worktree"
@@ -23,18 +24,19 @@ import (
 // worktree primitives. It is constructed once per process and used by both the
 // dash (via the cli orchestrator adapter) and the headless verbs.
 type Fleet struct {
-	client  *tmux.Client
-	command string
-	src     agents.Source
-	panes   agents.PaneLister
-	repos   agents.RepoResolver
+	client *tmux.Client
+	cfg    config.Config
+	src    agents.Source
+	panes  agents.PaneLister
+	repos  agents.RepoResolver
 }
 
-// New builds a Fleet. command is the agent command to start in spawned windows
-// (e.g. "claude"); src/panes/repos are the same substrate adapters the dash
-// reconciler uses, so list/resolve see one observable world.
-func New(client *tmux.Client, command string, src agents.Source, panes agents.PaneLister, repos agents.RepoResolver) *Fleet {
-	return &Fleet{client: client, command: command, src: src, panes: panes, repos: repos}
+// New builds a Fleet. cfg is the user-level configuration; for each repository-scoped
+// operation it is overlaid with that repository's .birdseye/config.toml (see config.Overlay),
+// so the agent command and setup command honor project overrides. src/panes/repos are the same
+// substrate adapters the dash reconciler uses, so list/resolve see one observable world.
+func New(client *tmux.Client, cfg config.Config, src agents.Source, panes agents.PaneLister, repos agents.RepoResolver) *Fleet {
+	return &Fleet{client: client, cfg: cfg, src: src, panes: panes, repos: repos}
 }
 
 // Session names a tmux session by both its stable id and its name.
@@ -253,14 +255,23 @@ func (f *Fleet) Spawn(repoDir, branch, name, prompt string) (string, error) {
 	if err := f.client.Ensure(session, primary, info.Repo); err != nil {
 		return "", err
 	}
-	wtDir, err := worktree.Add(repoDir, name, branch)
+	eff, err := config.Overlay(f.cfg, primary)
 	if err != nil {
 		return "", err
 	}
-	command := f.command
+	wtDir, _, err := worktree.Add(repoDir, name, branch)
+	if err != nil {
+		return "", err
+	}
+	command := eff.Agents.AgentCommand()
 	if prompt != "" {
 		command = command + " " + shellQuote(prompt)
 	}
+	// Provision the new worktree by chaining its setup command into the agent's window
+	// (rather than running it inline, which would block the spawn call): the window runs
+	// setup and then the agent, so setup output is visible in the agent's pane and a failed
+	// setup short-circuits the `&&`, leaving a shell instead of an agent in a broken env.
+	command = chainSetup(command, eff.Worktree.Setup, wtDir, primary, branch)
 	// Name the agent's window after the worktree it holds.
 	if _, err := f.client.NewWindow(session, wtDir, filepath.Base(wtDir), command); err != nil {
 		return "", err
@@ -276,7 +287,7 @@ func (f *Fleet) Open(t Target) (string, error) {
 	if t.IsPrimary {
 		return "", fmt.Errorf("%q is a primary worktree, not a slot", t.Handle)
 	}
-	return f.openWindow(t, f.command)
+	return f.openWindow(t, true)
 }
 
 // OpenShell opens a plain (agentless) window in an existing worktree, returning the
@@ -284,21 +295,31 @@ func (f *Fleet) Open(t Target) (string, error) {
 // base is agentless by design, so it gets a shell, not the agent command. Unlike Open it
 // allows a primary worktree.
 func (f *Fleet) OpenShell(t Target) (string, error) {
-	return f.openWindow(t, "")
+	return f.openWindow(t, false)
 }
 
 // openWindow resolves the worktree's repository, ensures (reuses) the repository's home
-// session, opens a window rooted at the worktree running command (empty for a plain
-// shell), and returns the `repo/worktree` handle. The directory must already exist; it
-// adds no worktree. Like Spawn it routes into be's write domain (dir.HomeSession), so
-// re-waking a slot or base never injects a window into a user-made session.
-func (f *Fleet) openWindow(t Target, command string) (string, error) {
+// session, opens a window rooted at the worktree, and returns the `repo/worktree` handle.
+// When agent is true the window starts the repository's effective agent command (honoring its
+// .birdseye/config.toml override); when false it leaves a plain shell. The directory must
+// already exist; it adds no worktree (re-waking a slot or base does not re-provision). Like
+// Spawn it routes into be's write domain (dir.HomeSession), so it never injects a window into a
+// user-made session.
+func (f *Fleet) openWindow(t Target, agent bool) (string, error) {
 	if t.Dir == "" {
 		return "", fmt.Errorf("no worktree to open")
 	}
 	info, ok := f.repos.Resolve(t.Dir)
 	if !ok {
 		return "", fmt.Errorf("not a git repository: %s", t.Dir)
+	}
+	command := ""
+	if agent {
+		eff, err := config.Overlay(f.cfg, filepath.Dir(info.GitDir))
+		if err != nil {
+			return "", err
+		}
+		command = eff.Agents.AgentCommand()
 	}
 	session := dir.HomeSession(info.GitDir)
 	if err := f.client.Ensure(session, filepath.Dir(info.GitDir), info.Repo); err != nil {
@@ -401,4 +422,21 @@ func (f *Fleet) Send(t Target, input string) error {
 // into the window's shell, escaping embedded single quotes.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// chainSetup prefixes setup ahead of agentCommand so the spawned window runs
+// `<env> <setup> && <agent>`: setup runs first with the env contract, and the `&&` means the
+// agent starts only if setup succeeds. An empty setup returns the agent command unchanged. The
+// env assignments precede the first command of the chain, so they apply to the setup command
+// only - the same contract the agentless path exports.
+func chainSetup(agentCommand, setup, wtDir, primary, branch string) string {
+	if strings.TrimSpace(setup) == "" {
+		return agentCommand
+	}
+	var prefix strings.Builder
+	for _, kv := range worktree.SetupEnv(wtDir, primary, branch) {
+		eq := strings.IndexByte(kv, '=')
+		prefix.WriteString(kv[:eq+1] + shellQuote(kv[eq+1:]) + " ")
+	}
+	return prefix.String() + setup + " && " + agentCommand
 }

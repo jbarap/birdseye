@@ -92,25 +92,30 @@ func ListWorktrees(dir string) ([]Worktree, error) {
 // `feature-login`). A branch that already exists (local or remote-tracking) is checked
 // out; otherwise a new branch of that name is created off the repository's default
 // branch. It declines to overwrite an existing directory (a slug collision).
-func Add(cwd, name, branch string) (dir string, err error) {
+//
+// On success Add also provisions the new worktree by carrying over the repository's
+// .worktreeinclude files (see CopyIncludes), so both callers - the agentless CLI and the
+// agent spawn path - get the copy step without duplicating it. Any per-file copy failure is
+// returned as a non-fatal warning rather than aborting; the worktree is already usable.
+func Add(cwd, name, branch string) (dir string, warnings []string, err error) {
 	if err := requireGit(); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	primary, _, err := primaryOf(cwd)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if branch == "" {
 		branch = name
 	}
 	slug := slugifyBranch(branch)
 	if slug == "" {
-		return "", fmt.Errorf("could not derive a worktree directory name from %q", branch)
+		return "", nil, fmt.Errorf("could not derive a worktree directory name from %q", branch)
 	}
 	container := primary + ".worktrees"
 	dir = filepath.Join(container, slug)
 	if _, statErr := os.Stat(dir); statErr == nil {
-		return "", fmt.Errorf("worktree directory %q already exists at %s", slug, dir)
+		return "", nil, fmt.Errorf("worktree directory %q already exists at %s", slug, dir)
 	}
 	var args []string
 	if branchExists(primary, branch) {
@@ -124,12 +129,87 @@ func Add(cwd, name, branch string) (dir string, err error) {
 		}
 	}
 	if err := os.MkdirAll(container, 0o755); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if err := run(primary, "git", args...); err != nil {
-		return "", err
+		return "", nil, err
 	}
-	return dir, nil
+	return dir, CopyIncludes(primary, dir), nil
+}
+
+// Environment variables exported to a worktree setup command, naming the new worktree, its
+// repository (the copy source), and the branch checked out, so a setup script can locate the
+// source it was provisioned from.
+const (
+	EnvWorktree = "BIRDSEYE_WORKTREE"
+	EnvRepo     = "BIRDSEYE_REPO"
+	EnvBranch   = "BIRDSEYE_BRANCH"
+)
+
+// SetupEnv returns the setup command's env contract as KEY=VALUE assignments: the new
+// worktree's absolute path (also the working directory), the primary worktree's absolute path
+// (the copy source), and the branch checked out. The agentless path appends these to the
+// process environment; the spawn path uses them as a shell prefix on the chained command.
+func SetupEnv(worktreeDir, primary, branch string) []string {
+	return []string{
+		EnvWorktree + "=" + worktreeDir,
+		EnvRepo + "=" + primary,
+		EnvBranch + "=" + branch,
+	}
+}
+
+// CopyIncludes carries a repository's .worktreeinclude files from its primary worktree into a
+// newly created worktree. It honors the cross-tool .worktreeinclude convention: a file is
+// copied only when it both matches an include pattern and is git-ignored, so tracked files are
+// never duplicated. The guardrail is git's: candidates come from `git ls-files --others
+// --ignored --exclude-from=.worktreeinclude` (untracked files matching the include patterns),
+// then each is confirmed git-ignored with `git check-ignore`. It is best-effort - an absent
+// .worktreeinclude or one matching nothing is a no-op, and a per-file failure is collected as a
+// non-fatal warning rather than aborting - so it never blocks worktree creation.
+func CopyIncludes(primary, dst string) []string {
+	if _, err := os.Stat(filepath.Join(primary, ".worktreeinclude")); err != nil {
+		return nil // no include file → nothing to carry over
+	}
+	out, err := output(primary, "git", "ls-files", "--others", "--ignored", "--exclude-from=.worktreeinclude", "-z")
+	if err != nil {
+		return []string{fmt.Sprintf(".worktreeinclude: listing files failed: %v", err)}
+	}
+	var warnings []string
+	for _, rel := range strings.Split(out, "\x00") {
+		if rel == "" {
+			continue
+		}
+		// Confirm the candidate is git-ignored by the repository's standard ignore rules,
+		// not merely matched by an include pattern, so an unignored file is never copied.
+		if err := run(primary, "git", "check-ignore", "-q", "--", rel); err != nil {
+			continue
+		}
+		if err := copyFile(filepath.Join(primary, rel), filepath.Join(dst, rel)); err != nil {
+			warnings = append(warnings, fmt.Sprintf(".worktreeinclude: %s: %v", rel, err))
+		}
+	}
+	return warnings
+}
+
+// copyFile copies a regular file from src to dst, creating parent directories and preserving
+// the source's permission bits. Non-regular sources (directories, symlinks, devices) are
+// skipped rather than copied, since the include set is meant for plain local files.
+func copyFile(src, dst string) error {
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return nil
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, info.Mode().Perm())
 }
 
 // slugifyBranch turns a branch name into a filesystem-safe directory name: path
