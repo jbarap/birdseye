@@ -1,0 +1,79 @@
+# birdseye configuration reference.
+#
+# Every key is optional; the value shown is the built-in default that applies
+# when the key is absent. Uncommented lines spell out a current default for
+# reference - deleting one changes nothing. Commented lines (`#`) are overrides
+# or examples that are off by default; uncomment and edit to opt in.
+#
+# Print this template with `be config --defaults`; see your effective config with
+# `be config`, and validate your files with `be config --check`. Write your own to
+# the path printed at the top (`~/.config/birdseye/config.toml` on most systems).
+
+# Display order of candidate types in the picker.
+order = ["tmux", "tmuxp", "dir", "repo"]
+
+# Per-type display labels shown beside candidates in the picker. A type absent
+# here falls back to its own name.
+[labels]
+tmux  = "session"
+tmuxp = "template"
+dir   = "dir"
+repo  = "repo"
+
+# Per-type icons shown in the picker. Defaults are Nerd Font glyphs; override
+# with your own text/emoji, or set a type to "" to hide its icon. (Requires a
+# Nerd Font for the defaults to render.)
+[icons]
+tmux  = ""
+tmuxp = "󰏭"
+dir   = ""
+repo  = "󰘬"
+
+# Enable/disable providers by type. A type absent from this table stays enabled,
+# so you only list what to turn off.
+[providers]
+# repo = false
+
+[tmuxp]
+# dir = "/custom/tmuxp/config/dir"    # defaults to tmuxp's own config dir
+
+[dir]
+use_zoxide = true                     # include zoxide's known dirs when available
+# roots = ["~/projects", "~/work"]    # dirs whose immediate children become candidates
+
+[repo]
+# Optional discovery paths scanned for git repos. Each repo found directly under a root
+# becomes one `repo` picker candidate that opens a session at the repo's primary worktree.
+# Omit or leave empty to list none.
+# roots = ["~/code", "~/work"]
+
+[agents]
+# refresh = "1s"                       # live-refresh interval (a Go duration)
+# command = "claude"                   # agent command for `n`, run in the window's shell
+# command = "claude --permission-mode=auto"   # fewer permission prompts
+# accent = "#c792ea"                   # agents-view accent (title + cursor); #rrggbb
+# split = 0.4                          # agents-list pane's share of the width when the
+                                       # preview is shown (the list flexes to fit, the
+                                       # preview takes the rest). Default 0.4, clamped 0.3-0.8
+
+# Rebind the agents-view keys. Each action lists the keys that trigger it; omit an
+# action to keep its default. A two-rune value of two typeable keys (e.g. "gg", "dd",
+# "dD") is a chord - those two keys pressed in sequence. Defaults shown below.
+# [agents.keys]
+# up           = ["k", "up"]
+# down         = ["j", "down"]
+# top          = ["gg"]
+# bottom       = ["G"]
+# half_up      = ["ctrl+u"]
+# half_down    = ["ctrl+d"]
+# select       = ["enter"]
+# new_session  = ["s"]                 # open a session via the picker, stay in the view
+# new_agent    = ["n"]
+# close        = ["dd"]                # close the window (safe, no disk effect); a chord
+# delete       = ["dD"]                # close + git worktree remove, behind a popup; a chord
+# quit         = ["q", "esc", "ctrl+c"]
+
+[worktree]
+# Global fallback setup command, run on every worktree creation when a repo does not
+# define its own (see "Worktree provisioning" in the README). Empty means no default.
+# setup = "make bootstrap"
