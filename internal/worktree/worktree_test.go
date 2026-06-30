@@ -202,6 +202,11 @@ func TestRemoveCleanAndDirty(t *testing.T) {
 	src := filepath.Join(root, "src")
 	gitInit(t, src, "main")
 	gitCommit(t, src)
+	info, ok := Resolve(src)
+	if !ok {
+		t.Fatal("src should resolve as a git worktree")
+	}
+	gitDir := info.GitDir
 
 	// A clean linked worktree removes without force.
 	cleanDir, _, err := Add(src, "clean", "")
@@ -211,7 +216,7 @@ func TestRemoveCleanAndDirty(t *testing.T) {
 	if dirty, _ := IsDirty(cleanDir); dirty {
 		t.Fatal("fresh worktree should be clean")
 	}
-	if err := Remove(cleanDir, false); err != nil {
+	if err := Remove(cleanDir, gitDir, false); err != nil {
 		t.Fatalf("remove clean: %v", err)
 	}
 	if _, err := os.Stat(cleanDir); !os.IsNotExist(err) {
@@ -229,14 +234,37 @@ func TestRemoveCleanAndDirty(t *testing.T) {
 	if dirty, _ := IsDirty(dirtyDir); !dirty {
 		t.Fatal("worktree with an untracked file should be dirty")
 	}
-	if err := Remove(dirtyDir, false); err == nil {
+	if err := Remove(dirtyDir, gitDir, false); err == nil {
 		t.Fatal("removing a dirty worktree without force should fail")
 	}
-	if err := Remove(dirtyDir, true); err != nil {
+	if err := Remove(dirtyDir, gitDir, true); err != nil {
 		t.Fatalf("force-remove dirty: %v", err)
 	}
 	if _, err := os.Stat(dirtyDir); !os.IsNotExist(err) {
 		t.Fatalf("dirty worktree dir should be gone after force, stat err=%v", err)
+	}
+
+	// A worktree whose directory was deleted on disk (git still lists it as prunable)
+	// removes by metadata: deriving the primary from gitDir, not from the missing dir,
+	// keeps Remove from failing with "not inside a git worktree".
+	goneDir, _, err := Add(src, "gone", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(goneDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := Remove(goneDir, gitDir, false); err != nil {
+		t.Fatalf("remove prunable worktree: %v", err)
+	}
+	wts, err := ListWorktrees(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, wt := range wts {
+		if wt.Path == goneDir {
+			t.Fatalf("prunable worktree %s should be gone from git's list", goneDir)
+		}
 	}
 }
 

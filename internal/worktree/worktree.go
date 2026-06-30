@@ -318,17 +318,19 @@ func IsDirty(dir string) (bool, error) {
 
 // Remove removes the worktree at dir via `git worktree remove`. With force=false git
 // declines a worktree that has uncommitted changes; force=true passes --force. The
-// command runs from the repository's primary worktree (resolved from the common git dir)
-// so removing a linked worktree — even the caller's own — succeeds. git itself refuses to
-// remove a primary worktree, which is what keeps a repo's anchor non-deletable.
-func Remove(dir string, force bool) error {
+// command runs from the repository's primary worktree (filepath.Dir(gitDir)) so removing a
+// linked worktree — even the caller's own — succeeds. git itself refuses to remove a primary
+// worktree, which is what keeps a repo's anchor non-deletable.
+//
+// The primary is derived from gitDir (the repository's common git dir, which the caller has
+// already resolved) rather than by running git inside dir, so Remove still works when dir has
+// been deleted on disk — a prunable worktree git still lists. Resolving the primary from the
+// to-be-removed directory would fail there with a confusing "not inside a git worktree".
+func Remove(dir, gitDir string, force bool) error {
 	if err := requireGit(); err != nil {
 		return err
 	}
-	primary, _, err := primaryOf(dir)
-	if err != nil {
-		return err
-	}
+	primary := filepath.Dir(gitDir)
 	args := []string{"worktree", "remove", dir}
 	if force {
 		args = append(args, "--force")

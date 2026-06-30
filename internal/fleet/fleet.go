@@ -364,7 +364,7 @@ func (f *Fleet) Delete(t Target, force bool) error {
 	}
 	f.closeWindow(t)
 	if isWorktree {
-		return worktree.Remove(t.Dir, force)
+		return worktree.Remove(t.Dir, t.GitDir, force)
 	}
 	return nil
 }
