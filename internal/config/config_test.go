@@ -3,8 +3,28 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
+
+// TestReferenceMatchesDefaults guards the shipped `be config` reference against
+// drift: parsing it must yield exactly Default(). The reference therefore keeps
+// its uncommented lines equal to the built-in defaults and leaves every override
+// example commented out. If a default changes, update default.toml in lockstep.
+func TestReferenceMatchesDefaults(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte(Reference()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadFrom(path)
+	if err != nil {
+		t.Fatalf("the shipped config reference must load cleanly: %v", err)
+	}
+	if want := Default(); !reflect.DeepEqual(cfg, want) {
+		t.Fatalf("config reference drifted from Default()\n got: %+v\nwant: %+v", cfg, want)
+	}
+}
 
 func TestLoadMissingFileReturnsDefaults(t *testing.T) {
 	cfg, err := LoadFrom(filepath.Join(t.TempDir(), "nope.toml"))
@@ -28,17 +48,13 @@ tmuxp = false
 [dir]
 use_zoxide = false
 roots = ["/home/u/code"]
-
-# Retired keys from older configs must be ignored, not rejected.
-[agents]
-stale_after = "30s"
 `
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := LoadFrom(path)
 	if err != nil {
-		t.Fatalf("a retired agents key should be ignored, not error: %v", err)
+		t.Fatalf("a valid override config should load: %v", err)
 	}
 	if len(cfg.Order) != 2 || cfg.Order[0] != "dir" {
 		t.Fatalf("order not applied: %v", cfg.Order)
@@ -156,6 +172,35 @@ roots = ["~/code"]
 	}
 }
 
+func TestLoadRejectsUnknownKeys(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	// A typo'd top-level field, a typo'd struct field, and a misspelled candidate type in
+	// both a list (order) and a map ([providers]) - all of which used to be silently ignored.
+	body := `
+oder = ["tmux"]
+order = ["tmux", "reepo"]
+
+[dir]
+usezoxide = true
+
+[providers]
+reepo = false
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadFrom(path)
+	if err == nil {
+		t.Fatal("expected unrecognized keys to be rejected, not silently ignored")
+	}
+	for _, want := range []string{"oder", "dir.usezoxide", `order type "reepo"`, "providers.reepo"} {
+		if !contains(err.Error(), want) {
+			t.Errorf("error should name %q, got %q", want, err.Error())
+		}
+	}
+}
+
 func TestLoadMalformedReportsFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
@@ -233,6 +278,83 @@ func TestAgentsSplitRatio(t *testing.T) {
 	}
 }
 
+func TestWithRuntimeDefaultsFillsUnsetOnly(t *testing.T) {
+	// An unset config gets the built-in runtime values materialized.
+	got := Default().WithRuntimeDefaults()
+	if got.Agents.Refresh != "1s" {
+		t.Errorf("refresh = %q, want 1s", got.Agents.Refresh)
+	}
+	if got.Agents.Command != "claude" {
+		t.Errorf("command = %q, want claude", got.Agents.Command)
+	}
+	if got.Agents.Split != DefaultSplit {
+		t.Errorf("split = %v, want %v", got.Agents.Split, DefaultSplit)
+	}
+
+	// Values the user set are left verbatim (not reformatted, not defaulted).
+	base := Default()
+	base.Agents.Refresh = "250ms"
+	base.Agents.Command = "aider"
+	base.Agents.Split = 0.6
+	got = base.WithRuntimeDefaults()
+	if got.Agents.Refresh != "250ms" || got.Agents.Command != "aider" || got.Agents.Split != 0.6 {
+		t.Errorf("set values must be preserved, got %+v", got.Agents)
+	}
+
+	// The receiver is not mutated.
+	if base.Agents.Refresh != "250ms" {
+		t.Error("WithRuntimeDefaults must not mutate the receiver")
+	}
+	orig := Default()
+	_ = orig.WithRuntimeDefaults()
+	if orig.Agents.Refresh != "" || orig.Agents.Command != "" || orig.Agents.Split != 0 {
+		t.Errorf("WithRuntimeDefaults mutated the receiver: %+v", orig.Agents)
+	}
+}
+
+func TestCheckFile(t *testing.T) {
+	dir := t.TempDir()
+
+	// A missing file is not an error and has no unknown keys.
+	if keys, err := CheckFile(filepath.Join(dir, "absent.toml")); err != nil || keys != nil {
+		t.Fatalf("missing file: keys=%v err=%v, want nil,nil", keys, err)
+	}
+
+	// A clean config has no unknown keys.
+	clean := filepath.Join(dir, "clean.toml")
+	if err := os.WriteFile(clean, []byte("order = [\"tmux\"]\n[dir]\nuse_zoxide = false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if keys, err := CheckFile(clean); err != nil || len(keys) != 0 {
+		t.Fatalf("clean config: keys=%v err=%v, want none", keys, err)
+	}
+
+	// Typos, retired keys, and misspelled candidate types (in a list and a map) are all
+	// reported, sorted.
+	bad := filepath.Join(dir, "bad.toml")
+	body := "oder = [\"tmux\"]\norder = [\"tmux\", \"reepo\"]\n[dir]\nusezoxide = true\n[providers]\nreepo = false\n[worktree]\nroots = [\"~/c\"]\n"
+	if err := os.WriteFile(bad, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	keys, err := CheckFile(bad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"dir.usezoxide", "oder", `order type "reepo"`, "providers.reepo", "worktree.roots"}
+	if !reflect.DeepEqual(keys, want) {
+		t.Fatalf("unknown keys = %v, want %v (sorted)", keys, want)
+	}
+
+	// Malformed TOML is an error naming the file.
+	malformed := filepath.Join(dir, "malformed.toml")
+	if err := os.WriteFile(malformed, []byte("this = = bad"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CheckFile(malformed); err == nil || !contains(err.Error(), malformed) {
+		t.Fatalf("malformed: err=%v, want error naming the file", err)
+	}
+}
+
 func writeRepoConfig(t *testing.T, repoRoot, body string) {
 	t.Helper()
 	dir := filepath.Join(repoRoot, ".birdseye")
@@ -298,19 +420,16 @@ func TestOverlayDoesNotMutateBase(t *testing.T) {
 func TestOverlayMergesMaps(t *testing.T) {
 	base := Default()
 	repo := t.TempDir()
-	writeRepoConfig(t, repo, "[labels]\ntmux = \"box\"\nextra = \"new\"\n")
+	writeRepoConfig(t, repo, "[labels]\ntmux = \"box\"\ndir = \"folder\"\n")
 	got, err := Overlay(base, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Labels["tmux"] != "box" {
-		t.Errorf("repo should override an existing label, got %q", got.Labels["tmux"])
+	if got.Labels["tmux"] != "box" || got.Labels["dir"] != "folder" {
+		t.Errorf("repo should override the labels it sets, got %q/%q", got.Labels["tmux"], got.Labels["dir"])
 	}
-	if got.Labels["extra"] != "new" {
-		t.Errorf("repo should add a new label, got %q", got.Labels["extra"])
-	}
-	if got.Labels["dir"] != "dir" {
-		t.Errorf("a label the repo omits should be inherited, got %q", got.Labels["dir"])
+	if got.Labels["tmuxp"] != "template" {
+		t.Errorf("a label the repo omits should be inherited, got %q", got.Labels["tmuxp"])
 	}
 }
 

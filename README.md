@@ -127,7 +127,8 @@ with vim keys — `j`/`k` (or arrows) to move, `gg`/`G` for top/bottom, `ctrl+d`
 for half-page — `enter` jumps to the selected agent's session, and `q` dismisses it.
 `s` opens a new session via the fuzzy picker (the same one as `be sessions`) and drops
 you back in the view with it listed — handy for opening a repo before spinning agents up.
-All of these keys are configurable (see `[agents.keys]` below).
+All of these keys are configurable under `[agents.keys]` (run `be config` for the
+defaults and the full list).
 
 ### Repositories (agent orchestration)
 
@@ -156,7 +157,7 @@ In a recognized repository the view shows, beside live agents:
 - a `◌ slot` row for each worktree with no agent — a spawn target — **including worktrees
   with no open tmux window**, since the set is enumerated from `git worktree list`.
 
-Two actions become available (configurable, see `[agents.keys]`):
+Two actions become available (configurable under `[agents.keys]`; run `be config`):
 
 - **`n` — new agent**: opens a small form with two fields — **branch** and **worktree** —
   where the worktree directory auto-fills from a slugified branch name (`feature/login` →
@@ -216,77 +217,28 @@ in its own directory.
 ## Configuration
 
 Config lives at `~/.config/birdseye/config.toml` (TOML). All keys are optional;
-built-in defaults apply when absent. Example:
+built-in defaults apply when absent. Loading is **strict**: a key birdseye doesn't
+recognize - a typo, a retired option, an unknown candidate type - is a hard error
+naming the offending key, never a silent no-op, so a fat-fingered setting can't
+quietly do nothing. The **`be config`** command is the source of truth - it never
+drifts from the real defaults, so the full schema lives in the binary rather than
+in this README:
 
-```toml
-# Display order of candidate types in the picker.
-order = ["tmux", "tmuxp", "dir", "repo"]
-
-# Per-type display labels.
-[labels]
-tmux  = "session"
-tmuxp = "template"
-dir   = "dir"
-repo  = "repo"
-
-# Per-type icons shown in the picker. Defaults are Nerd Font glyphs; override
-# with your own text/emoji, or set a type to "" to hide its icon. (Requires a
-# Nerd Font for the defaults to render.)
-[icons]
-tmux  = ""
-tmuxp = "󰏭"
-dir   = ""
-repo  = "󰘬"
-
-# Enable/disable providers by type (omit a type to leave it enabled).
-[providers]
-repo = false
-
-[tmuxp]
-# dir = "/custom/tmuxp/config/dir"   # defaults to tmuxp's own config dir
-
-[dir]
-use_zoxide = true
-roots = ["~/projects", "~/work"]
-
-[repo]
-# Optional discovery paths scanned for git repos. Each repo found directly under a root
-# becomes one `repo` picker candidate that opens a session at the repo's primary worktree.
-# Omit or leave empty to list none.
-roots = ["~/code", "~/work"]
-
-[agents]
-refresh = "1s"                        # live-refresh interval (a Go duration)
-command = "claude"                    # agent command for `n`, run in the window's shell
-# command = "claude --permission-mode=auto"   # fewer permission prompts (see above)
-# accent = "#c792ea"                  # agents-view accent (title + cursor); #rrggbb
-# split = 0.4                         # the agents-list pane's share of the width when the
-                                      # preview is shown: the list fills out to this share
-                                      # (columns flex to fit, no clipping) and the preview takes
-                                      # the rest. Default 0.4, clamped to 0.3–0.8
-
-# Rebind the agents-view keys. Each action lists the keys that trigger it;
-# omit an action to keep its default. A two-rune value of two typeable keys (e.g.
-# "gg", "dd", "dD") is a chord — those two keys pressed in sequence. Defaults shown below.
-[agents.keys]
-up        = ["k", "up"]
-down      = ["j", "down"]
-top       = ["gg"]
-bottom    = ["G"]
-half_up   = ["ctrl+u"]
-half_down = ["ctrl+d"]
-select    = ["enter"]
-new_session  = ["s"]                   # open a session via the picker, stay in the view
-new_agent    = ["n"]
-close        = ["dd"]                   # close the window (safe, no disk effect); "dd" is a chord
-delete       = ["dD"]                   # close + git worktree remove, behind a popup; "dD" is a chord
-quit      = ["q", "esc", "ctrl+c"]
-
-[worktree]
-# Global fallback setup command, run on every worktree creation when a repo does not
-# define its own (see "Worktree provisioning" below). Empty means no global default.
-# setup = "make bootstrap"
+```sh
+be config              # the effective config: defaults + your files, merged, as TOML
+be config --defaults   # the annotated default template (every key, default, and how to override)
+be config --check      # validate your config files; report unknown or invalid fields
 ```
+
+- **`be config`** shows exactly which values are in effect and where they come from.
+  Run inside a project and it overlays that repo's `.birdseye/config.toml` (see
+  [Worktree provisioning](#worktree-provisioning)) on top of your user config, just as
+  the app does; run it anywhere else and you get your user config alone. A header names
+  the sources in precedence order. Both this and `--defaults` emit valid TOML, so either
+  can seed a file: `be config --defaults > ~/.config/birdseye/config.toml`.
+- **`be config --check`** parses your user and repo configs and flags misspelled or
+  unknown fields, retired keys, bad keybindings, and out-of-range values. It exits
+  non-zero when it finds problems, so it fits a pre-commit hook or CI step.
 
 ### Worktree provisioning
 

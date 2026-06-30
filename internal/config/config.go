@@ -3,14 +3,32 @@
 package config
 
 import (
+	_ "embed"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
 )
+
+// referenceTOML is the annotated configuration reference shipped with the
+// binary and emitted by `be config`. It documents the structure, the built-in
+// defaults, and how to override each key. A guard test asserts it parses back
+// into Default(), so it cannot drift from the real defaults.
+//
+//go:embed default.toml
+var referenceTOML string
+
+// Reference returns the annotated default-configuration TOML: every section and
+// key with its built-in default and override notes. `be config` prints this so a
+// user can see the defaults and structure without hunting through the README.
+func Reference() string {
+	return referenceTOML
+}
 
 // Config is the fully-resolved configuration (defaults merged with the user
 // file).
@@ -179,12 +197,67 @@ func Load() (Config, string, error) {
 	return cfg, path, err
 }
 
-// LoadFrom reads the config from a specific path. A missing file yields
-// defaults; a malformed file yields an error naming the file.
+// LoadFrom reads the config from a specific path. A missing file yields defaults; a
+// malformed file, or one containing a key birdseye does not recognize (a typo, a retired
+// option, an unknown candidate type), yields an error naming the file and the offending
+// keys. Unrecognized keys are rejected rather than silently ignored so a fat-fingered key
+// never quietly no-ops - run `be config --check` to see every problem at once.
 func LoadFrom(path string) (Config, error) {
 	cfg := Default()
-	if err := mergeFile(&cfg, path); err != nil {
+	if err := mergeStrict(&cfg, path); err != nil {
 		return Default(), err
+	}
+	cfg.expandPaths()
+	return cfg, nil
+}
+
+// WithRuntimeDefaults returns a copy of c with the built-in runtime defaults
+// materialized into the fields that resolve lazily at use-time (the [agents]
+// refresh/command/split). It is what `be config` prints so the output reflects
+// the values actually in effect, not blanks. Only unset fields are filled - a
+// value you set is left verbatim - and the defaults are read from the same
+// resolvers the app uses, so this can't drift from them. The original is
+// unmodified.
+func (c Config) WithRuntimeDefaults() Config {
+	d := c.clone()
+	if d.Agents.Refresh == "" {
+		if iv, err := (Agents{}).RefreshInterval(); err == nil {
+			d.Agents.Refresh = iv.String()
+		}
+	}
+	if d.Agents.Command == "" {
+		d.Agents.Command = (Agents{}).AgentCommand()
+	}
+	if d.Agents.Split == 0 {
+		d.Agents.Split = DefaultSplit
+	}
+	return d
+}
+
+// CheckFile decodes the config at path and returns the keys it contains that birdseye does
+// not recognize - typos, retired options, keys in the wrong section, or an unknown candidate
+// type under order/[providers]/[labels]/[icons]. It is the structural half of `be config
+// --check`; value-range checks (a bad split, an unknown keybinding) live at the use sites
+// that already validate them. A missing file yields no keys and no error; a malformed file is
+// reported as an error naming the file. The returned keys are sorted. Unlike the strict
+// loaders this only reports - it never errors on a merely-unrecognized key - so --check can
+// list every problem in one pass.
+func CheckFile(path string) ([]string, error) {
+	var cfg Config
+	return mergeFile(&cfg, path)
+}
+
+// EffectiveLenient builds the merged config from base defaults plus the files at paths, in
+// order (low to high precedence), tolerating unrecognized keys. It backs `be config --check`'s
+// value pass, which validates keybindings, accent, split, and refresh on a config that may
+// also have structural problems (those are reported separately via CheckFile). Production code
+// uses the strict Load/Overlay instead. A malformed or unreadable file is an error.
+func EffectiveLenient(paths ...string) (Config, error) {
+	cfg := Default()
+	for _, p := range paths {
+		if _, err := mergeFile(&cfg, p); err != nil {
+			return Default(), err
+		}
 	}
 	cfg.expandPaths()
 	return cfg, nil
@@ -199,40 +272,112 @@ const RepoConfigName = ".birdseye/config.toml"
 // Merge semantics follow the TOML decoder: a scalar set by the repo overrides, a scalar it
 // omits is inherited, maps merge key-by-key, and lists are replaced wholesale. base is left
 // unmodified (it is deep-copied first); a missing repo config yields base unchanged, and a
-// malformed one is reported as an error.
+// malformed one - or one with a key birdseye does not recognize - is an error.
 func Overlay(base Config, repoRoot string) (Config, error) {
 	eff := base.clone()
-	if err := mergeFile(&eff, filepath.Join(repoRoot, RepoConfigName)); err != nil {
+	if err := mergeStrict(&eff, filepath.Join(repoRoot, RepoConfigName)); err != nil {
 		return base, err
 	}
 	eff.expandPaths()
 	return eff, nil
 }
 
-// mergeFile decodes a TOML config file into cfg, layering its keys over whatever cfg already
-// holds (so callers can stack defaults, the user config, and a repo config). A missing file is
-// a no-op; a malformed file, or one still using the retired [worktree] provider keys, is an
-// error naming the file.
-func mergeFile(cfg *Config, path string) error {
+// mergeStrict layers the file at path onto cfg and rejects any key birdseye does not
+// recognize, so a typo or retired option fails loudly at load time instead of silently
+// no-opping. It is the production loader's merge step; CheckFile/EffectiveLenient use the
+// tolerant mergeFile directly.
+func mergeStrict(cfg *Config, path string) error {
+	unknown, err := mergeFile(cfg, path)
+	if err != nil {
+		return err
+	}
+	if len(unknown) > 0 {
+		return unrecognizedConfigErr(path, unknown)
+	}
+	return nil
+}
+
+// mergeFile decodes the TOML file at path onto cfg (layering its keys over whatever cfg
+// already holds, so callers can stack defaults, the user config, and a repo config) and
+// returns the keys it did not recognize. A missing file is a no-op with no keys; a malformed
+// or unreadable file is an error naming it. Whether unrecognized keys are fatal is the
+// caller's choice - mergeStrict rejects them, the --check helpers report them.
+func mergeFile(cfg *Config, path string) ([]string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return nil, nil
 		}
-		return fmt.Errorf("reading config %s: %w", path, err)
+		return nil, fmt.Errorf("reading config %s: %w", path, err)
 	}
 	md, err := toml.Decode(string(data), cfg)
 	if err != nil {
-		return fmt.Errorf("invalid config %s: %w", path, err)
+		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
-	// The provider's config moved from `[worktree]` (and its earlier single `root` key)
-	// to `[repo] roots`. Fail loudly rather than silently ignoring an old config.
-	for _, key := range md.Undecoded() {
-		if strings.HasPrefix(key.String(), "worktree.") {
-			return fmt.Errorf("invalid config %s: the [worktree] provider roots moved to [repo]; use [repo] with a roots list, e.g. roots = [\"~/code\"]", path)
+	return unknownKeys(md, *cfg), nil
+}
+
+// knownTypes is the set of candidate types birdseye recognizes, taken from the default
+// display order (the canonical list of built-in providers). Config keyed by type - order,
+// [providers], [labels], [icons] - is validated against it, so a misspelled type such as
+// "reepo" is rejected rather than silently leaving the real provider untouched.
+var knownTypes = func() map[string]bool {
+	m := make(map[string]bool)
+	for _, t := range Default().Order {
+		m[t] = true
+	}
+	return m
+}()
+
+// unknownKeys returns every key in a decoded config that birdseye does not recognize: TOML
+// keys outside the schema (md.Undecoded - typos and retired fields), plus type-keyed entries
+// naming an unknown candidate type (which decode into their maps, so the decoder cannot flag
+// them). The result is sorted for a stable report.
+func unknownKeys(md toml.MetaData, cfg Config) []string {
+	var unknown []string
+	for _, k := range md.Undecoded() {
+		unknown = append(unknown, k.String())
+	}
+	for _, t := range cfg.Order {
+		if !knownTypes[t] {
+			unknown = append(unknown, fmt.Sprintf("order type %q", t))
 		}
 	}
-	return nil
+	for t := range cfg.Providers {
+		if !knownTypes[t] {
+			unknown = append(unknown, "providers."+t)
+		}
+	}
+	for t := range cfg.Labels {
+		if !knownTypes[t] {
+			unknown = append(unknown, "labels."+t)
+		}
+	}
+	for t := range cfg.Icons {
+		if !knownTypes[t] {
+			unknown = append(unknown, "icons."+t)
+		}
+	}
+	sort.Strings(unknown)
+	return unknown
+}
+
+// unrecognizedConfigErr builds the load-time error for a config with unrecognized keys,
+// naming the file and listing every offender, with the [worktree] migration hint when a
+// retired worktree-provider key is among them.
+func unrecognizedConfigErr(path string, unknown []string) error {
+	noun := "keys"
+	if len(unknown) == 1 {
+		noun = "key"
+	}
+	msg := fmt.Sprintf("invalid config %s: unrecognized %s: %s", path, noun, strings.Join(unknown, ", "))
+	for _, k := range unknown {
+		if strings.HasPrefix(k, "worktree.") {
+			msg += "; the [worktree] provider roots moved to [repo] (use roots = [\"~/code\"])"
+			break
+		}
+	}
+	return errors.New(msg)
 }
 
 // clone returns a deep copy of c whose maps and slices are independent of the original, so
