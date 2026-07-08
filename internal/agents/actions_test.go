@@ -92,7 +92,7 @@ func modelWith(t *testing.T, orch Orchestrator, rows []Row) model {
 		t.Fatal(err)
 	}
 	m.orch = orch
-	m.focus = lensWorkspaces // action tests drive the Workspaces lens; production opens on Agents
+	m.focus = lensProjects // action tests drive the Workspaces lens; production opens on Agents
 	return m
 }
 
@@ -287,7 +287,7 @@ func TestEnterOnWindowlessSlotSpawnsAndAttaches(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.orch = orch
-	m.focus = lensWorkspaces // slot/base actions are Workspaces-lens motions
+	m.focus = lensProjects // slot/base actions are Workspaces-lens motions
 
 	nm, cmd := m.applyAction(ActionSelect)
 	m = nm.(model)
@@ -321,7 +321,7 @@ func TestEnterOnWindowlessBaseOpensShellAndAttaches(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.orch = orch
-	m.focus = lensWorkspaces // slot/base actions are Workspaces-lens motions
+	m.focus = lensProjects // slot/base actions are Workspaces-lens motions
 
 	nm, cmd := m.applyAction(ActionSelect)
 	m = nm.(model)

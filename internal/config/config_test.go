@@ -153,6 +153,56 @@ roots = ["~/code", "/work/repos"]
 	}
 }
 
+func TestLoadParsesAndExpandsWorkspaces(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	body := `
+[[workspace]]
+name  = "personal"
+roots = ["~/projects"]
+[[workspace]]
+name  = "work"
+roots = ["/srv/work", "~/clients"]
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadFrom(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wss, err := cfg.ResolveWorkspaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, _ := os.UserHomeDir()
+	if len(wss) != 2 || wss[0].Name != "personal" || wss[1].Name != "work" {
+		t.Fatalf("workspaces not parsed in order: %+v", wss)
+	}
+	if wss[0].Roots[0] != filepath.Join(home, "projects") {
+		t.Fatalf("workspace root tilde not expanded: %v", wss[0].Roots)
+	}
+	if wss[1].Roots[0] != "/srv/work" || wss[1].Roots[1] != filepath.Join(home, "clients") {
+		t.Fatalf("work roots not parsed/expanded: %v", wss[1].Roots)
+	}
+}
+
+func TestResolveWorkspacesRejectsBadDeclarations(t *testing.T) {
+	cases := []struct {
+		name string
+		wss  []Workspace
+	}{
+		{"empty name", []Workspace{{Name: "", Roots: []string{"/a"}}}},
+		{"no roots", []Workspace{{Name: "work", Roots: nil}}},
+		{"duplicate name", []Workspace{{Name: "w", Roots: []string{"/a"}}, {Name: "w", Roots: []string{"/b"}}}},
+	}
+	for _, c := range cases {
+		if _, err := (Config{Workspaces: c.wss}).ResolveWorkspaces(); err == nil {
+			t.Errorf("%s: expected an error, got nil", c.name)
+		}
+	}
+}
+
 func TestLoadRejectsLegacyWorktreeSection(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")

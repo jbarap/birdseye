@@ -1,13 +1,16 @@
-# dash-lenses Specification
+## RENAMED Requirements
 
-## Purpose
-The `be dash` agents dashboard presents two always-visible lenses over one shared agent row
-set, stacked in a left sidebar: an **Agents** triage lens (flat, fixed status bands, recency
-within band) above a **Projects** topology lens (repository → worktree → slot tree, stable
-name order), with a preview pane filling the remaining width at full height. This capability
-defines how those lenses are sourced, ordered, focused, folded, and linked, so topology (stable
-position) and attention (volatile urgency) stop competing for a single sort key.
-## Requirements
+- FROM: `### Requirement: Stable Workspaces ordering`
+- TO: `### Requirement: Stable Projects ordering`
+
+- FROM: `### Requirement: Status as a non-positional badge in Workspaces`
+- TO: `### Requirement: Status as a non-positional badge in Projects`
+
+- FROM: `### Requirement: Incidental agents explain why they are not a workspace`
+- TO: `### Requirement: Incidental agents explain why they are not a project`
+
+## MODIFIED Requirements
+
 ### Requirement: Two always-visible lenses over one row set
 
 The agents dashboard SHALL present two lenses over the same agent row set, stacked in a left
@@ -37,6 +40,67 @@ The always-visible two-lens sidebar is the primary mode whenever height allows, 
 - **WHEN** the terminal is too short to stack both lens panels
 - **THEN** the dashboard shows one lens at a time - the focused one - with a rebindable toggle
   between them, rather than cramming both
+
+### Requirement: Stable Projects ordering
+
+The Projects lens SHALL order its sections by a stable key (repository name) and SHALL NOT
+reorder sections by agent status; a section's position SHALL NOT change when one of its
+agents changes status. Within a recognized repository's section, the `⌂ base` anchor row
+SHALL be pinned first, worktree rows SHALL follow ordered by worktree name, and `◌ slot`
+rows (worktrees with no agent) SHALL sort last. A worktree hosting multiple agents SHALL
+keep its rows together in that name position. Agent status SHALL be conveyed by a per-row
+indicator, never by row position.
+
+#### Scenario: A watched section holds its position when its agent idles
+
+- **WHEN** a section's agent transitions from working to idle (or any status change)
+- **THEN** the section stays in the same position in the Projects lens, because ordering
+  is by name and not by status
+
+#### Scenario: Within-section rows are name-ordered, anchor first, slots last
+
+- **WHEN** a repository section renders with an anchor, worktrees with agents in differing
+  statuses, and empty worktree slots
+- **THEN** the `⌂ base` anchor appears first, worktree rows follow in name order regardless
+  of their agents' statuses, and `◌ slot` rows appear last
+
+### Requirement: Status as a non-positional badge in Projects
+
+In the Projects lens, a section's most-urgent live agent status SHALL be summarized as a
+badge combining a status glyph and a count, so urgency is readable without moving the section.
+The badge is a summary of the section's hidden content, so it SHALL be shown on the section bar
+when the section is **folded** - where the rows are not visible - alongside the section's
+worktree count; when the section is **expanded** the bar SHALL NOT carry the badge or worktree
+count, because the agent rows convey their own statuses. The badge SHALL NOT rely on color
+alone. A muted agent SHALL NOT contribute to its section's most-urgent badge - muting is a
+request to stop competing for attention, so a muted agent SHALL NOT raise the badge. A folded
+section with no live agents, or whose only live agents are muted, SHALL render its bar without a
+status badge rather than being ranked or moved. Regardless of fold state, an incidental
+section's reason for offering no worktrees SHALL remain visible (it is not conveyed by the
+rows).
+
+#### Scenario: Folded section bar shows a most-urgent-status badge
+
+- **WHEN** a section whose most-urgent status is "working" is folded
+- **THEN** its bar shows a working glyph with a count (and the worktree count), paired so the
+  meaning does not depend on color alone
+
+#### Scenario: Expanded section bar drops the summary
+
+- **WHEN** a section is expanded
+- **THEN** its bar carries neither the status badge nor the worktree count, since the visible
+  agent rows already convey their statuses
+
+#### Scenario: Folded no-agent section shows no status badge and is not reordered
+
+- **WHEN** a folded section has no live agents
+- **THEN** its bar carries no status badge and its position is unaffected by status
+
+#### Scenario: Muted agents do not raise a section badge
+
+- **WHEN** a folded section's only live agent is muted
+- **THEN** its bar carries no status badge, so muting suppresses the section's urgency rather
+  than leaving it competing for attention
 
 ### Requirement: Agents lens triage bands
 
@@ -100,6 +164,46 @@ folds a section; an empty band has nothing to collapse and SHALL NOT be foldable
 - **THEN** it is reclaimed by the existing liveness garbage collection and disappears, rather
   than moving into any terminal band
 
+### Requirement: Incidental agents explain why they are not a project
+
+The Projects lens SHALL group agents whose working directory does not resolve to a
+recognized git repository under an incidental section, and that section SHALL state inline
+why it offers no worktrees or slots (for example, the directory is not a git repository),
+rather than presenting an opaque label. Such a section SHALL still render through the same
+section-then-row structure as recognized repositories, not as a bare one-off entry.
+
+#### Scenario: No-repo section states its reason
+
+- **WHEN** an agent runs in a directory that is not a recognized git repository
+- **THEN** it appears under an incidental section whose label or rows state the reason (e.g.
+  "not a git repo"), so the user understands why no worktrees or slots are offered
+
+#### Scenario: Incidental agents use the same structure
+
+- **WHEN** the incidental section renders
+- **THEN** it uses the same section-then-row layout as a recognized repository, not a
+  special bare entry
+
+### Requirement: Lenses stack in a sidebar beside a full-height preview
+
+The dashboard body SHALL be composed as a fixed-width left sidebar holding the stacked lenses and a
+preview pane filling the remaining width at full height. The preview SHALL NOT share the sidebar's
+column, and the lenses SHALL NOT share the preview's rows. Within the sidebar, the Agents pane and
+the Projects pane SHALL divide the available height so that, together, they stand as tall as the
+preview beside them and never overflow the terminal height.
+
+#### Scenario: Preview fills the width beside the sidebar
+
+- **WHEN** the preview is shown
+- **THEN** it is rendered to the right of the sidebar, spanning the width the sidebar leaves and the
+  full height of the body
+
+#### Scenario: Sidebar height splits between the two lenses
+
+- **WHEN** both lenses are stacked
+- **THEN** the Agents pane and the Projects pane each take a share of the sidebar height, each
+  keeping a minimum, and the stacked panels do not exceed the terminal height
+
 ### Requirement: Lens focus and linked selection
 
 The Agents lens SHALL be presented above (in the sidebar) and the Projects lens below it, and the
@@ -140,45 +244,6 @@ lens - a section header, an `⌂ base` anchor, or an `◌ slot` - SHALL show no 
 - **THEN** no mirror highlight is shown in the other lens, since there is no counterpart
   agent
 
-### Requirement: Lenses stack in a sidebar beside a full-height preview
-
-The dashboard body SHALL be composed as a fixed-width left sidebar holding the stacked lenses and a
-preview pane filling the remaining width at full height. The preview SHALL NOT share the sidebar's
-column, and the lenses SHALL NOT share the preview's rows. Within the sidebar, the Agents pane and
-the Projects pane SHALL divide the available height so that, together, they stand as tall as the
-preview beside them and never overflow the terminal height.
-
-#### Scenario: Preview fills the width beside the sidebar
-
-- **WHEN** the preview is shown
-- **THEN** it is rendered to the right of the sidebar, spanning the width the sidebar leaves and the
-  full height of the body
-
-#### Scenario: Sidebar height splits between the two lenses
-
-- **WHEN** both lenses are stacked
-- **THEN** the Agents pane and the Projects pane each take a share of the sidebar height, each
-  keeping a minimum, and the stacked panels do not exceed the terminal height
-
-### Requirement: Sidebar width and preview visibility are governed by width
-
-The lens sidebar's share of the terminal width SHALL be governed by the `agents.split` ratio, with
-the preview taking the remaining width. The preview SHALL be shown only when the terminal is wide
-enough to seat the minimum sidebar and a usable preview side by side; when it is not, the preview
-SHALL be dropped and the sidebar SHALL take the full width. Both lens panels SHALL render at the
-sidebar's width so the column reads as one.
-
-#### Scenario: Split divides width, not height
-
-- **WHEN** `agents.split` is set to a fraction
-- **THEN** that fraction of the width goes to the lens sidebar and the remainder goes to the preview
-  beside it
-
-#### Scenario: Narrow terminal drops the preview
-
-- **WHEN** the terminal is too narrow to seat the minimum sidebar plus a usable preview side by side
-- **THEN** the preview is not shown and the sidebar takes the full width
-
 ### Requirement: Lens focus switches on a vertical key pair
 
 Because the lenses are stacked vertically, the dashboard SHALL bind the lens focus-switch to a
@@ -195,85 +260,3 @@ remain bound as aliases so existing muscle memory keeps working.
 
 - **WHEN** the Projects lens is focused and the user presses the focus-up key
 - **THEN** the Agents lens becomes focused
-
-### Requirement: Stable Projects ordering
-
-The Projects lens SHALL order its sections by a stable key (repository name) and SHALL NOT
-reorder sections by agent status; a section's position SHALL NOT change when one of its
-agents changes status. Within a recognized repository's section, the `⌂ base` anchor row
-SHALL be pinned first, worktree rows SHALL follow ordered by worktree name, and `◌ slot`
-rows (worktrees with no agent) SHALL sort last. A worktree hosting multiple agents SHALL
-keep its rows together in that name position. Agent status SHALL be conveyed by a per-row
-indicator, never by row position.
-
-#### Scenario: A watched section holds its position when its agent idles
-
-- **WHEN** a section's agent transitions from working to idle (or any status change)
-- **THEN** the section stays in the same position in the Projects lens, because ordering
-  is by name and not by status
-
-#### Scenario: Within-section rows are name-ordered, anchor first, slots last
-
-- **WHEN** a repository section renders with an anchor, worktrees with agents in differing
-  statuses, and empty worktree slots
-- **THEN** the `⌂ base` anchor appears first, worktree rows follow in name order regardless
-  of their agents' statuses, and `◌ slot` rows appear last
-
-### Requirement: Status as a non-positional badge in Projects
-
-In the Projects lens, a section's most-urgent live agent status SHALL be summarized as a
-badge combining a status glyph and a count, so urgency is readable without moving the section.
-The badge is a summary of the section's hidden content, so it SHALL be shown on the section bar
-when the section is **folded** - where the rows are not visible - alongside the section's
-worktree count; when the section is **expanded** the bar SHALL NOT carry the badge or worktree
-count, because the agent rows convey their own statuses. The badge SHALL NOT rely on color
-alone. A muted agent SHALL NOT contribute to its section's most-urgent badge - muting is a
-request to stop competing for attention, so a muted agent SHALL NOT raise the badge. A folded
-section with no live agents, or whose only live agents are muted, SHALL render its bar without a
-status badge rather than being ranked or moved. Regardless of fold state, an incidental
-section's reason for offering no worktrees SHALL remain visible (it is not conveyed by the
-rows).
-
-#### Scenario: Folded section bar shows a most-urgent-status badge
-
-- **WHEN** a section whose most-urgent status is "working" is folded
-- **THEN** its bar shows a working glyph with a count (and the worktree count), paired so the
-  meaning does not depend on color alone
-
-#### Scenario: Expanded section bar drops the summary
-
-- **WHEN** a section is expanded
-- **THEN** its bar carries neither the status badge nor the worktree count, since the visible
-  agent rows already convey their statuses
-
-#### Scenario: Folded no-agent section shows no status badge and is not reordered
-
-- **WHEN** a folded section has no live agents
-- **THEN** its bar carries no status badge and its position is unaffected by status
-
-#### Scenario: Muted agents do not raise a section badge
-
-- **WHEN** a folded section's only live agent is muted
-- **THEN** its bar carries no status badge, so muting suppresses the section's urgency rather
-  than leaving it competing for attention
-
-### Requirement: Incidental agents explain why they are not a project
-
-The Projects lens SHALL group agents whose working directory does not resolve to a
-recognized git repository under an incidental section, and that section SHALL state inline
-why it offers no worktrees or slots (for example, the directory is not a git repository),
-rather than presenting an opaque label. Such a section SHALL still render through the same
-section-then-row structure as recognized repositories, not as a bare one-off entry.
-
-#### Scenario: No-repo section states its reason
-
-- **WHEN** an agent runs in a directory that is not a recognized git repository
-- **THEN** it appears under an incidental section whose label or rows state the reason (e.g.
-  "not a git repo"), so the user understands why no worktrees or slots are offered
-
-#### Scenario: Incidental agents use the same structure
-
-- **WHEN** the incidental section renders
-- **THEN** it uses the same section-then-row layout as a recognized repository, not a
-  special bare entry
-
