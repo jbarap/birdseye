@@ -105,6 +105,24 @@ type Agents struct {
 	// fraction of the terminal in (0,1): the list fills out to this share and the preview
 	// takes the rest. Zero keeps the built-in default.
 	Split float64 `toml:"split"`
+	// Notify configures the out-of-band notifications birdseye emits when an agent crosses
+	// into an urgent status. An absent [agents.notify] table means both edges notify with
+	// automatic delivery.
+	Notify Notify `toml:"notify"`
+}
+
+// Notify configures agent notifications. The edge flags default to true; that default lives in
+// Default() (like Dir.UseZoxide), so an absent [agents.notify] table means both edges notify
+// while an explicit `false` in the file overrides it.
+type Notify struct {
+	// Command is a shell command run to deliver each notification, receiving the alert as the
+	// environment variables BE_AGENT, BE_STATUS, BE_REPO, BE_CWD, BE_MESSAGE. Empty selects the
+	// auto-detected platform notifier (notify-send/osascript, terminal-bell fallback).
+	Command string `toml:"command"`
+	// NeedsAttention gates the "an agent entered needs-attention" edge.
+	NeedsAttention bool `toml:"needs_attention"`
+	// Finished gates the "an agent finished its turn (working -> idle)" edge.
+	Finished bool `toml:"finished"`
 }
 
 // DefaultSplit is the agents-list pane's share of the width when none is configured. Agent
@@ -173,7 +191,8 @@ func Default() Config {
 			"dir":   "", // cod-folder
 			"repo":  "󰘬", // md-source_branch
 		},
-		Dir: Dir{UseZoxide: true},
+		Dir:    Dir{UseZoxide: true},
+		Agents: Agents{Notify: Notify{NeedsAttention: true, Finished: true}},
 	}
 }
 
