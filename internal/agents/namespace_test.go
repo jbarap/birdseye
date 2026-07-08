@@ -302,24 +302,24 @@ func TestEnabledHidesBarWhenAllIsOnlyTab(t *testing.T) {
 	}
 }
 
-// TestActiveTabPersistRoundTrip checks that the active-tab key survives a write/read cycle for
+// TestDashStatePersistRoundTrip checks that the active-tab key survives a write/read cycle for
 // every kind of key: All (""), a configured name, and an automatic workspace key (which embeds a
-// NUL byte), and that a missing file reads as All.
-func TestActiveTabPersistRoundTrip(t *testing.T) {
+// NUL byte), and that a missing file reads as the zero state (All).
+func TestDashStatePersistRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	if got, err := readActiveTab(dir); err != nil || got != "" {
-		t.Fatalf("missing file should read as All: got %q err %v", got, err)
+	if got, err := readDashState(dir); err != nil || got.ActiveWorkspace != "" {
+		t.Fatalf("missing file should read as All: got %+v err %v", got, err)
 	}
 	for _, key := range []string{"", "work", autoPrefix + "/home/u/experiments"} {
-		if err := writeActiveTab(dir, key); err != nil {
-			t.Fatalf("writeActiveTab(%q): %v", key, err)
+		if err := writeDashState(dir, dashState{ActiveWorkspace: key}); err != nil {
+			t.Fatalf("writeDashState(%q): %v", key, err)
 		}
-		got, err := readActiveTab(dir)
+		got, err := readDashState(dir)
 		if err != nil {
-			t.Fatalf("readActiveTab after writing %q: %v", key, err)
+			t.Fatalf("readDashState after writing %q: %v", key, err)
 		}
-		if got != key {
-			t.Fatalf("round-trip mismatch: wrote %q, read %q", key, got)
+		if got.ActiveWorkspace != key {
+			t.Fatalf("round-trip mismatch: wrote %q, read %q", key, got.ActiveWorkspace)
 		}
 	}
 }

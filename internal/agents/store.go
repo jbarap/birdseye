@@ -132,40 +132,47 @@ func writeMutes(dir string, set map[string]bool) error {
 	return os.Rename(tmp, final)
 }
 
-// activeTabFile is the single per-state-dir file holding the dash's last-selected namespace tab: a
-// JSON string of the tab's key ("" for All, a configured namespace name, or an automatic
-// workspace's key). Only the view writes it, on an explicit tab switch, so the selection is
-// restored on the next launch.
-const activeTabFile = "active-workspace.json"
+// dashStateFile is the single per-state-dir file holding the dash's persisted view state. It is a
+// JSON object so more view state can be added later without a format migration; only the view reads
+// and writes it.
+const dashStateFile = "dash-state.json"
 
-// readActiveTab loads the persisted active-tab key under dir. A missing or unreadable file yields
-// "" (the All tab), so the dash simply opens on All until the user selects a tab.
-func readActiveTab(dir string) (string, error) {
-	data, err := os.ReadFile(filepath.Join(dir, activeTabFile))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", nil
-		}
-		return "", err
-	}
-	var key string
-	if err := json.Unmarshal(data, &key); err != nil {
-		return "", nil
-	}
-	return key, nil
+// dashState is the dash's persisted view state. Fields are optional and additive - readers tolerate
+// a missing file and unknown keys - so the shape can grow (fold state, focused lens, ...) without a
+// migration. Writers read-modify-write, so setting one field preserves the rest.
+type dashState struct {
+	// ActiveWorkspace is the key of the last-selected namespace tab: "" for All, a configured
+	// namespace name, or an automatic workspace's key.
+	ActiveWorkspace string `json:"active_workspace"`
 }
 
-// writeActiveTab persists the active-tab key atomically under dir. Persisting "" (All) is a real
-// selection - it overwrites a prior tab so the next launch opens on All.
-func writeActiveTab(dir, key string) error {
+// readDashState loads the persisted dash view state under dir. A missing or unreadable file yields
+// the zero state (All active, no folds), so the dash simply opens with defaults.
+func readDashState(dir string) (dashState, error) {
+	data, err := os.ReadFile(filepath.Join(dir, dashStateFile))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return dashState{}, nil
+		}
+		return dashState{}, err
+	}
+	var s dashState
+	if err := json.Unmarshal(data, &s); err != nil {
+		return dashState{}, nil // tolerate a corrupt file: fall back to defaults
+	}
+	return s, nil
+}
+
+// writeDashState persists the dash view state atomically under dir.
+func writeDashState(dir string, s dashState) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	data, err := json.Marshal(key)
+	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
-	final := filepath.Join(dir, activeTabFile)
+	final := filepath.Join(dir, dashStateFile)
 	tmp := final + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
 		return err

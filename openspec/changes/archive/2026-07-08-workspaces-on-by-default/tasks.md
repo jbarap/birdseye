@@ -15,7 +15,7 @@
 
 ## 3. Persist the active tab
 
-- [x] 3.1 Add `readActiveTab` / `writeActiveTab` (a single `active-workspace.json`) to `store.go`, mirroring the mute file.
+- [x] 3.1 Add `readDashState` / `writeDashState` (a single `dash-state.json` object) to `store.go`, mirroring the mute file.
 - [x] 3.2 Add a `stateDir` model field (empty in tests). In `Run`, restore the persisted tab before the first derive; in `switchNamespace`, write it. Restoration reuses the existing fallback-to-All reconciliation.
 - [x] 3.3 Test the write/read round-trip for All, a configured name, and an automatic key (NUL byte).
 
