@@ -9,6 +9,33 @@ import (
 	"time"
 )
 
+// stubNoTmuxRecovery neutralizes the owning-process tmux recovery so a test that sets
+// TMUX="" to simulate "not in tmux" is hermetic: without it, resolveTmux would read the real
+// /proc environment of whatever process runs the suite and pick up a live pane when the tests
+// are run from inside tmux.
+func stubNoTmuxRecovery(t *testing.T) {
+	t.Helper()
+	prev := procTmux
+	procTmux = func(int) (string, string) { return "", "" }
+	t.Cleanup(func() { procTmux = prev })
+}
+
+// TestParseTmuxEnv pins recovery of a Claude daemon's tmux location from its NUL-separated
+// environ: the pane and server socket are extracted, and an environ without tmux yields empties.
+func TestParseTmuxEnv(t *testing.T) {
+	env := []byte("PATH=/usr/bin\x00TMUX=/tmp/tmux-1000/default,11488,10\x00TMUX_PANE=%46\x00HOME=/home/u\x00")
+	tmux, pane := parseTmuxEnv(env)
+	if tmux != "/tmp/tmux-1000/default,11488,10" {
+		t.Errorf("tmux = %q", tmux)
+	}
+	if pane != "%46" {
+		t.Errorf("pane = %q", pane)
+	}
+	if tmux, pane := parseTmuxEnv([]byte("PATH=/usr/bin\x00HOME=/home/u\x00")); tmux != "" || pane != "" {
+		t.Errorf("a tmux-less environ should yield empties, got %q %q", tmux, pane)
+	}
+}
+
 func TestStatusForEventName(t *testing.T) {
 	// Events whose status comes from the name alone (empty payload).
 	cases := map[string]Status{
@@ -371,6 +398,7 @@ func TestHandleHookWritesState(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", dir)
 	t.Setenv("TMUX", "") // not in tmux for the test
+	stubNoTmuxRecovery(t)
 
 	payload := `{"session_id":"sess-123","cwd":"/home/u/projects/foo"}`
 	if err := HandleHook("Notification", strings.NewReader(payload)); err != nil {
@@ -408,6 +436,7 @@ func TestHandleHookPersistsCWD(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", dir)
 	t.Setenv("TMUX", "")
+	stubNoTmuxRecovery(t)
 
 	if err := HandleHook("SessionStart", strings.NewReader(`{"session_id":"s1","cwd":"/repo/wt"}`)); err != nil {
 		t.Fatal(err)

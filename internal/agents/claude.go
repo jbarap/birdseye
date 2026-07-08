@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"time"
 	"unicode/utf8"
+
+	"github.com/jbarap/birdseye/internal/config"
 )
 
 // ClaudeSource reads agent state written by Claude Code hooks and presents it as
@@ -407,9 +409,15 @@ type hookInput struct {
 	Message   string `json:"message"`
 }
 
-// HandleHook processes one hook invocation: it reads the hook payload from r,
-// resolves the tmux location, and writes the updated state record.
+// HandleHook processes one hook invocation: it reads the hook payload from r, resolves the
+// tmux location, writes the updated state record, and emits an out-of-band notification when
+// the agent crossed an urgent status edge. Notification policy is resolved from config here so
+// the hook is self-contained; the core takes it as an argument so tests can inject a fake.
 func HandleHook(event string, r io.Reader) error {
+	return handleHook(event, r, loadNotifyPolicy())
+}
+
+func handleHook(event string, r io.Reader, policy notifyPolicy) error {
 	dir, err := StateDir()
 	if err != nil {
 		return err
@@ -423,6 +431,9 @@ func HandleHook(event string, r io.Reader) error {
 	}
 
 	rec, _ := readRecord(dir, in.SessionID)
+	// Capture the prior status before the event overwrites it, so a notification can fire on
+	// the transition (the edge) rather than on merely being in a state.
+	old := rec.Status
 	rec.SessionID = in.SessionID
 	// SessionEnd produces no terminal status: the session keeps its last status until its
 	// Claude process exits and the liveness GC reclaims it. Every other event maps to one.
@@ -457,7 +468,100 @@ func HandleHook(event string, r io.Reader) error {
 		rec.CWD = in.CWD
 	}
 	rec.Title = title(rec.TmuxSession, rec.CWD)
-	return writeRecord(dir, rec)
+	if err := writeRecord(dir, rec); err != nil {
+		return err
+	}
+	// Notification is best-effort and downstream of the record: a delivery problem must never
+	// fail the hook chain or lose the status write.
+	maybeNotify(dir, old, rec, policy)
+	return nil
+}
+
+// notifyPolicy is the resolved notification behavior for one hook invocation: which edges to
+// notify and how to deliver.
+type notifyPolicy struct {
+	needsAttention bool
+	finished       bool
+	notifier       Notifier
+}
+
+// loadNotifyPolicy reads the effective notification config, falling back to the built-in
+// defaults (both edges on, auto delivery) when config cannot be loaded, so notifications keep
+// working even past a config error.
+func loadNotifyPolicy() notifyPolicy {
+	cfg, _, err := config.Load()
+	if err != nil {
+		cfg = config.Default()
+	}
+	n := cfg.Agents.Notify
+	return notifyPolicy{
+		needsAttention: n.NeedsAttention,
+		finished:       n.Finished,
+		notifier:       notifierFor(n.Command),
+	}
+}
+
+// edge is an urgent status transition worth notifying about.
+type edge int
+
+const (
+	edgeNone edge = iota
+	// edgeNeedsAttention: the agent just entered needs-attention (a block on the user).
+	edgeNeedsAttention
+	// edgeFinished: the agent just finished a turn (working -> idle).
+	edgeFinished
+)
+
+// classifyEdge maps an (old -> new) status transition to the single edge it notifies on, if
+// any. Entering needs-attention is defined as a transition *into* the state (not being in it),
+// so a re-fired block does not re-notify; finished is scoped tightly to working -> idle so an
+// idle nudge arriving while already idle is not read as a fresh finish.
+func classifyEdge(old, cur Status) edge {
+	switch {
+	case cur == StatusNeedsAttention && old != StatusNeedsAttention:
+		return edgeNeedsAttention
+	case old == StatusWorking && cur == StatusIdle:
+		return edgeFinished
+	}
+	return edgeNone
+}
+
+// maybeNotify emits a notification for a qualifying, enabled edge on a non-muted agent. It
+// swallows every error: notification is best-effort and must not disturb the hook.
+func maybeNotify(dir string, old Status, rec record, policy notifyPolicy) {
+	e := classifyEdge(old, rec.Status)
+	if e == edgeNone || policy.notifier == nil {
+		return
+	}
+	if e == edgeNeedsAttention && !policy.needsAttention {
+		return
+	}
+	if e == edgeFinished && !policy.finished {
+		return
+	}
+	// Reuse the per-location mute as the suppression control: a muted agent is never notified.
+	mutes, _ := readMutes(dir)
+	if mutes[locationKey(rec.TmuxPane, rec.TmuxSession, rec.TmuxWindow, rec.SessionID)] {
+		return
+	}
+	_ = policy.notifier.Notify(notificationFor(e, rec))
+}
+
+// notificationFor builds the Notification for an edge from the agent's record.
+func notificationFor(e edge, rec record) Notification {
+	msg := rec.Title
+	switch e {
+	case edgeNeedsAttention:
+		msg = rec.Title + " needs you"
+	case edgeFinished:
+		msg = rec.Title + " finished"
+	}
+	return Notification{
+		Agent:   rec.Title,
+		Status:  rec.Status,
+		CWD:     rec.CWD,
+		Message: msg,
+	}
 }
 
 func title(session, cwd string) string {
@@ -478,16 +582,30 @@ func title(session, cwd string) string {
 // is used for targeting (stable) and the name for display; the pane id pins the
 // exact pane the agent runs in, even when its window is split.
 func resolveTmux() (session, window, windowName, pane string) {
-	if os.Getenv("TMUX") == "" {
-		return "", "", "", ""
+	tmuxEnv, target := os.Getenv("TMUX"), os.Getenv("TMUX_PANE")
+	if tmuxEnv == "" {
+		// Claude Code's daemon runs its sessions detached, with TMUX stripped from the hook
+		// env even though the owning claude process still lives in a tmux pane. Recover the
+		// server and pane from that process's environment (sessionPID already locates it) so
+		// a daemon-run agent maps to its tmux location and stays jumpable, instead of looking
+		// location-less. Best-effort: when it too has no tmux, the agent is genuinely headless.
+		tmuxEnv, target = procTmux(sessionPID())
+		if tmuxEnv == "" {
+			return "", "", "", ""
+		}
 	}
-	target := os.Getenv("TMUX_PANE")
 	args := []string{"display-message", "-p"}
 	if target != "" {
 		args = append(args, "-t", target)
 	}
 	args = append(args, "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}")
-	out, err := exec.Command("tmux", args...).Output()
+	cmd := exec.Command("tmux", args...)
+	// Point tmux at the recovered server when the hook's own env has none, so display-message
+	// resolves the pane against the right socket.
+	if os.Getenv("TMUX") == "" {
+		cmd.Env = append(os.Environ(), "TMUX="+tmuxEnv)
+	}
+	out, err := cmd.Output()
 	if err != nil {
 		return "", "", "", ""
 	}
@@ -496,4 +614,32 @@ func resolveTmux() (session, window, windowName, pane string) {
 		parts = append(parts, "")
 	}
 	return parts[0], parts[1], parts[2], parts[3]
+}
+
+// procTmux reads the TMUX (server socket) and TMUX_PANE values from a process's environment,
+// used to recover the tmux location of a Claude daemon that spawned the current session with
+// TMUX stripped. It is a package var so tests can supply a synthetic environment. Reads
+// /proc/<pid>/environ (Linux); on platforms without it, or on any failure, it yields empties so
+// resolveTmux falls back cleanly - an in-pane session already has TMUX in its own env and never
+// needs this.
+var procTmux = func(pid int) (tmux, pane string) {
+	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/environ")
+	if err != nil {
+		return "", ""
+	}
+	return parseTmuxEnv(data)
+}
+
+// parseTmuxEnv extracts TMUX and TMUX_PANE from a NUL-separated environ blob (the
+// /proc/<pid>/environ format). Absent keys yield empty strings.
+func parseTmuxEnv(environ []byte) (tmux, pane string) {
+	for _, kv := range strings.Split(string(environ), "\x00") {
+		switch {
+		case strings.HasPrefix(kv, "TMUX="):
+			tmux = strings.TrimPrefix(kv, "TMUX=")
+		case strings.HasPrefix(kv, "TMUX_PANE="):
+			pane = strings.TrimPrefix(kv, "TMUX_PANE=")
+		}
+	}
+	return tmux, pane
 }

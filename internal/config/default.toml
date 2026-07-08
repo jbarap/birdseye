@@ -56,6 +56,17 @@ use_zoxide = true                     # include zoxide's known dirs when availab
                                        # preview is shown (the list flexes to fit, the
                                        # preview takes the rest). Default 0.4, clamped 0.3-0.8
 
+# Out-of-band notifications when an agent crosses into an urgent status. Emitted from the
+# Claude hook, so they fire even when `be dash` is closed. A muted agent is never notified.
+[agents.notify]
+needs_attention = true                 # notify when an agent enters needs-attention
+finished        = true                 # notify when an agent finishes a turn (working -> idle)
+# command = ""                         # empty: auto-detect notify-send (Linux) / osascript (macOS),
+                                       # terminal-bell fallback. Set a shell command to route
+                                       # notifications yourself; it receives BE_AGENT, BE_STATUS,
+                                       # BE_REPO, BE_CWD, BE_MESSAGE in its environment, e.g.:
+# command = 'notify-send "$BE_AGENT" "$BE_MESSAGE"'
+
 # Rebind the agents-view keys. Each action lists the keys that trigger it; omit an
 # action to keep its default. A two-rune value of two typeable keys (e.g. "gg", "dd",
 # "dD") is a chord - those two keys pressed in sequence. Defaults shown below.

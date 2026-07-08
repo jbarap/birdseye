@@ -130,9 +130,22 @@ func (w *Workspace) worktrees(gitDir string) []WorktreeInfo {
 // the evidence lives in. There is no whole-session purity gate — a stray non-git pane
 // never suppresses a repository, and panes spanning two repositories yield two sections.
 func (w *Workspace) Rows() ([]Row, error) {
-	agentList, err := w.src.Agents()
+	all, err := w.src.Agents()
 	if err != nil {
 		return nil, err
+	}
+	// The dash and headless verbs act on an agent through its tmux pane (jump, preview,
+	// send, close-window). An agent whose hook ran outside tmux has no pane, so it is not
+	// something this view can target or place in the tmux structure - it would otherwise
+	// render as an un-jumpable row (e.g. background/headless Claude sessions that share a
+	// repo's cwd, appearing as phantom agent rows in that repo). Drop it before recognition
+	// and bucketing so it neither lights up a repo on its own nor produces a dead row. The
+	// record stays on disk; the process-liveness GC still owns its removal.
+	agentList := make([]Agent, 0, len(all))
+	for _, a := range all {
+		if a.TmuxPane != "" {
+			agentList = append(agentList, a)
+		}
 	}
 	panes, _ := w.panes.ListPanes() // best-effort: no tmux → every agent is a plain row
 
