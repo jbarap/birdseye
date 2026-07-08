@@ -51,10 +51,24 @@ type Config struct {
 	Repo     Repo     `toml:"repo"`
 	Agents   Agents   `toml:"agents"`
 	Worktree Worktree `toml:"worktree"`
-	// Workspaces are the dash's path-derived namespaces (the `[[workspace]]` tables): each
-	// slices `be dash` to the repositories under its roots. Empty means the feature is inert -
-	// no tab bar, no filtering. See ResolveWorkspaces for membership and validation.
-	Workspaces []Workspace `toml:"workspace"`
+	// Workspaces is the dash namespaces feature's master switch (the `[workspaces]` table). Its
+	// Enabled flag defaults to true (set in Default()); an explicit `enabled = false` turns the
+	// whole feature off - no tab bar, no filtering, no automatic workspaces.
+	Workspaces WorkspaceSettings `toml:"workspaces"`
+	// WorkspaceDefs are the dash's path-derived namespaces (the `[[workspace]]` tables): each
+	// slices `be dash` to the repositories under its roots. When the feature is enabled, repositories
+	// under no declared root fall back to an automatic parent-derived workspace, so the array may be
+	// empty and grouping still appears. See ResolveWorkspaces for membership and validation.
+	WorkspaceDefs []Workspace `toml:"workspace"`
+}
+
+// WorkspaceSettings holds the dash namespaces feature's master switch. The default lives in
+// Default() (like Dir.UseZoxide), so an absent [workspaces] table means the feature is enabled
+// while an explicit `enabled = false` overrides it.
+type WorkspaceSettings struct {
+	// Enabled gates the whole namespaces feature: the tab bar, path-derived filtering, and the
+	// automatic parent-derived workspaces. False makes the dash behave as if the feature did not exist.
+	Enabled bool `toml:"enabled"`
 }
 
 // Workspace is one dash namespace: a name plus the roots whose repositories belong to it. A
@@ -164,11 +178,12 @@ func (a Agents) SplitRatio() (float64, error) {
 // ResolveWorkspaces validates the configured `[[workspace]]` namespaces and returns them in
 // declaration order. A workspace must name itself and list at least one root, and no two may
 // share a name (the name is the tab label and the membership key). An empty configuration is
-// valid and yields no workspaces - the dash namespace feature is simply inert. Roots are used
-// verbatim here; expandPaths has already resolved a leading "~".
+// valid and yields no declared workspaces; the feature still forms automatic parent-derived
+// workspaces when enabled. Roots are used verbatim here; expandPaths has already resolved a
+// leading "~".
 func (c Config) ResolveWorkspaces() ([]Workspace, error) {
-	seen := make(map[string]bool, len(c.Workspaces))
-	for _, w := range c.Workspaces {
+	seen := make(map[string]bool, len(c.WorkspaceDefs))
+	for _, w := range c.WorkspaceDefs {
 		if strings.TrimSpace(w.Name) == "" {
 			return nil, fmt.Errorf("invalid [[workspace]]: every workspace needs a non-empty name")
 		}
@@ -180,7 +195,7 @@ func (c Config) ResolveWorkspaces() ([]Workspace, error) {
 			return nil, fmt.Errorf("invalid [[workspace]] %q: needs at least one root", w.Name)
 		}
 	}
-	return c.Workspaces, nil
+	return c.WorkspaceDefs, nil
 }
 
 // RefreshInterval resolves the configured live-refresh interval, defaulting to one
@@ -225,8 +240,9 @@ func Default() Config {
 			"dir":   "", // cod-folder
 			"repo":  "󰘬", // md-source_branch
 		},
-		Dir:    Dir{UseZoxide: true},
-		Agents: Agents{Notify: Notify{NeedsAttention: true, Finished: true}},
+		Dir:        Dir{UseZoxide: true},
+		Agents:     Agents{Notify: Notify{NeedsAttention: true, Finished: true}},
+		Workspaces: WorkspaceSettings{Enabled: true},
 	}
 }
 
@@ -440,10 +456,10 @@ func (c Config) clone() Config {
 	d.Order = append([]string(nil), c.Order...)
 	d.Dir.Roots = append([]string(nil), c.Dir.Roots...)
 	d.Repo.Roots = append([]string(nil), c.Repo.Roots...)
-	if c.Workspaces != nil {
-		d.Workspaces = make([]Workspace, len(c.Workspaces))
-		for i, w := range c.Workspaces {
-			d.Workspaces[i] = Workspace{Name: w.Name, Roots: append([]string(nil), w.Roots...)}
+	if c.WorkspaceDefs != nil {
+		d.WorkspaceDefs = make([]Workspace, len(c.WorkspaceDefs))
+		for i, w := range c.WorkspaceDefs {
+			d.WorkspaceDefs[i] = Workspace{Name: w.Name, Roots: append([]string(nil), w.Roots...)}
 		}
 	}
 	d.Providers = cloneMap(c.Providers)
@@ -483,9 +499,9 @@ func (c *Config) expandPaths() {
 	for i, p := range c.Repo.Roots {
 		c.Repo.Roots[i] = expandTilde(p)
 	}
-	for i := range c.Workspaces {
-		for j, p := range c.Workspaces[i].Roots {
-			c.Workspaces[i].Roots[j] = expandTilde(p)
+	for i := range c.WorkspaceDefs {
+		for j, p := range c.WorkspaceDefs[i].Roots {
+			c.WorkspaceDefs[i].Roots[j] = expandTilde(p)
 		}
 	}
 }

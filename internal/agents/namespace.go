@@ -68,10 +68,10 @@ func namespaceMembership(rows []Row, nss []Namespace) map[string]string {
 // whose path is under a configured namespace's root takes that namespace (longest match wins); an
 // unmatched repository falls back to an automatic workspace keyed by its parent directory and
 // labelled with that directory's base name, so unconfigured repositories are grouped rather than
-// confined to All. Returns nil when no namespace is configured (the feature is inert), so no
-// automatic workspaces form without an opt-in.
-func assignRepoTabs(rows []Row, nss []Namespace) map[string]repoTab {
-	if len(nss) == 0 {
+// confined to All. Returns nil when the feature is disabled (inert), so no tabs form; when enabled
+// it always assigns tabs, forming automatic workspaces even with no namespace configured.
+func assignRepoTabs(rows []Row, nss []Namespace, enabled bool) map[string]repoTab {
+	if !enabled {
 		return nil
 	}
 	rep := representativePaths(rows)

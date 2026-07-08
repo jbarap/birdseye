@@ -132,6 +132,47 @@ func writeMutes(dir string, set map[string]bool) error {
 	return os.Rename(tmp, final)
 }
 
+// activeTabFile is the single per-state-dir file holding the dash's last-selected namespace tab: a
+// JSON string of the tab's key ("" for All, a configured namespace name, or an automatic
+// workspace's key). Only the view writes it, on an explicit tab switch, so the selection is
+// restored on the next launch.
+const activeTabFile = "active-workspace.json"
+
+// readActiveTab loads the persisted active-tab key under dir. A missing or unreadable file yields
+// "" (the All tab), so the dash simply opens on All until the user selects a tab.
+func readActiveTab(dir string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(dir, activeTabFile))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	var key string
+	if err := json.Unmarshal(data, &key); err != nil {
+		return "", nil
+	}
+	return key, nil
+}
+
+// writeActiveTab persists the active-tab key atomically under dir. Persisting "" (All) is a real
+// selection - it overwrites a prior tab so the next launch opens on All.
+func writeActiveTab(dir, key string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	data, err := json.Marshal(key)
+	if err != nil {
+		return err
+	}
+	final := filepath.Join(dir, activeTabFile)
+	tmp := final + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, final)
+}
+
 // readRecords loads all records under dir. A missing dir yields no records.
 func readRecords(dir string) ([]record, error) {
 	entries, err := os.ReadDir(dir)

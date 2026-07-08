@@ -35,9 +35,11 @@ birdseye draws on ideas/visuals/concepts from these projects:
   / `IDLE` / `DONE` section bands, most-urgent on top) and a **Projects** lens below (the
   repository→worktree tree, ordered by name and held stable so a row never jumps when
   its agent changes state), with a preview filling the rest of the width. `ctrl+k`/`ctrl+j`
-  switch focus; the selected agent is mirror-highlighted in the other lens. Configure
-  **`[[workspace]]`** namespaces to split a mixed set of projects (personal, work, …) into
-  tabs at the top of the dash, switched with `]` / `[`. It **updates
+  switch focus; the selected agent is mirror-highlighted in the other lens. **Namespaces**
+  are on by default: a mixed set of projects (personal, work, …) groups into tabs at the top of
+  the dash by parent directory, switched with `]` / `[` (the selected tab is remembered across
+  launches); declare **`[[workspace]]`** namespaces to name your own groupings, or set
+  `[workspaces]` `enabled = false` to turn the tabs off. It **updates
   live** as sessions change, shows a **preview** of the selected session's terminal, and
   navigates with **vim-native, configurable** keys. It groups what it shows by
   **repository** (see below), letting you spin agents up and tear them down in place.

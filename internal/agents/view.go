@@ -324,8 +324,12 @@ type model struct {
 	// reconciled set; the lenses below are built from it filtered to the active tab. activeTab is
 	// the active tab's key: "" is the always-present "All" (no filter), a configured namespace's
 	// name, or an autoPrefix-tagged parent-derived workspace. tabAssign maps each repository (by
-	// git-common-dir) to its tab, recomputed each refresh. Empty namespaces means the feature is
-	// inert (no tab bar, no filtering, no automatic workspaces).
+	// git-common-dir) to its tab, recomputed each refresh. wsEnabled is the feature's master
+	// switch: false makes the dash inert (no tab bar, no filtering, no automatic workspaces).
+	// stateDir is where the active tab is persisted between launches; "" disables persistence
+	// (tests), so switching tabs writes nothing.
+	wsEnabled  bool
+	stateDir   string
 	namespaces []Namespace
 	activeTab  string
 	allRows    []Row
@@ -395,7 +399,7 @@ func newModel(src RowSource, prev Previewer, keys Keymap, refresh time.Duration)
 // navigable rows.
 func (m *model) setRows(list []Row) {
 	m.allRows = list
-	m.tabAssign = assignRepoTabs(list, m.namespaces)
+	m.tabAssign = assignRepoTabs(list, m.namespaces, m.wsEnabled)
 	// An automatic (parent-derived) tab exists only while a repository maps to it, so a tab the
 	// user was viewing can vanish when its last repository leaves; fall back to All in that case.
 	if m.activeTab != "" && !m.tabKeyPresent(m.activeTab) {
@@ -413,7 +417,7 @@ func (m *model) setRows(list []Row) {
 // other tab keeps only rows whose repository maps to it (incidental agents, mapping to no
 // repository, appear only under All).
 func (m model) filteredRows(list []Row) []Row {
-	if m.activeTab == "" || len(m.namespaces) == 0 {
+	if m.activeTab == "" || !m.wsEnabled {
 		return list
 	}
 	out := make([]Row, 0, len(list))
@@ -450,7 +454,7 @@ func (m model) tabKeyPresent(key string) bool {
 func (m *model) switchNamespace(delta int) {
 	tabs := m.tabList()
 	if len(tabs) <= 1 {
-		return // no namespaces configured: nothing to switch
+		return // only the All tab (feature disabled, or no second tab to cycle to)
 	}
 	idx := 0
 	for i, t := range tabs {
@@ -461,6 +465,9 @@ func (m *model) switchNamespace(delta int) {
 	}
 	n := len(tabs)
 	m.activeTab = tabs[((idx+delta)%n+n)%n].key
+	if m.stateDir != "" {
+		_ = writeActiveTab(m.stateDir, m.activeTab) // best-effort: a failed write just loses the restore
+	}
 	selKey := m.currentRowKey()
 	agentSel := m.agentSelID()
 	m.setRows(m.allRows)
@@ -550,7 +557,7 @@ func (m *model) recomputeNav() {
 // Run renders the agents view and blocks until the user selects a row or quits. It
 // returns the chosen row (nil when quit without selecting). orch may be nil to disable
 // the create/delete actions.
-func Run(src RowSource, prev Previewer, keys Keymap, accent lipgloss.Color, refresh time.Duration, split float64, namespaces []Namespace, orch Orchestrator) (*Row, error) {
+func Run(src RowSource, prev Previewer, keys Keymap, accent lipgloss.Color, refresh time.Duration, split float64, namespaces []Namespace, wsEnabled bool, orch Orchestrator) (*Row, error) {
 	m, err := newModel(src, prev, keys, refresh)
 	if err != nil {
 		return nil, err
@@ -561,8 +568,22 @@ func Run(src RowSource, prev Previewer, keys Keymap, accent lipgloss.Color, refr
 	if split > 0 {
 		m.split = split
 	}
+	m.wsEnabled = wsEnabled
 	m.namespaces = namespaces
 	m.orch = orch
+	// Persist the active tab under the agent state dir and restore the last selection. Best-effort:
+	// a failure leaves stateDir "" (persistence off) and the dash opens on All. setRows below
+	// reconciles a restored key that is no longer selectable back to All.
+	if dir, err := StateDir(); err == nil {
+		m.stateDir = dir
+		if key, err := readActiveTab(dir); err == nil {
+			m.activeTab = key
+		}
+	}
+	// newModel derived the first frame before these namespace fields were set, so its tab
+	// assignment ran as if the feature were off. Re-derive from the rows it already loaded (no
+	// extra git reads) so the tab bar is present on the first paint, not only after the first tick.
+	m.setRows(m.allRows)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	out, err := p.Run()
 	if err != nil {
@@ -1217,11 +1238,13 @@ func (m model) contentRows() int {
 	return h
 }
 
-// tabBarLines is the height the namespace tab bar consumes above the body: one line when
-// namespaces are configured and the width is known, else nothing (the feature is inert). The
-// body budget subtracts it so the sidebar and preview never overflow the terminal.
+// tabBarLines is the height the namespace tab bar consumes above the body: one line when the width
+// is known and there is more than one tab to show, else nothing. A single tab (the feature disabled,
+// or enabled with no configured namespace and every repository under one parent) needs no bar, so
+// enabling the feature adds no chrome until there is a real choice. The body budget subtracts it so
+// the sidebar and preview never overflow the terminal.
 func (m model) tabBarLines() int {
-	if len(m.namespaces) == 0 || m.width <= 0 {
+	if m.width <= 0 || len(m.tabList()) <= 1 {
 		return 0
 	}
 	return 1
@@ -2327,7 +2350,12 @@ type tabInfo struct {
 // appearing or disappearing automatic tab never shifts a configured one. A tab is urgent when its
 // slice holds a non-muted needs-attention agent; All is urgent when any such agent exists
 // anywhere (including incidental agents), so it can signal attention living outside every tab.
+// When the feature is disabled only All is returned, so every consumer (tab bar, cycling, height)
+// sees a single tab and stays inert regardless of any declared namespace.
 func (m model) tabList() []tabInfo {
+	if !m.wsEnabled {
+		return []tabInfo{{key: "", label: "All"}}
+	}
 	urgentByKey := map[string]bool{}
 	allUrgent := false
 	for _, r := range m.allRows {
@@ -2414,8 +2442,8 @@ func (m model) renderHelp() string {
 			continue
 		}
 		if a == ActionNextNamespace {
-			// Only meaningful when namespaces are configured; show prev/next as one hint.
-			if len(m.namespaces) == 0 {
+			// Only meaningful when there is more than one tab to cycle; show prev/next as one hint.
+			if len(m.tabList()) <= 1 {
 				continue
 			}
 			prev, next := firstKey(m.keys[ActionPrevNamespace]), firstKey(m.keys[ActionNextNamespace])
