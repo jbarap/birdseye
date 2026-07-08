@@ -101,9 +101,9 @@ type Agents struct {
 	// Command is the program spawned for a new orchestration agent; empty defaults
 	// to "claude".
 	Command string `toml:"command"`
-	// Split is the agents-list pane's share of the width when the preview is shown, as a
-	// fraction of the terminal in (0,1): the list fills out to this share and the preview
-	// takes the rest. Zero keeps the built-in default.
+	// Split is the lens sidebar's share of the terminal width when the preview is shown, as a
+	// fraction in (0,1): the stacked Agents/Workspaces lenses take this share of the width on the
+	// left and the preview fills the rest at full height. Zero keeps the built-in default.
 	Split float64 `toml:"split"`
 	// Notify configures the out-of-band notifications birdseye emits when an agent crosses
 	// into an urgent status. An absent [agents.notify] table means both edges notify with
@@ -125,13 +125,13 @@ type Notify struct {
 	Finished bool `toml:"finished"`
 }
 
-// DefaultSplit is the agents-list pane's share of the width when none is configured. Agent
-// rows are short, so this leans toward the preview; raise it for a wider list.
+// DefaultSplit is the lens sidebar's share of the terminal width when none is configured. The
+// lens lists are narrow, so this leans toward the preview; raise it for a wider sidebar.
 const DefaultSplit = 0.4
 
-// SplitRatio resolves the agents-list pane's width share, defaulting to DefaultSplit. It is
-// clamped to a sane band so the list is never cramped and the preview never vanishes; a
-// value outside (0,1) is reported as an error rather than silently coerced.
+// SplitRatio resolves the lens sidebar's width share, defaulting to DefaultSplit. It is clamped
+// to a sane band so the sidebar is never cramped and the preview never vanishes; a value outside
+// (0,1) is reported as an error rather than silently coerced.
 func (a Agents) SplitRatio() (float64, error) {
 	if a.Split == 0 {
 		return DefaultSplit, nil

@@ -21,110 +21,51 @@ const defaultRefresh = time.Second
 // to read a short line, short enough that a stale error doesn't linger.
 const noticeTTL = 4 * time.Second
 
-// Layout constants. Column widths keep every row's data points at fixed positions;
-// the preview is only shown when the terminal is at least previewMinWidth wide.
+// Layout constants. Column widths keep every row's data points at fixed positions; the lens
+// sidebar (Agents stacked over Workspaces) occupies a left column bounded by the split share,
+// and the preview fills the rest of the width at full height (see sidebarWidth / showPreview).
 const (
-	cursorColWidth  = 2  // leftmost gutter: cursor glyph on the selected row, else blank
-	statusColWidth  = 9  // " G word  " — status glyph + 4-char word, pinned across rows
-	agentIndent     = 6  // a row's columns sit this far right of the session bar's label
-	windowColMin    = 11 // worktree/window-label column: baseline, flexes to fit content
-	windowColMax    = 28 // ... but never past this
-	nameColMin      = 8  // title column: baseline, flexes to fit content
-	nameColMax      = 48 // ... but never past this
-	previewMinWidth = 92
-	minPreviewCols  = 24
+	cursorColWidth = 2  // leftmost gutter: cursor glyph on the selected row, else blank
+	statusColWidth = 9  // " G word  " — status glyph + 4-char word, pinned across rows
+	agentIndent    = 6  // a row's columns sit this far right of the session bar's label
+	windowColMin   = 11 // worktree/window-label column: baseline, flexes to fit content
+	windowColMax   = 28 // ... but never past this
+	nameColMin     = 8  // title column: baseline, flexes to fit content
+	nameColMax     = 48 // ... but never past this
+	minPreviewCols = 24 // the preview is dropped rather than rendered narrower than this
+	minLensRows    = 3  // each stacked lens keeps at least this many body rows
+	minSidebarCols = 34 // the lens column never shrinks below this content width (one legible row)
 )
 
-// defaultSplit mirrors config.DefaultSplit: the agents-list pane's share of the width when
-// none is configured. Kept here too so a model built without Run (tests) still lays out
-// sensibly.
+// defaultSplit mirrors config.DefaultSplit: the lens sidebar's share of the terminal width when
+// none is configured. Kept here too so a model built without Run (tests) still lays out sensibly.
 const defaultSplit = 0.4
 
-// Dual-lens layout. The Agents lens is a fixed-ish column carved off the terminal before
-// the Workspaces+preview layout is computed; below dualLensMinWidth only the focused lens
-// shows (the narrow-terminal fallback), still toggled by the focus keys.
-const (
-	agentsNameMin    = 14  // agents-lens title column: baseline, flexes to content
-	agentsNameMax    = 32  // ... but never past this
-	dualLensMinWidth = 140 // below this, show one lens at a time; at/above it, both fit with a preview
-)
-
-// dualLens reports whether both lenses render side by side. Below the threshold (or before
-// the first size message) the view shows a single lens - the focused one - plus the preview.
-func (m model) dualLens() bool { return m.width >= dualLensMinWidth }
-
-// agentNameWidth is the agents-lens title column: the widest agent title (and band label),
-// clamped to a sane band so a long title never starves the rest of the layout.
-func (m model) agentNameWidth() int {
-	w := agentsNameMin
-	for i := range m.agentRows {
-		if t := lipgloss.Width(displayTitle(m.agentRows[i].Title, m.agentRows[i].TmuxSession)); t > w {
-			w = t
+// sidebarWidth is the outer width of the stacked lens column. With a preview beside it, it is the
+// split share of the terminal, clamped so the preview keeps its minimum and so a row stays
+// legible; with no preview the sidebar spans the whole width. Both lens panels render at this
+// width so the column reads as one.
+func (m model) sidebarWidth() int {
+	floor := minSidebarCols + cursorColWidth + 4
+	if !m.showPreview() {
+		if m.width > floor {
+			return m.width
 		}
+		return floor
 	}
-	for _, lbl := range bandLabels {
-		if l := lipgloss.Width(lbl) + 2; l > w {
-			w = l
-		}
+	w := int(float64(m.width)*m.split + 0.5)
+	if room := m.width - 2 /*gap*/ - (minPreviewCols + 4); w > room {
+		w = room
 	}
-	if w > agentsNameMax {
-		w = agentsNameMax
+	if w < floor {
+		w = floor
 	}
 	return w
 }
 
-// agentsContentWidth is the agents-lens body width (status gutter + title column); the
-// outer panel adds the cursor column and the frame.
-func (m model) agentsContentWidth() int { return statusColWidth + m.agentNameWidth() }
-
-// agentsPaneOuter is the rendered width of the Agents lens panel (cursor column + body +
-// frame border/padding).
-func (m model) agentsPaneOuter() int { return cursorColWidth + m.agentsContentWidth() + 4 }
-
-// agentsReserve is the terminal width the Agents lens claims (its panel plus the inter-pane
-// gap), removed from the terminal before the Workspaces+preview split is computed. Zero when
-// the Agents lens is not shown alongside Workspaces.
-func (m model) agentsReserve() int {
-	if !m.dualLens() {
-		return 0
-	}
-	return m.agentsPaneOuter() + 2 // inter-pane gap
-}
-
-// mainWidth is the terminal width available to the Workspaces lens and the preview, after
-// the Agents lens has claimed its column.
-func (m model) mainWidth() int {
-	if w := m.width - m.agentsReserve(); w > 0 {
-		return w
-	}
-	return m.width
-}
-
-// listCapWidth is the largest the list content (after the cursor column and the frame) may
-// grow to while still leaving the preview its minimum width. Zero means no preview is shown
-// (or the size isn't known yet), so the list is uncapped. The shrink loop in colWidths trims
-// columns to this so a long label can never starve the preview.
-func (m model) listCapWidth() int {
-	if m.width <= 0 || !m.showPreview() {
-		return 0
-	}
-	return m.mainWidth() - 2 /*inter-pane gap*/ - (minPreviewCols + 4) /*preview frame*/ - cursorColWidth - 4 /*list frame*/
-}
-
-// listTargetWidth is the list content width the configured split asks for: the agents pane's
-// share of the terminal, clamped so the preview keeps its minimum. The list fills out to this
-// (padding past its content) so the pane occupies its configured portion rather than collapsing
-// to a narrow column. Zero means no preview / unknown size, so there is nothing to fill toward.
-func (m model) listTargetWidth() int {
-	if m.width <= 0 || m.split <= 0 || !m.showPreview() {
-		return 0
-	}
-	t := int(float64(m.mainWidth())*m.split+0.5) - cursorColWidth - 4
-	if cap := m.listCapWidth(); cap > 0 && t > cap {
-		t = cap
-	}
-	return t
-}
+// sidebarContentWidth is a lens row's width inside the sidebar panel (after the cursor column
+// and the frame). The colWidths shrink loop trims the Workspaces columns to this.
+func (m model) sidebarContentWidth() int { return m.sidebarWidth() - cursorColWidth - 4 }
 
 // rawRowWidth is the width the columns actually need: the gutter, indent, the worktree and
 // title columns, and (when any row carries one) a one-space gap plus the locator-hint column.
@@ -161,7 +102,7 @@ func (m model) colWidths() (windowW, nameW, hintW int) {
 	if nameW > nameColMax {
 		nameW = nameColMax
 	}
-	for cap := m.listCapWidth(); cap > 0 && rawRowWidth(windowW, nameW, hintW) > cap; {
+	for cap := m.sidebarContentWidth(); cap > 0 && rawRowWidth(windowW, nameW, hintW) > cap; {
 		if nameW > nameColMin {
 			nameW--
 		} else if windowW > windowColMin {
@@ -173,18 +114,11 @@ func (m model) colWidths() (windowW, nameW, hintW int) {
 	return
 }
 
-// rowContentWidth is a row's width after the cursor column: the larger of what the columns need
-// and the split's target share, so session bars and the selected-row highlight span the whole
-// pane and the pane fills its configured portion. The columns pack left; any surplus is trailing
-// space on the right (see leafRow), not a gap wedged between a title and its hint.
-func (m model) rowContentWidth() int {
-	windowW, nameW, hintW := m.colWidths()
-	w := rawRowWidth(windowW, nameW, hintW)
-	if t := m.listTargetWidth(); t > w {
-		w = t
-	}
-	return w
-}
+// rowContentWidth is a row's width after the cursor column: the sidebar's content width, so
+// every session bar and the selected-row highlight span the full lens column (the columns pack
+// left; the surplus is trailing space on the right, see leafRow). The shrink loop in colWidths
+// guarantees the columns fit within this, so a row never overflows the sidebar.
+func (m model) rowContentWidth() int { return m.sidebarContentWidth() }
 
 // Glyphs that live alongside the status glyphs (colors come from theme; these marks
 // are not colors, so they stay here next to statusGlyph by convention).
@@ -1148,10 +1082,13 @@ func (m model) prevSection() int {
 	return prev
 }
 
-// halfPage is half the visible list height, at least 1.
+// halfPage is half the focused lens's visible height, at least 1.
 func (m model) halfPage() int {
-	page := m.contentRows()
-	if page < 2 {
+	page := m.workspacePaneRows()
+	if m.focus == lensAgents {
+		page = m.agentsPaneRows()
+	}
+	if page < 2 || m.height <= 0 {
 		page = 10
 	}
 	return max(page/2, 1)
@@ -1179,9 +1116,9 @@ func (m model) modalLineActive() bool {
 	return m.notice != ""
 }
 
-// contentRows is the number of body rows that fit inside the panel border given the
-// terminal height and the chrome below it. Both the list window and the preview pane
-// size to this, so they always line up and never overflow.
+// contentRows is the number of body rows that fit inside one panel border given the terminal
+// height and the chrome below it. The full-height preview fills this on the right; the two
+// stacked lens panels in the sidebar share it minus the second panel's border (sidebarBodyRows).
 func (m model) contentRows() int {
 	h := m.height - m.chromeLines() - 2 // the panel's top+bottom border
 	if h < 1 {
@@ -1190,14 +1127,57 @@ func (m model) contentRows() int {
 	return h
 }
 
-// listCap is the maximum number of list rows to draw. When the terminal size is not
-// yet known (height 0, e.g. before the first WindowSizeMsg or in tests) the list is
-// not windowed.
-func (m model) listCap() int {
+// stackLenses reports whether the sidebar has the height to stack both lens panels. On a short
+// terminal it shows only the focused lens at full height (each stacked panel needs its border
+// plus a minimum of rows), the height analogue of the too-narrow single-lens fallback.
+func (m model) stackLenses() bool {
+	if m.height <= 0 {
+		return true // unbounded before the first size message (and in tests): render both
+	}
+	return m.contentRows()+2 >= 2*(minLensRows+2) // body holds two minimum lens panels
+}
+
+// sidebarBodyRows is the rows the two stacked lens panels' inner heights share: the body budget
+// minus the second panel's border pair. The Agents pane sits above the Workspaces pane, and
+// together they stand exactly as tall as the full-height preview beside them.
+func (m model) sidebarBodyRows() int { return m.contentRows() - 2 }
+
+// agentsPaneRows is the inner height of the Agents pane: what the triage list wants (its visible
+// item count) capped so the Workspaces pane below keeps its minimum. When the sidebar cannot
+// stack, the focused lens takes the whole body; before the first size message it is not windowed.
+func (m model) agentsPaneRows() int {
 	if m.height <= 0 {
 		return 1 << 30
 	}
-	return m.contentRows()
+	if !m.stackLenses() {
+		return m.contentRows()
+	}
+	total := m.sidebarBodyRows()
+	want := len(m.visibleAgentItems())
+	if hi := total - minLensRows; want > hi {
+		want = hi
+	}
+	if want < minLensRows {
+		want = minLensRows
+	}
+	return want
+}
+
+// workspacePaneRows is the inner height of the Workspaces pane: the sidebar budget the Agents
+// pane did not take. When the sidebar cannot stack, the focused lens takes the whole body;
+// before the first size message it is not windowed.
+func (m model) workspacePaneRows() int {
+	if m.height <= 0 {
+		return 1 << 30
+	}
+	if !m.stackLenses() {
+		return m.contentRows()
+	}
+	n := m.sidebarBodyRows() - m.agentsPaneRows()
+	if n < minLensRows {
+		n = minLensRows
+	}
+	return n
 }
 
 // visibleItems is the item indices that render, in order: every item except rows
@@ -1231,9 +1211,9 @@ func (m model) selVisiblePos(vis []int) int {
 // minimum amount needed (selection at an edge nudges the window by one, not a jump).
 func (m *model) syncViewport() {
 	vis := m.visibleItems()
-	m.top = windowTop(m.top, m.selVisiblePos(vis), m.listCap(), len(vis))
+	m.top = windowTop(m.top, m.selVisiblePos(vis), m.workspacePaneRows(), len(vis))
 	avis := m.visibleAgentItems()
-	m.agentTop = windowTop(m.agentTop, m.agentSelVisiblePos(avis), m.listCap(), len(avis))
+	m.agentTop = windowTop(m.agentTop, m.agentSelVisiblePos(avis), m.agentsPaneRows(), len(avis))
 }
 
 // visibleAgentItems is the agentItems indices that render, in order: every item except
@@ -1295,11 +1275,11 @@ func (m model) View() string {
 		return m.emptyView()
 	}
 
-	left := m.renderLenses()
+	sidebar := m.renderLenses()
 
-	body := left
+	body := sidebar
 	if m.showPreview() {
-		body = lipgloss.JoinHorizontal(lipgloss.Top, left, "  ", m.renderPreview(left))
+		body = lipgloss.JoinHorizontal(lipgloss.Top, sidebar, "  ", m.renderPreview())
 	}
 	if m.mode == modeNewAgent {
 		body = overlayCenter(body, m.newAgentModal())
@@ -1662,8 +1642,8 @@ var bandLabels = [numBands]string{
 type lensID int
 
 const (
-	lensWorkspaces lensID = iota // right: repository→row tree, stable-ordered
-	lensAgents                   // left: flat triage list in status bands
+	lensWorkspaces lensID = iota // bottom of the sidebar: repository→row tree, stable-ordered
+	lensAgents                   // top of the sidebar: flat triage list in status bands
 )
 
 // agentItem is one line of the Agents lens: a band header (always shown, not navigable)
@@ -1821,35 +1801,41 @@ const (
 	hlMirror         // the focused lens's selection, shown in the non-focused lens
 )
 
-// renderLenses composes the left side of the body: both lenses side by side when the
-// terminal is wide enough, otherwise just the focused lens (the narrow-terminal fallback,
-// still toggled with the focus keys). The focused lens's panel title carries the accent; the
-// other reads gray, so focus is visible without color alone via the cursor glyph too.
+// renderLenses composes the sidebar: the Agents lens stacked above the Workspaces lens, each
+// forced to its share of the height so the column stands as tall as the preview beside it. On a
+// terminal too short to stack both, only the focused lens shows at full height (still toggled
+// with the focus keys). The focused lens's panel title carries the accent; the other reads gray,
+// so focus is visible without color alone via the cursor glyph too.
 func (m model) renderLenses() string {
-	if !m.dualLens() {
+	if !m.stackLenses() {
 		if m.focus == lensAgents {
-			return m.lensPanel(lensAgents, "agents", m.renderAgents())
+			return m.sidebarPanel(lensAgents, "agents", m.renderAgents(), m.agentsPaneRows())
 		}
-		return m.lensPanel(lensWorkspaces, "workspaces", m.renderRows())
+		return m.sidebarPanel(lensWorkspaces, "workspaces", m.renderRows(), m.workspacePaneRows())
 	}
-	ws := m.lensPanel(lensWorkspaces, "workspaces", m.renderRows())
-	ag := m.lensPanel(lensAgents, "agents", m.renderAgents())
-	return lipgloss.JoinHorizontal(lipgloss.Top, ag, "  ", ws)
+	ag := m.sidebarPanel(lensAgents, "agents", m.renderAgents(), m.agentsPaneRows())
+	ws := m.sidebarPanel(lensWorkspaces, "workspaces", m.renderRows(), m.workspacePaneRows())
+	return lipgloss.JoinVertical(lipgloss.Left, ag, ws)
 }
 
-// lensPanel frames a lens's body with its title, accenting the title when the lens is
-// focused and graying it otherwise.
-func (m model) lensPanel(lens lensID, title, body string) string {
+// sidebarPanel frames a lens's body with its title at a fixed inner height so the two stacked
+// panels tile the sidebar's height exactly. The title is accented when the lens is focused and
+// gray otherwise. Height is left unforced before the first size message (rows is unbounded then).
+func (m model) sidebarPanel(lens lensID, title, body string, rows int) string {
 	color := lipColor(theme.Gray)
 	if m.focus == lens {
 		color = m.accent
 	}
-	return panelTitle(frameStyle.Render(body), title, color)
+	fs := frameStyle
+	if m.height > 0 {
+		fs = frameStyle.Height(rows)
+	}
+	return panelTitle(fs.Render(body), title, color)
 }
 
 func (m model) renderRows() string {
 	vis := m.visibleItems()
-	h := m.listCap()
+	h := m.workspacePaneRows()
 	top := windowTop(m.top, m.selVisiblePos(vis), h, len(vis))
 	end := min(top+h, len(vis))
 
@@ -1887,13 +1873,8 @@ func (m model) renderRows() string {
 // selected agent shows here with the dimmer mirror highlight (on the band header if that
 // band is folded).
 func (m model) renderAgents() string {
-	cw := m.agentsContentWidth()
-	if !m.dualLens() {
-		if t := m.listTargetWidth(); t > cw {
-			cw = t // sole panel in the fallback: fill like the workspaces list would
-		}
-	}
-	h := m.listCap()
+	cw := m.sidebarContentWidth()
+	h := m.agentsPaneRows()
 	vis := m.visibleAgentItems()
 	top := windowTop(m.agentTop, m.agentSelVisiblePos(vis), h, len(vis))
 	end := min(top+h, len(vis))
@@ -2143,40 +2124,39 @@ func (m model) showPreview() bool {
 	if _, isNoop := m.prev.(NoopPreviewer); isNoop {
 		return false
 	}
-	return m.mainWidth() >= previewMinWidth
+	if m.width <= 0 {
+		return false
+	}
+	// The preview sits beside the sidebar, so it is a width question: keep the preview only when
+	// the minimum sidebar plus a usable preview fit side by side. On a narrower terminal the
+	// preview is dropped and the sidebar takes the full width.
+	return m.width-(minSidebarCols+cursorColWidth+4)-2 >= minPreviewCols+4
 }
 
-// renderPreview renders the preview pane beside the list. It fills the leftover
-// width and is sized to the available terminal height (not the often-short
-// list) so it shows as much of the session's output as the popup allows.
-func (m model) renderPreview(list string) string {
-	w := m.width - lipgloss.Width(list) - 2 /*gap*/ - 4 /*border+padding*/
+// renderPreview renders the preview panel to the right of the sidebar. It fills the width the
+// sidebar left and the full body height, so it shows as much of the session's output as the
+// popup allows without pushing the lenses off-screen.
+func (m model) renderPreview() string {
+	w := m.width - m.sidebarWidth() - 2 /*gap*/ - 4 /*border+padding*/
 	if w < minPreviewCols {
 		w = minPreviewCols
 	}
 
-	// Inner content height: fill the terminal but leave room for everything
-	// stacked around it, so the whole view never exceeds m.height (which would
-	// scroll the list out of view). contentRows already nets out this frame's
-	// border, the help line, and any active notice/modal line — the list window
-	// uses the same budget, so the two panes line up.
-	inner := m.contentRows()
+	inner := m.contentRows() // full body height beside the sidebar
 
 	lines := previewLines(m.preview, inner, w)
 	if len(lines) == 0 {
 		lines = strings.Split(m.previewPlaceholder(), "\n")
 	}
-	// w is the text width; lipgloss Width includes the frame's horizontal
-	// padding, so set Width(w+2) to keep the text area exactly w. Otherwise
-	// each w-wide line wraps, inflating the frame height past the terminal.
+	// w is the text width; lipgloss Width includes the frame's horizontal padding, so set
+	// Width(w+2) to keep the text area exactly w. Otherwise each w-wide line wraps, inflating
+	// the frame height past its budget.
 	box := frameStyle.Width(w + 2).Height(inner).Render(strings.Join(lines, "\n"))
-	// Hard ceiling: never let the preview render taller than the list beside it.
-	// Height() only pads up to a minimum — it does not clip — so a line that still
-	// wraps for any reason (an exotic grapheme, a stray control byte tmux passed
-	// through) would push the body past m.height and scroll the titles off the top.
-	// MaxHeight clips it, keeping the invariant "preview is never taller than the
-	// list" no matter what the captured pane contains.
-	box = lipgloss.NewStyle().MaxHeight(lipgloss.Height(list)).Render(box)
+	// Hard ceiling: Height() only pads up to a minimum, it does not clip, so a line that still
+	// wraps for any reason (an exotic grapheme, a stray control byte tmux passed through) would
+	// push the panel past its height budget and overflow the terminal. MaxHeight clips it to the
+	// border-inclusive height so the body always fits m.height.
+	box = lipgloss.NewStyle().MaxHeight(inner + 2).Render(box)
 	return panelTitle(box, "preview", m.accent)
 }
 
@@ -2274,6 +2254,10 @@ func prettyKey(k string) string {
 		return "⏎"
 	case "tab":
 		return "⇥"
+	case "ctrl+k":
+		return "^k"
+	case "ctrl+j":
+		return "^j"
 	default:
 		return k
 	}
