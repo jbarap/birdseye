@@ -37,6 +37,6 @@ optional refinement and a single master switch to turn it off.
   count; `Run` signature carries the enabled flag; tab-bar / help / filtering gates key off enabled
   and tab count rather than `len(namespaces) > 0`.
 - `internal/cli/agents.go`: read `[workspaces].enabled` and pass it through.
-- `internal/agents/store.go`: a small `active-workspace.json` under the agent state dir persists the
-  selected tab; the view restores it at startup and writes it on switch.
+- `internal/agents/store.go`: a small `dash-state.json` (a JSON object) under the agent state dir
+  persists the selected tab; the view restores it at startup and writes it on switch.
 - Docs: `DESIGN.md`, `README.md` reconciled to on-by-default framing.

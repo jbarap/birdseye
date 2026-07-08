@@ -465,9 +465,7 @@ func (m *model) switchNamespace(delta int) {
 	}
 	n := len(tabs)
 	m.activeTab = tabs[((idx+delta)%n+n)%n].key
-	if m.stateDir != "" {
-		_ = writeActiveTab(m.stateDir, m.activeTab) // best-effort: a failed write just loses the restore
-	}
+	m.persistActiveTab()
 	selKey := m.currentRowKey()
 	agentSel := m.agentSelID()
 	m.setRows(m.allRows)
@@ -475,6 +473,18 @@ func (m *model) switchNamespace(delta int) {
 	m.agentCursor = m.relocateAgent(agentSel, m.agentCursor)
 	m.dismissNotice()
 	m.refreshPreview()
+}
+
+// persistActiveTab writes the active tab into the dash state file, best-effort - a failed write
+// just loses the restore on the next launch. It read-modify-writes so it preserves any other dash
+// state. A "" stateDir (tests) disables persistence.
+func (m model) persistActiveTab() {
+	if m.stateDir == "" {
+		return
+	}
+	st, _ := readDashState(m.stateDir)
+	st.ActiveWorkspace = m.activeTab
+	_ = writeDashState(m.stateDir, st)
 }
 
 // buildAgentsLens projects the rows into the Agents lens: band headers (always present)
@@ -576,8 +586,8 @@ func Run(src RowSource, prev Previewer, keys Keymap, accent lipgloss.Color, refr
 	// reconciles a restored key that is no longer selectable back to All.
 	if dir, err := StateDir(); err == nil {
 		m.stateDir = dir
-		if key, err := readActiveTab(dir); err == nil {
-			m.activeTab = key
+		if st, err := readDashState(dir); err == nil {
+			m.activeTab = st.ActiveWorkspace
 		}
 	}
 	// newModel derived the first frame before these namespace fields were set, so its tab

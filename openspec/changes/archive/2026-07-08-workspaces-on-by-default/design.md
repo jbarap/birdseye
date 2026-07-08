@@ -46,9 +46,10 @@ be useful.
   `namespaces []Namespace`. The two are orthogonal inputs and adding a bool keeps the diff local;
   cli resolves both from config and passes them.
 
-- **The selected tab persists across launches.** The view writes the active tab's key to a small
-  `active-workspace.json` under the agent state dir (`StateDir()`) on each explicit switch, mirroring
-  the mute-file pattern, and restores it at startup before the first frame is derived. It is
+- **The selected tab persists across launches.** The view writes the active tab's key into a small
+  `dash-state.json` object under the agent state dir (`StateDir()`) on each explicit switch, mirroring
+  the mute-file pattern, and restores it at startup before the first frame is derived. A JSON object
+  (rather than a bare value) leaves room for further dash view state without a format migration. It is
   view-only state, so it is written directly rather than routed through the source (unlike mute,
   which the source also reads). Restoration reuses the existing tab reconciliation: a persisted key
   that no longer names a selectable tab falls back to `All`, so a removed namespace or an emptied
