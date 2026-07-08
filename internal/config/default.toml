@@ -84,6 +84,22 @@ finished        = true                 # notify when an agent finishes a turn (w
 # delete       = ["dD"]                # close + git worktree remove, behind a popup; a chord
 # quit         = ["q", "esc", "ctrl+c"]
 
+# Dash namespaces ("workspaces"): slice `be dash` by life-context. Each [[workspace]] names a
+# tab and lists roots; a repository belongs to the workspace whose root contains its path
+# (longest match wins). A tab bar appears at the top of the dash - `All` first, then these in
+# order - and `]` / `[` switch between them. `All` shows everything; a named tab shows only its
+# repositories. A non-active tab shows a dot when it holds an agent that needs attention, so a
+# blocked agent in a hidden workspace is never invisible. A repository under no configured root
+# falls back to an automatic tab named after its parent directory, so nothing is orphaned to `All`
+# only (siblings under one parent share a tab). With no [[workspace]] declared the feature is
+# inert: no tab bar, no filtering, no automatic tabs.
+# [[workspace]]
+# name  = "personal"
+# roots = ["~/projects"]
+# [[workspace]]
+# name  = "work"
+# roots = ["~/work"]
+
 [worktree]
 # Global fallback setup command, run on every worktree creation when a repo does not
 # define its own (see "Worktree provisioning" in the README). Empty means no default.

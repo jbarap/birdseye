@@ -22,7 +22,7 @@ const defaultRefresh = time.Second
 const noticeTTL = 4 * time.Second
 
 // Layout constants. Column widths keep every row's data points at fixed positions; the lens
-// sidebar (Agents stacked over Workspaces) occupies a left column bounded by the split share,
+// sidebar (Agents stacked over Projects) occupies a left column bounded by the split share,
 // and the preview fills the rest of the width at full height (see sidebarWidth / showPreview).
 const (
 	cursorColWidth = 2  // leftmost gutter: cursor glyph on the selected row, else blank
@@ -64,7 +64,7 @@ func (m model) sidebarWidth() int {
 }
 
 // sidebarContentWidth is a lens row's width inside the sidebar panel (after the cursor column
-// and the frame). The colWidths shrink loop trims the Workspaces columns to this.
+// and the frame). The colWidths shrink loop trims the Projects columns to this.
 func (m model) sidebarContentWidth() int { return m.sidebarWidth() - cursorColWidth - 4 }
 
 // rawRowWidth is the width the columns actually need: the gutter, indent, the worktree and
@@ -253,27 +253,29 @@ func validHex(s string) bool {
 
 // helpOrder is the order actions appear in the help line. Focus-switch comes right after
 // navigation; the two focus keys collapse to one "h/l lens" hint (see renderHelp).
-var helpOrder = []Action{ActionDown, ActionUp, ActionTop, ActionBottom, ActionPrevSection, ActionNextSection, ActionFocusLeft, ActionFold, ActionNewSession, ActionNewAgent, ActionClose, ActionDelete, ActionMute, ActionSelect, ActionQuit}
+var helpOrder = []Action{ActionDown, ActionUp, ActionTop, ActionBottom, ActionPrevSection, ActionNextSection, ActionFocusLeft, ActionNextNamespace, ActionFold, ActionNewSession, ActionNewAgent, ActionClose, ActionDelete, ActionMute, ActionSelect, ActionQuit}
 
 var actionLabel = map[Action]string{
-	ActionUp:          "up",
-	ActionDown:        "down",
-	ActionTop:         "top",
-	ActionBottom:      "bottom",
-	ActionHalfUp:      "half-up",
-	ActionHalfDown:    "half-down",
-	ActionPrevSection: "prev",
-	ActionNextSection: "next session",
-	ActionFocusLeft:   "lens",
-	ActionFocusRight:  "lens",
-	ActionSelect:      "jump",
-	ActionFold:        "fold",
-	ActionNewSession:  "open",
-	ActionNewAgent:    "new",
-	ActionClose:       "close",
-	ActionDelete:      "delete",
-	ActionMute:        "mute",
-	ActionQuit:        "quit",
+	ActionUp:            "up",
+	ActionDown:          "down",
+	ActionTop:           "top",
+	ActionBottom:        "bottom",
+	ActionHalfUp:        "half-up",
+	ActionHalfDown:      "half-down",
+	ActionPrevSection:   "prev",
+	ActionNextSection:   "next session",
+	ActionFocusLeft:     "lens",
+	ActionFocusRight:    "lens",
+	ActionNextNamespace: "workspace",
+	ActionPrevNamespace: "workspace",
+	ActionSelect:        "jump",
+	ActionFold:          "fold",
+	ActionNewSession:    "open",
+	ActionNewAgent:      "new",
+	ActionClose:         "close",
+	ActionDelete:        "delete",
+	ActionMute:          "mute",
+	ActionQuit:          "quit",
 }
 
 // tickMsg drives the periodic live refresh.
@@ -318,7 +320,18 @@ type model struct {
 	refresh time.Duration
 	orch    Orchestrator // optional; nil disables n/d
 
-	// Workspaces lens: the repository→row tree, stable-ordered, foldable.
+	// Namespaces ("workspaces") slice the dashboard by a top tab bar. allRows is the full
+	// reconciled set; the lenses below are built from it filtered to the active tab. activeTab is
+	// the active tab's key: "" is the always-present "All" (no filter), a configured namespace's
+	// name, or an autoPrefix-tagged parent-derived workspace. tabAssign maps each repository (by
+	// git-common-dir) to its tab, recomputed each refresh. Empty namespaces means the feature is
+	// inert (no tab bar, no filtering, no automatic workspaces).
+	namespaces []Namespace
+	activeTab  string
+	allRows    []Row
+	tabAssign  map[string]repoTab
+
+	// Projects lens: the repository→row tree, stable-ordered, foldable.
 	rows   []Row           // leaf rows in render order
 	items  []renderItem    // full tree: headers + leaf rows interleaved
 	folded map[string]bool // session keys whose section is collapsed
@@ -328,7 +341,7 @@ type model struct {
 
 	// Agents lens: a flat triage list of agents in fixed status bands. It is a second
 	// projection of the same rows. Band headers are always rendered; a populated band folds
-	// like a Workspaces section, collapsing its agents to a navigable header stand-in.
+	// like a Projects section, collapsing its agents to a navigable header stand-in.
 	focus       lensID         // which lens the cursor and actions act on
 	agentRows   []Row          // agent rows in band order (the Agents lens leaves)
 	agentItems  []agentItem    // band headers + agent rows interleaved
@@ -381,10 +394,80 @@ func newModel(src RowSource, prev Previewer, keys Keymap, refresh time.Duration)
 // interleaved items, drops fold state for sessions that are gone, and recomputes the
 // navigable rows.
 func (m *model) setRows(list []Row) {
-	m.rows, m.items = groupRows(list)
+	m.allRows = list
+	m.tabAssign = assignRepoTabs(list, m.namespaces)
+	// An automatic (parent-derived) tab exists only while a repository maps to it, so a tab the
+	// user was viewing can vanish when its last repository leaves; fall back to All in that case.
+	if m.activeTab != "" && !m.tabKeyPresent(m.activeTab) {
+		m.activeTab = ""
+	}
+	filtered := m.filteredRows(list)
+	m.rows, m.items = groupRows(filtered)
 	m.pruneFolded()
 	m.recomputeNav()
-	m.buildAgentsLens(list)
+	m.buildAgentsLens(filtered)
+}
+
+// filteredRows narrows the reconciled rows to the active tab, feeding both lens projections the
+// same set so they stay consistent. The "All" tab (activeTab "") passes every row through; any
+// other tab keeps only rows whose repository maps to it (incidental agents, mapping to no
+// repository, appear only under All).
+func (m model) filteredRows(list []Row) []Row {
+	if m.activeTab == "" || len(m.namespaces) == 0 {
+		return list
+	}
+	out := make([]Row, 0, len(list))
+	for _, r := range list {
+		if r.GitDir == "" {
+			continue
+		}
+		if a, ok := m.tabAssign[r.GitDir]; ok && a.key == m.activeTab {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// tabKeyPresent reports whether key names a currently-selectable tab: a configured namespace
+// (always present) or an automatic workspace some live repository maps to.
+func (m model) tabKeyPresent(key string) bool {
+	for _, ns := range m.namespaces {
+		if ns.Name == key {
+			return true
+		}
+	}
+	for _, a := range m.tabAssign {
+		if a.key == key {
+			return true
+		}
+	}
+	return false
+}
+
+// switchNamespace moves the active tab by delta, wrapping across the current tab list (All, the
+// configured namespaces, and any live automatic workspaces), then rebuilds the lenses from the
+// already-loaded rows and preserves the selection by identity where it survives the new filter.
+func (m *model) switchNamespace(delta int) {
+	tabs := m.tabList()
+	if len(tabs) <= 1 {
+		return // no namespaces configured: nothing to switch
+	}
+	idx := 0
+	for i, t := range tabs {
+		if t.key == m.activeTab {
+			idx = i
+			break
+		}
+	}
+	n := len(tabs)
+	m.activeTab = tabs[((idx+delta)%n+n)%n].key
+	selKey := m.currentRowKey()
+	agentSel := m.agentSelID()
+	m.setRows(m.allRows)
+	m.cursor = relocate(m, selKey, m.cursor)
+	m.agentCursor = m.relocateAgent(agentSel, m.agentCursor)
+	m.dismissNotice()
+	m.refreshPreview()
 }
 
 // buildAgentsLens projects the rows into the Agents lens: band headers (always present)
@@ -406,7 +489,7 @@ func (m *model) buildAgentsLens(list []Row) {
 
 // recomputeAgentNav lists the agentItems indices the agents cursor can land on: every agent
 // of an unfolded band, plus the header of each folded band (its single navigable stand-in,
-// mirroring the Workspaces fold). An empty band has no agents and is never folded, so its
+// mirroring the Projects fold). An empty band has no agents and is never folded, so its
 // header stays unselectable.
 func (m *model) recomputeAgentNav() {
 	m.agentNav = m.agentNav[:0]
@@ -467,7 +550,7 @@ func (m *model) recomputeNav() {
 // Run renders the agents view and blocks until the user selects a row or quits. It
 // returns the chosen row (nil when quit without selecting). orch may be nil to disable
 // the create/delete actions.
-func Run(src RowSource, prev Previewer, keys Keymap, accent lipgloss.Color, refresh time.Duration, split float64, orch Orchestrator) (*Row, error) {
+func Run(src RowSource, prev Previewer, keys Keymap, accent lipgloss.Color, refresh time.Duration, split float64, namespaces []Namespace, orch Orchestrator) (*Row, error) {
 	m, err := newModel(src, prev, keys, refresh)
 	if err != nil {
 		return nil, err
@@ -478,6 +561,7 @@ func Run(src RowSource, prev Previewer, keys Keymap, accent lipgloss.Color, refr
 	if split > 0 {
 		m.split = split
 	}
+	m.namespaces = namespaces
 	m.orch = orch
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	out, err := p.Run()
@@ -672,7 +756,7 @@ func (m model) currentItem() (renderItem, bool) {
 	return m.items[m.nav[m.cursor]], true
 }
 
-// currentRow returns the row the focused lens's cursor points at. In the Workspaces lens
+// currentRow returns the row the focused lens's cursor points at. In the Projects lens
 // that is the selected leaf, or the first row of a folded session whose header is selected
 // (so preview and jump still target something useful while folded). In the Agents lens it
 // is the selected agent. Routing every action through this one accessor is what makes the
@@ -696,7 +780,7 @@ func (m model) currentRow() (Row, bool) {
 
 // agentsCurrentRow returns the agent under the Agents lens cursor. A folded band header is
 // a stand-in for many agents, not one row, so it reports no current row (like a folded
-// Workspaces section header).
+// Projects section header).
 func (m model) agentsCurrentRow() (Row, bool) {
 	if m.agentCursor < 0 || m.agentCursor >= len(m.agentNav) {
 		return Row{}, false
@@ -886,22 +970,28 @@ func (m model) applyAction(a Action) (tea.Model, tea.Cmd) {
 	case ActionHalfDown:
 		*cur = clamp(*cur+m.halfPage(), 0, max(last, 0))
 	case ActionPrevSection:
-		// Section jumps are a Workspaces-lens motion; the Agents lens is a flat list.
-		if m.focus == lensWorkspaces {
+		// Section jumps are a Projects-lens motion; the Agents lens is a flat list.
+		if m.focus == lensProjects {
 			m.cursor = m.prevSection()
 		}
 	case ActionNextSection:
-		if m.focus == lensWorkspaces {
+		if m.focus == lensProjects {
 			m.cursor = m.nextSection()
 		}
 	case ActionFocusLeft:
 		m.setFocus(lensAgents)
 		return m, nil
 	case ActionFocusRight:
-		m.setFocus(lensWorkspaces)
+		m.setFocus(lensProjects)
+		return m, nil
+	case ActionNextNamespace:
+		m.switchNamespace(1)
+		return m, nil
+	case ActionPrevNamespace:
+		m.switchNamespace(-1)
 		return m, nil
 	case ActionFold:
-		// Both lenses fold: a Workspaces section collapses its rows, an Agents band collapses
+		// Both lenses fold: a Projects section collapses its rows, an Agents band collapses
 		// its agents. Each leaves the cursor on the now-collapsed header.
 		if m.focus == lensAgents {
 			return m.toggleAgentFold()
@@ -1084,7 +1174,7 @@ func (m model) prevSection() int {
 
 // halfPage is half the focused lens's visible height, at least 1.
 func (m model) halfPage() int {
-	page := m.workspacePaneRows()
+	page := m.projectsPaneRows()
 	if m.focus == lensAgents {
 		page = m.agentsPaneRows()
 	}
@@ -1120,11 +1210,21 @@ func (m model) modalLineActive() bool {
 // height and the chrome below it. The full-height preview fills this on the right; the two
 // stacked lens panels in the sidebar share it minus the second panel's border (sidebarBodyRows).
 func (m model) contentRows() int {
-	h := m.height - m.chromeLines() - 2 // the panel's top+bottom border
+	h := m.height - m.chromeLines() - m.tabBarLines() - 2 // the panel's top+bottom border
 	if h < 1 {
 		h = 1
 	}
 	return h
+}
+
+// tabBarLines is the height the namespace tab bar consumes above the body: one line when
+// namespaces are configured and the width is known, else nothing (the feature is inert). The
+// body budget subtracts it so the sidebar and preview never overflow the terminal.
+func (m model) tabBarLines() int {
+	if len(m.namespaces) == 0 || m.width <= 0 {
+		return 0
+	}
+	return 1
 }
 
 // stackLenses reports whether the sidebar has the height to stack both lens panels. On a short
@@ -1138,12 +1238,12 @@ func (m model) stackLenses() bool {
 }
 
 // sidebarBodyRows is the rows the two stacked lens panels' inner heights share: the body budget
-// minus the second panel's border pair. The Agents pane sits above the Workspaces pane, and
+// minus the second panel's border pair. The Agents pane sits above the Projects pane, and
 // together they stand exactly as tall as the full-height preview beside them.
 func (m model) sidebarBodyRows() int { return m.contentRows() - 2 }
 
 // agentsPaneRows is the inner height of the Agents pane: what the triage list wants (its visible
-// item count) capped so the Workspaces pane below keeps its minimum. When the sidebar cannot
+// item count) capped so the Projects pane below keeps its minimum. When the sidebar cannot
 // stack, the focused lens takes the whole body; before the first size message it is not windowed.
 func (m model) agentsPaneRows() int {
 	if m.height <= 0 {
@@ -1163,10 +1263,10 @@ func (m model) agentsPaneRows() int {
 	return want
 }
 
-// workspacePaneRows is the inner height of the Workspaces pane: the sidebar budget the Agents
+// projectsPaneRows is the inner height of the Projects pane: the sidebar budget the Agents
 // pane did not take. When the sidebar cannot stack, the focused lens takes the whole body;
 // before the first size message it is not windowed.
-func (m model) workspacePaneRows() int {
+func (m model) projectsPaneRows() int {
 	if m.height <= 0 {
 		return 1 << 30
 	}
@@ -1211,7 +1311,7 @@ func (m model) selVisiblePos(vis []int) int {
 // minimum amount needed (selection at an edge nudges the window by one, not a jump).
 func (m *model) syncViewport() {
 	vis := m.visibleItems()
-	m.top = windowTop(m.top, m.selVisiblePos(vis), m.workspacePaneRows(), len(vis))
+	m.top = windowTop(m.top, m.selVisiblePos(vis), m.projectsPaneRows(), len(vis))
 	avis := m.visibleAgentItems()
 	m.agentTop = windowTop(m.agentTop, m.agentSelVisiblePos(avis), m.agentsPaneRows(), len(avis))
 }
@@ -1288,7 +1388,11 @@ func (m model) View() string {
 		body = overlayCenter(body, m.confirmModal())
 	}
 
-	parts := []string{body}
+	var parts []string
+	if tb := m.tabBar(); tb != "" {
+		parts = append(parts, tb)
+	}
+	parts = append(parts, body)
 	if line, ok := m.statusLine(); ok {
 		parts = append(parts, line)
 	}
@@ -1486,7 +1590,13 @@ func (m model) emptyView() string {
 			help = prettyKeys(keys) + " open · " + help
 		}
 	}
-	return panel + "\n" + helpStyle.Render(help)
+	view := panel + "\n" + helpStyle.Render(help)
+	// Keep the tab bar visible even when the active namespace filters every row away, so the
+	// user can read the urgency dots and switch back rather than seeing a bare empty state.
+	if tb := m.tabBar(); tb != "" {
+		view = tb + "\n" + view
+	}
+	return view
 }
 
 // renderKind distinguishes the line types in the grouped list.
@@ -1642,8 +1752,8 @@ var bandLabels = [numBands]string{
 type lensID int
 
 const (
-	lensWorkspaces lensID = iota // bottom of the sidebar: repository→row tree, stable-ordered
-	lensAgents                   // top of the sidebar: flat triage list in status bands
+	lensProjects lensID = iota // bottom of the sidebar: repository→row tree, stable-ordered
+	lensAgents                 // top of the sidebar: flat triage list in status bands
 )
 
 // agentItem is one line of the Agents lens: a band header (always shown, not navigable)
@@ -1801,7 +1911,7 @@ const (
 	hlMirror         // the focused lens's selection, shown in the non-focused lens
 )
 
-// renderLenses composes the sidebar: the Agents lens stacked above the Workspaces lens, each
+// renderLenses composes the sidebar: the Agents lens stacked above the Projects lens, each
 // forced to its share of the height so the column stands as tall as the preview beside it. On a
 // terminal too short to stack both, only the focused lens shows at full height (still toggled
 // with the focus keys). The focused lens's panel title carries the accent; the other reads gray,
@@ -1811,10 +1921,10 @@ func (m model) renderLenses() string {
 		if m.focus == lensAgents {
 			return m.sidebarPanel(lensAgents, "agents", m.renderAgents(), m.agentsPaneRows())
 		}
-		return m.sidebarPanel(lensWorkspaces, "workspaces", m.renderRows(), m.workspacePaneRows())
+		return m.sidebarPanel(lensProjects, "projects", m.renderRows(), m.projectsPaneRows())
 	}
 	ag := m.sidebarPanel(lensAgents, "agents", m.renderAgents(), m.agentsPaneRows())
-	ws := m.sidebarPanel(lensWorkspaces, "workspaces", m.renderRows(), m.workspacePaneRows())
+	ws := m.sidebarPanel(lensProjects, "projects", m.renderRows(), m.projectsPaneRows())
 	return lipgloss.JoinVertical(lipgloss.Left, ag, ws)
 }
 
@@ -1835,12 +1945,12 @@ func (m model) sidebarPanel(lens lensID, title, body string, rows int) string {
 
 func (m model) renderRows() string {
 	vis := m.visibleItems()
-	h := m.workspacePaneRows()
+	h := m.projectsPaneRows()
 	top := windowTop(m.top, m.selVisiblePos(vis), h, len(vis))
 	end := min(top+h, len(vis))
 
 	selItem := -1
-	if m.focus == lensWorkspaces && m.cursor >= 0 && m.cursor < len(m.nav) {
+	if m.focus == lensProjects && m.cursor >= 0 && m.cursor < len(m.nav) {
 		selItem = m.nav[m.cursor]
 	}
 	mirrorID := ""
@@ -1869,7 +1979,7 @@ func (m model) renderRows() string {
 // renderAgents draws the Agents lens: always all four band headers (a section bar when
 // populated, faint when empty), with each unfolded band's agents beneath, windowed to the
 // visible height. A folded band collapses to its header. The focused cursor highlights the
-// selected agent (or folded band header); when the Workspaces lens is focused instead, its
+// selected agent (or folded band header); when the Projects lens is focused instead, its
 // selected agent shows here with the dimmer mirror highlight (on the band header if that
 // band is folded).
 func (m model) renderAgents() string {
@@ -1884,7 +1994,7 @@ func (m model) renderAgents() string {
 		selItem = m.agentNav[m.agentCursor]
 	}
 	mirrorID := ""
-	if m.focus == lensWorkspaces {
+	if m.focus == lensProjects {
 		mirrorID = m.selectedAgentID()
 	}
 	rows := make([]string, 0, end-top)
@@ -1916,7 +2026,7 @@ func (m model) renderAgents() string {
 }
 
 // bandHasAgent reports whether band b currently holds the agent with the given session id
-// (used to mirror a Workspaces selection onto a folded band's header).
+// (used to mirror a Projects selection onto a folded band's header).
 func (m model) bandHasAgent(b agentBand, id string) bool {
 	for _, it := range m.agentItems {
 		if !it.header && it.band == b && m.agentRows[it.rowIdx].SessionID == id {
@@ -2203,6 +2313,90 @@ func previewLines(content string, h, w int) []string {
 	return out
 }
 
+// tabInfo is one entry in the rendered tab bar: its filter key ("" for All), its display label,
+// and whether its slice currently holds a needs-attention agent (for the urgency dot).
+type tabInfo struct {
+	key    string
+	label  string
+	urgent bool
+}
+
+// tabList builds the ordered tab bar: the always-present "All", then the configured namespaces in
+// declaration order, then any live automatic (parent-derived) workspaces sorted by label. The
+// configured entries hold fixed positions; only the automatic tail tracks the live rows, so an
+// appearing or disappearing automatic tab never shifts a configured one. A tab is urgent when its
+// slice holds a non-muted needs-attention agent; All is urgent when any such agent exists
+// anywhere (including incidental agents), so it can signal attention living outside every tab.
+func (m model) tabList() []tabInfo {
+	urgentByKey := map[string]bool{}
+	allUrgent := false
+	for _, r := range m.allRows {
+		if r.Kind != RowAgent || r.Muted || r.Status != StatusNeedsAttention {
+			continue
+		}
+		allUrgent = true
+		if a, ok := m.tabAssign[r.GitDir]; ok {
+			urgentByKey[a.key] = true
+		}
+	}
+
+	tabs := []tabInfo{{key: "", label: "All", urgent: allUrgent}}
+	for _, ns := range m.namespaces {
+		tabs = append(tabs, tabInfo{key: ns.Name, label: ns.Name, urgent: urgentByKey[ns.Name]})
+	}
+
+	autoLabel := map[string]string{}
+	for _, a := range m.tabAssign {
+		if a.auto {
+			autoLabel[a.key] = a.label
+		}
+	}
+	autoKeys := make([]string, 0, len(autoLabel))
+	for k := range autoLabel {
+		autoKeys = append(autoKeys, k)
+	}
+	sort.Slice(autoKeys, func(i, j int) bool {
+		if autoLabel[autoKeys[i]] != autoLabel[autoKeys[j]] {
+			return autoLabel[autoKeys[i]] < autoLabel[autoKeys[j]]
+		}
+		return autoKeys[i] < autoKeys[j]
+	})
+	for _, k := range autoKeys {
+		tabs = append(tabs, tabInfo{key: k, label: autoLabel[k], urgent: urgentByKey[k]})
+	}
+	return tabs
+}
+
+// tabBar renders the namespace tab bar: the active tab accented and bracketed, the rest gray,
+// separated by a faint dot. A non-active tab whose slice holds a needs-attention agent carries a
+// red urgency dot so a blocked agent in a tab the user is not viewing is never invisible - the dot
+// is a glyph, so the signal does not rely on color alone. Returns "" when the feature is inert.
+func (m model) tabBar() string {
+	if m.tabBarLines() == 0 {
+		return ""
+	}
+	active := lipgloss.NewStyle().Bold(true).Foreground(m.accent)
+	inactive := lipgloss.NewStyle().Foreground(lipColor(theme.Gray))
+	dotStyle := lipgloss.NewStyle().Bold(true).Foreground(lipColor(theme.Red))
+	sep := lipgloss.NewStyle().Faint(true).Render(" · ")
+
+	tabs := m.tabList()
+	parts := make([]string, len(tabs))
+	for i, t := range tabs {
+		isActive := t.key == m.activeTab
+		dot := ""
+		if !isActive && t.urgent {
+			dot = dotStyle.Render(statusGlyph[StatusNeedsAttention])
+		}
+		if isActive {
+			parts[i] = active.Render("["+t.label+"]") + dot
+		} else {
+			parts[i] = inactive.Render(t.label) + dot
+		}
+	}
+	return m.fitLine(strings.Join(parts, sep))
+}
+
 func (m model) renderHelp() string {
 	var parts []string
 	for _, a := range helpOrder {
@@ -2217,6 +2411,15 @@ func (m model) renderHelp() string {
 			// Show both directions as one hint: the primary left/right keys joined.
 			left, right := firstKey(m.keys[ActionFocusLeft]), firstKey(m.keys[ActionFocusRight])
 			parts = append(parts, prettyKey(left)+"/"+prettyKey(right)+" "+actionLabel[a])
+			continue
+		}
+		if a == ActionNextNamespace {
+			// Only meaningful when namespaces are configured; show prev/next as one hint.
+			if len(m.namespaces) == 0 {
+				continue
+			}
+			prev, next := firstKey(m.keys[ActionPrevNamespace]), firstKey(m.keys[ActionNextNamespace])
+			parts = append(parts, prettyKey(prev)+"/"+prettyKey(next)+" "+actionLabel[a])
 			continue
 		}
 		parts = append(parts, prettyKeys(keys)+" "+actionLabel[a])

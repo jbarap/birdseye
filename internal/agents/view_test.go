@@ -93,7 +93,7 @@ func mustModel(t *testing.T, list []Agent, prev Previewer, km Keymap) model {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m.focus = lensWorkspaces
+	m.focus = lensProjects
 	return m
 }
 
@@ -125,7 +125,7 @@ func rowsOf(ags ...Agent) []Row {
 func rowModel(km Keymap, ags ...Agent) (model, error) {
 	m, err := newModel(fixedRows{rowsOf(ags...)}, nil, km, 0)
 	if err == nil {
-		m.focus = lensWorkspaces
+		m.focus = lensProjects
 	}
 	return m, err
 }
@@ -378,7 +378,7 @@ func TestPreviewPlaceholderByRowKind(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			m.focus = lensWorkspaces // slot/base are Workspaces-lens rows
+			m.focus = lensProjects // slot/base are Workspaces-lens rows
 			got := m.previewPlaceholder()
 			if !strings.Contains(got, tc.want) {
 				t.Fatalf("placeholder %q should contain %q", got, tc.want)
@@ -436,9 +436,9 @@ func TestSidebarHeightDivision(t *testing.T) {
 		if !m.stackLenses() {
 			t.Fatalf("h=%d: expected the sidebar to stack both lenses", h)
 		}
-		a, w := m.agentsPaneRows(), m.workspacePaneRows()
+		a, w := m.agentsPaneRows(), m.projectsPaneRows()
 		if a+w != m.sidebarBodyRows() {
-			t.Fatalf("h=%d: agentsPaneRows(%d)+workspacePaneRows(%d) != sidebar budget %d", h, a, w, m.sidebarBodyRows())
+			t.Fatalf("h=%d: agentsPaneRows(%d)+projectsPaneRows(%d) != sidebar budget %d", h, a, w, m.sidebarBodyRows())
 		}
 		if a < minLensRows || w < minLensRows {
 			t.Fatalf("h=%d: a pane fell below the minimum: agents=%d workspaces=%d", h, a, w)
@@ -454,8 +454,8 @@ func TestSidebarHeightDivision(t *testing.T) {
 	if m.stackLenses() {
 		t.Fatalf("a short terminal should not stack both lenses")
 	}
-	if m.workspacePaneRows() != m.contentRows() {
-		t.Fatalf("the focused single lens should take the whole body: %d != %d", m.workspacePaneRows(), m.contentRows())
+	if m.projectsPaneRows() != m.contentRows() {
+		t.Fatalf("the focused single lens should take the whole body: %d != %d", m.projectsPaneRows(), m.contentRows())
 	}
 }
 
@@ -473,7 +473,7 @@ func TestViewSidebarPreviewRight(t *testing.T) {
 		if strings.Contains(ln, "agents") && ag == -1 {
 			ag = i
 		}
-		if strings.Contains(ln, "workspaces") {
+		if strings.Contains(ln, "projects") {
 			ws = i
 		}
 	}
@@ -981,7 +981,7 @@ func TestSectionSummaryOnlyWhenFolded(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.width, m.height = 200, 30
-	m.focus = lensWorkspaces
+	m.focus = lensProjects
 
 	// The managed section header is the one line carrying the worktree-source glyph.
 	header := func() string {
@@ -1078,7 +1078,7 @@ func TestLensFocusSwitchCarriesCounterpart(t *testing.T) {
 	}
 
 	m = send(m, key("l")) // back to Workspaces; selection is linked, so it follows to c
-	if m.focus != lensWorkspaces {
+	if m.focus != lensProjects {
 		t.Fatalf("l should focus the Workspaces lens")
 	}
 	if r, _ := m.currentRow(); r.SessionID != "c" {
@@ -1172,7 +1172,7 @@ func TestSidebarStacksBothLensesShortFallback(t *testing.T) {
 	// Assert on renderLenses (the lens area) rather than View, so the help legend doesn't
 	// masquerade as a lens title.
 	m.width, m.height = 200, 30
-	if l := m.renderLenses(); !strings.Contains(l, "workspaces") || !strings.Contains(l, "agents") {
+	if l := m.renderLenses(); !strings.Contains(l, "projects") || !strings.Contains(l, "agents") {
 		t.Fatalf("a tall sidebar should stack both lens titles")
 	}
 
@@ -1180,12 +1180,12 @@ func TestSidebarStacksBothLensesShortFallback(t *testing.T) {
 	if m.stackLenses() {
 		t.Fatalf("8 rows should be too short to stack both lenses")
 	}
-	if l := m.renderLenses(); !strings.Contains(l, "workspaces") || strings.Contains(l, "agents") {
+	if l := m.renderLenses(); !strings.Contains(l, "projects") || strings.Contains(l, "agents") {
 		t.Fatalf("a short sidebar should show only the focused (workspaces) lens")
 	}
 	// ctrl+k focuses up to the agents lens.
 	m = send(m, key("ctrl+k"))
-	if l := m.renderLenses(); !strings.Contains(l, "agents") || strings.Contains(l, "workspaces") {
+	if l := m.renderLenses(); !strings.Contains(l, "agents") || strings.Contains(l, "projects") {
 		t.Fatalf("after focus-up the short sidebar should show only the agents lens")
 	}
 }

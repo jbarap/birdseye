@@ -10,24 +10,26 @@ import (
 type Action string
 
 const (
-	ActionUp          Action = "up"
-	ActionDown        Action = "down"
-	ActionTop         Action = "top"
-	ActionBottom      Action = "bottom"
-	ActionHalfUp      Action = "half_up"
-	ActionHalfDown    Action = "half_down"
-	ActionPrevSection Action = "prev_section"
-	ActionNextSection Action = "next_section"
-	ActionFocusLeft   Action = "focus_left"
-	ActionFocusRight  Action = "focus_right"
-	ActionSelect      Action = "select"
-	ActionFold        Action = "fold"
-	ActionNewSession  Action = "new_session"
-	ActionNewAgent    Action = "new_agent"
-	ActionClose       Action = "close"
-	ActionDelete      Action = "delete"
-	ActionMute        Action = "mute"
-	ActionQuit        Action = "quit"
+	ActionUp            Action = "up"
+	ActionDown          Action = "down"
+	ActionTop           Action = "top"
+	ActionBottom        Action = "bottom"
+	ActionHalfUp        Action = "half_up"
+	ActionHalfDown      Action = "half_down"
+	ActionPrevSection   Action = "prev_section"
+	ActionNextSection   Action = "next_section"
+	ActionFocusLeft     Action = "focus_left"
+	ActionFocusRight    Action = "focus_right"
+	ActionNextNamespace Action = "next_namespace"
+	ActionPrevNamespace Action = "prev_namespace"
+	ActionSelect        Action = "select"
+	ActionFold          Action = "fold"
+	ActionNewSession    Action = "new_session"
+	ActionNewAgent      Action = "new_agent"
+	ActionClose         Action = "close"
+	ActionDelete        Action = "delete"
+	ActionMute          Action = "mute"
+	ActionQuit          Action = "quit"
 )
 
 // AllActions lists every valid action.
@@ -35,6 +37,7 @@ var AllActions = []Action{
 	ActionUp, ActionDown, ActionTop, ActionBottom,
 	ActionHalfUp, ActionHalfDown, ActionPrevSection, ActionNextSection,
 	ActionFocusLeft, ActionFocusRight,
+	ActionNextNamespace, ActionPrevNamespace,
 	ActionSelect, ActionFold, ActionNewSession, ActionNewAgent, ActionClose, ActionDelete, ActionMute, ActionQuit,
 }
 
@@ -48,24 +51,26 @@ type Keymap map[Action][]string
 // historic behavior so that absent configuration changes nothing.
 func DefaultKeymap() Keymap {
 	return Keymap{
-		ActionUp:          {"k", "up"},
-		ActionDown:        {"j", "down"},
-		ActionTop:         {"gg"},
-		ActionBottom:      {"G"},
-		ActionHalfUp:      {"ctrl+u"},
-		ActionHalfDown:    {"ctrl+d"},
-		ActionPrevSection: {"{"},
-		ActionNextSection: {"}"},
-		ActionFocusLeft:   {"ctrl+k", "h", "left"},
-		ActionFocusRight:  {"ctrl+j", "l", "right"},
-		ActionSelect:      {"enter"},
-		ActionFold:        {"tab"},
-		ActionNewSession:  {"s"},
-		ActionNewAgent:    {"n"},
-		ActionClose:       {"dd"},
-		ActionDelete:      {"dD"},
-		ActionMute:        {"m"},
-		ActionQuit:        {"q", "esc", "ctrl+c"},
+		ActionUp:            {"k", "up"},
+		ActionDown:          {"j", "down"},
+		ActionTop:           {"gg"},
+		ActionBottom:        {"G"},
+		ActionHalfUp:        {"ctrl+u"},
+		ActionHalfDown:      {"ctrl+d"},
+		ActionPrevSection:   {"{"},
+		ActionNextSection:   {"}"},
+		ActionFocusLeft:     {"ctrl+k", "h", "left"},
+		ActionFocusRight:    {"ctrl+j", "l", "right"},
+		ActionNextNamespace: {"]"},
+		ActionPrevNamespace: {"["},
+		ActionSelect:        {"enter"},
+		ActionFold:          {"tab"},
+		ActionNewSession:    {"s"},
+		ActionNewAgent:      {"n"},
+		ActionClose:         {"dd"},
+		ActionDelete:        {"dD"},
+		ActionMute:          {"m"},
+		ActionQuit:          {"q", "esc", "ctrl+c"},
 	}
 }
 

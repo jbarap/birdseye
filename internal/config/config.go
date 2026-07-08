@@ -51,6 +51,18 @@ type Config struct {
 	Repo     Repo     `toml:"repo"`
 	Agents   Agents   `toml:"agents"`
 	Worktree Worktree `toml:"worktree"`
+	// Workspaces are the dash's path-derived namespaces (the `[[workspace]]` tables): each
+	// slices `be dash` to the repositories under its roots. Empty means the feature is inert -
+	// no tab bar, no filtering. See ResolveWorkspaces for membership and validation.
+	Workspaces []Workspace `toml:"workspace"`
+}
+
+// Workspace is one dash namespace: a name plus the roots whose repositories belong to it. A
+// repository maps to the workspace whose root contains its path (longest match wins). Roots
+// follow the same tilde/glob conventions as [repo].roots and [dir].roots.
+type Workspace struct {
+	Name  string   `toml:"name"`
+	Roots []string `toml:"roots"`
 }
 
 // Worktree configures worktree creation. Like every section it can be set in the user
@@ -102,7 +114,7 @@ type Agents struct {
 	// to "claude".
 	Command string `toml:"command"`
 	// Split is the lens sidebar's share of the terminal width when the preview is shown, as a
-	// fraction in (0,1): the stacked Agents/Workspaces lenses take this share of the width on the
+	// fraction in (0,1): the stacked Agents/Projects lenses take this share of the width on the
 	// left and the preview fills the rest at full height. Zero keeps the built-in default.
 	Split float64 `toml:"split"`
 	// Notify configures the out-of-band notifications birdseye emits when an agent crosses
@@ -147,6 +159,28 @@ func (a Agents) SplitRatio() (float64, error) {
 		return hi, nil
 	}
 	return a.Split, nil
+}
+
+// ResolveWorkspaces validates the configured `[[workspace]]` namespaces and returns them in
+// declaration order. A workspace must name itself and list at least one root, and no two may
+// share a name (the name is the tab label and the membership key). An empty configuration is
+// valid and yields no workspaces - the dash namespace feature is simply inert. Roots are used
+// verbatim here; expandPaths has already resolved a leading "~".
+func (c Config) ResolveWorkspaces() ([]Workspace, error) {
+	seen := make(map[string]bool, len(c.Workspaces))
+	for _, w := range c.Workspaces {
+		if strings.TrimSpace(w.Name) == "" {
+			return nil, fmt.Errorf("invalid [[workspace]]: every workspace needs a non-empty name")
+		}
+		if seen[w.Name] {
+			return nil, fmt.Errorf("invalid [[workspace]] %q: duplicate workspace name", w.Name)
+		}
+		seen[w.Name] = true
+		if len(w.Roots) == 0 {
+			return nil, fmt.Errorf("invalid [[workspace]] %q: needs at least one root", w.Name)
+		}
+	}
+	return c.Workspaces, nil
 }
 
 // RefreshInterval resolves the configured live-refresh interval, defaulting to one
@@ -406,6 +440,12 @@ func (c Config) clone() Config {
 	d.Order = append([]string(nil), c.Order...)
 	d.Dir.Roots = append([]string(nil), c.Dir.Roots...)
 	d.Repo.Roots = append([]string(nil), c.Repo.Roots...)
+	if c.Workspaces != nil {
+		d.Workspaces = make([]Workspace, len(c.Workspaces))
+		for i, w := range c.Workspaces {
+			d.Workspaces[i] = Workspace{Name: w.Name, Roots: append([]string(nil), w.Roots...)}
+		}
+	}
 	d.Providers = cloneMap(c.Providers)
 	d.Labels = cloneMap(c.Labels)
 	d.Icons = cloneMap(c.Icons)
@@ -442,6 +482,11 @@ func (c *Config) expandPaths() {
 	}
 	for i, p := range c.Repo.Roots {
 		c.Repo.Roots[i] = expandTilde(p)
+	}
+	for i := range c.Workspaces {
+		for j, p := range c.Workspaces[i].Roots {
+			c.Workspaces[i].Roots[j] = expandTilde(p)
+		}
 	}
 }
 

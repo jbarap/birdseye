@@ -313,6 +313,10 @@ func runDash() error {
 	if err != nil {
 		return err
 	}
+	namespaces, err := resolveNamespaces(cfg)
+	if err != nil {
+		return err
+	}
 	src, err := agents.NewClaudeSource()
 	if err != nil {
 		return err
@@ -330,7 +334,7 @@ func runDash() error {
 		orch = orchestrator{fleet: f, client: client, cfg: cfg}
 	}
 
-	chosen, err := agents.Run(rowSrc, prev, keys, accent, refresh, split, orch)
+	chosen, err := agents.Run(rowSrc, prev, keys, accent, refresh, split, namespaces, orch)
 	if err != nil {
 		return err
 	}
@@ -345,6 +349,24 @@ func runDash() error {
 		return fmt.Errorf("jumping to %s: %w", chosen.TmuxSession, err)
 	}
 	return nil
+}
+
+// resolveNamespaces validates the configured `[[workspace]]` tables and maps them to the
+// agents-package Namespace type, so the dash package does not import config. A malformed
+// workspace set is reported rather than silently dropped, mirroring accent/split resolution.
+func resolveNamespaces(cfg config.Config) ([]agents.Namespace, error) {
+	wss, err := cfg.ResolveWorkspaces()
+	if err != nil {
+		return nil, err
+	}
+	if len(wss) == 0 {
+		return nil, nil
+	}
+	out := make([]agents.Namespace, len(wss))
+	for i, w := range wss {
+		out[i] = agents.Namespace{Name: w.Name, Roots: w.Roots}
+	}
+	return out, nil
 }
 
 // paneLister adapts *tmux.Client to agents.PaneLister.

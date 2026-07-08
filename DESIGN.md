@@ -108,25 +108,35 @@ agent changes state.
 
 The dash is two always-visible lenses over the same agents, plus the preview:
 
-- **Agents** (left): a flat triage list in four fixed bands - `NEEDS YOU`, `WORKING`,
+- **Agents** (top of the sidebar): a flat triage list in four fixed bands - `NEEDS YOU`, `WORKING`,
   `IDLE`, `DONE` - always rendered in that order, each band drawn as a full-width section
-  bar (the same distinct-background bar the Workspaces lens uses for repositories): a
+  bar (the same distinct-background bar the Projects lens uses for repositories): a
   populated band is bold and carries its count, an empty band keeps the bar but goes faint
   (so an empty `NEEDS YOU` still reads as a section, just a quiet "all clear"). Agents are
   ordered newest-changed first within each band. Here urgency *does* move: a status change
   re-bands an agent, but never reorders its band peers.
-- **Workspaces** (right): the repository→worktree→slot tree, ordered by name and held stable.
+- **Projects** (below it): the repository→worktree→slot tree, ordered by name and held stable.
   Status is a per-row indicator and a section-bar badge, never a position. The incidental
   `(no-repo)` bucket states why it offers no worktrees (e.g. `not a git repo`).
 
-Exactly one lens holds focus; `h`/`l` switch between them and the focused lens's title takes
-the accent (the other reads gray). The focused selection drives the preview and shows in the
+Exactly one lens holds focus; `ctrl+k`/`ctrl+j` switch between them and the focused lens's title
+takes the accent (the other reads gray). The focused selection drives the preview and shows in the
 other lens with an accent **mirror** bullet (`theme.MirrorGlyph`, see Selection), so the same
-agent is visibly linked across both without the unfocused lens sprouting a rival cursor. Folding (`tab`) works in **both** lenses and stays consistent: a Workspaces
+agent is visibly linked across both without the unfocused lens sprouting a rival cursor. Folding (`tab`) works in **both** lenses and stays consistent: a Projects
 section collapses its rows, an Agents band collapses its agents - each to a navigable header
 stand-in carrying the same `▾`/`▸` glyph and a hidden count. An empty band has nothing to
-collapse, so it is never foldable. Below a width threshold only the focused lens shows (still
-toggled by `h`/`l`), sharing the preview.
+collapse, so it is never foldable. Below a height threshold only the focused lens shows (still
+toggled by the focus keys), sharing the sidebar; a narrow terminal drops the preview.
+
+When one or more **`[[workspace]]`** namespaces are configured, a tab bar sits above the lenses
+(`All`, then each configured namespace, then any automatic parent-derived workspaces) and `]` / `[`
+switch the active tab, filtering both lenses to that tab's repositories. A repository under no
+configured root falls back to an automatic tab named after its parent directory, so nothing is
+orphaned to `All` only; configured tabs hold fixed positions while the automatic tail tracks the
+live rows (an automatic tab you are viewing that empties drops you back to `All`). A non-active tab
+shows a red `●` when it holds a needs-attention agent, so a blocked agent in a tab you are not
+viewing still surfaces. The active tab is bracketed and accented, never color alone. With no
+namespaces configured the bar is absent and nothing changes.
 
 **Action feedback** (a rejected action, an error, a confirmation) is *notable*, never the
 faint help line — otherwise a no-op looks like nothing happened. It renders on a fixed line
