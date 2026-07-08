@@ -380,6 +380,55 @@ func TestWorkspaceNoAnchorIsPlain(t *testing.T) {
 	}
 }
 
+// TestWorkspaceHeadlessAgentIsNotARow pins that an agent whose hook ran outside tmux (no
+// pane) is not rendered as an agent row: it can't be jumped to, previewed, or closed, so
+// surfacing it produced dead, un-jumpable rows (the birdseye-in-its-own-repo bug, where
+// several headless Claude sessions sharing the repo cwd appeared as phantom working rows).
+// A tmux-resident window in the same repo still yields its base row.
+func TestWorkspaceHeadlessAgentIsNotARow(t *testing.T) {
+	const gd = "/code/proj/.git"
+	src := &fakeSource{list: []Agent{
+		// Two headless sessions in the primary worktree's cwd, no tmux location.
+		{SessionID: "h1", CWD: "/code/proj", Title: "proj", Status: StatusWorking},
+		{SessionID: "h2", CWD: "/code/proj", Title: "proj", Status: StatusWorking},
+	}}
+	panes := fakePanes{list: []PaneInfo{
+		{Session: "proj", WindowIndex: "0", PaneID: "%1", StartPath: "/code/proj"},
+	}}
+	repos := &fakeRepos{
+		m:   map[string]RepoInfo{"/code/proj": repoAt(gd, "proj", "/code/proj", "proj", true)},
+		wts: map[string][]WorktreeInfo{gd: {{Path: "/code/proj", Name: "proj", IsPrimary: true}}},
+	}
+	rows, err := NewWorkspace(src, panes, repos).Rows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Kind != RowAnchor {
+		t.Fatalf("headless agents must not add rows; want one base anchor, got %+v", rows)
+	}
+}
+
+// TestWorkspaceHeadlessOnlyRepoIsNotRendered pins that a repo whose only evidence is a
+// headless agent's cwd (no pane anywhere) is not rendered at all: with no tmux presence
+// there is nothing the tmux-oriented dash can act on.
+func TestWorkspaceHeadlessOnlyRepoIsNotRendered(t *testing.T) {
+	const gd = "/code/proj/.git"
+	src := &fakeSource{list: []Agent{
+		{SessionID: "h1", CWD: "/code/proj", Title: "proj", Status: StatusWorking},
+	}}
+	repos := &fakeRepos{
+		m:   map[string]RepoInfo{"/code/proj": repoAt(gd, "proj", "/code/proj", "proj", true)},
+		wts: map[string][]WorktreeInfo{gd: {{Path: "/code/proj", Name: "proj", IsPrimary: true}}},
+	}
+	rows, err := NewWorkspace(src, fakePanes{}, repos).Rows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("a repo known only through a headless agent should not render, got %+v", rows)
+	}
+}
+
 func TestWorkspaceSecondPrimaryWindowDoesNotDuplicate(t *testing.T) {
 	// Two windows both started in the primary worktree: still one managed repo, one anchor.
 	const gd = "/code/proj/.git"

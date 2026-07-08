@@ -478,16 +478,30 @@ func title(session, cwd string) string {
 // is used for targeting (stable) and the name for display; the pane id pins the
 // exact pane the agent runs in, even when its window is split.
 func resolveTmux() (session, window, windowName, pane string) {
-	if os.Getenv("TMUX") == "" {
-		return "", "", "", ""
+	tmuxEnv, target := os.Getenv("TMUX"), os.Getenv("TMUX_PANE")
+	if tmuxEnv == "" {
+		// Claude Code's daemon runs its sessions detached, with TMUX stripped from the hook
+		// env even though the owning claude process still lives in a tmux pane. Recover the
+		// server and pane from that process's environment (sessionPID already locates it) so
+		// a daemon-run agent maps to its tmux location and stays jumpable, instead of looking
+		// location-less. Best-effort: when it too has no tmux, the agent is genuinely headless.
+		tmuxEnv, target = procTmux(sessionPID())
+		if tmuxEnv == "" {
+			return "", "", "", ""
+		}
 	}
-	target := os.Getenv("TMUX_PANE")
 	args := []string{"display-message", "-p"}
 	if target != "" {
 		args = append(args, "-t", target)
 	}
 	args = append(args, "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}")
-	out, err := exec.Command("tmux", args...).Output()
+	cmd := exec.Command("tmux", args...)
+	// Point tmux at the recovered server when the hook's own env has none, so display-message
+	// resolves the pane against the right socket.
+	if os.Getenv("TMUX") == "" {
+		cmd.Env = append(os.Environ(), "TMUX="+tmuxEnv)
+	}
+	out, err := cmd.Output()
 	if err != nil {
 		return "", "", "", ""
 	}
@@ -496,4 +510,32 @@ func resolveTmux() (session, window, windowName, pane string) {
 		parts = append(parts, "")
 	}
 	return parts[0], parts[1], parts[2], parts[3]
+}
+
+// procTmux reads the TMUX (server socket) and TMUX_PANE values from a process's environment,
+// used to recover the tmux location of a Claude daemon that spawned the current session with
+// TMUX stripped. It is a package var so tests can supply a synthetic environment. Reads
+// /proc/<pid>/environ (Linux); on platforms without it, or on any failure, it yields empties so
+// resolveTmux falls back cleanly - an in-pane session already has TMUX in its own env and never
+// needs this.
+var procTmux = func(pid int) (tmux, pane string) {
+	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/environ")
+	if err != nil {
+		return "", ""
+	}
+	return parseTmuxEnv(data)
+}
+
+// parseTmuxEnv extracts TMUX and TMUX_PANE from a NUL-separated environ blob (the
+// /proc/<pid>/environ format). Absent keys yield empty strings.
+func parseTmuxEnv(environ []byte) (tmux, pane string) {
+	for _, kv := range strings.Split(string(environ), "\x00") {
+		switch {
+		case strings.HasPrefix(kv, "TMUX="):
+			tmux = strings.TrimPrefix(kv, "TMUX=")
+		case strings.HasPrefix(kv, "TMUX_PANE="):
+			pane = strings.TrimPrefix(kv, "TMUX_PANE=")
+		}
+	}
+	return tmux, pane
 }
