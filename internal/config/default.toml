@@ -52,9 +52,9 @@ use_zoxide = true                     # include zoxide's known dirs when availab
 # command = "claude"                   # agent command for `n`, run in the window's shell
 # command = "claude --permission-mode=auto"   # fewer permission prompts
 # accent = "#c792ea"                   # agents-view accent (title + cursor); #rrggbb
-# split = 0.4                          # agents-list pane's share of the width when the
-                                       # preview is shown (the list flexes to fit, the
-                                       # preview takes the rest). Default 0.4, clamped 0.3-0.8
+# split = 0.4                          # the lens sidebar's share of the width when the preview
+                                       # is shown: stacked lenses on the left, preview filling
+                                       # the rest at full height. Default 0.4, clamped 0.3-0.8
 
 # Out-of-band notifications when an agent crosses into an urgent status. Emitted from the
 # Claude hook, so they fire even when `be dash` is closed. A muted agent is never notified.

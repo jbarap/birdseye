@@ -406,17 +406,86 @@ func TestPreviewPlaceholderOnErrorAndStatusUnaffected(t *testing.T) {
 }
 
 func TestViewWideShowsPreviewNarrowHides(t *testing.T) {
+	// The preview sits beside the sidebar, so its visibility is a width question: a wide terminal
+	// shows it, a narrow one drops it and gives the sidebar the full width.
 	prev := &fakePreviewer{out: map[string]string{"a": "hello"}}
 	m := mustModel(t, agentsN(2), prev, DefaultKeymap())
 
 	m.width, m.height = 120, 30
 	if !strings.Contains(m.View(), "preview") {
-		t.Fatalf("wide view should include the preview pane")
+		t.Fatalf("a wide view should include the preview pane")
 	}
 
-	m.width, m.height = 40, 30
+	m.width, m.height = 50, 30
 	if strings.Contains(m.View(), "preview") {
-		t.Fatalf("narrow view should hide the preview pane")
+		t.Fatalf("a narrow view should hide the preview pane")
+	}
+}
+
+// TestSidebarHeightDivision pins the sidebar's vertical budget: the Agents and Workspaces panes
+// share the body minus one border pair, both keep their minimum, and the two stacked panels stand
+// exactly as tall as the full-height preview beside them. A terminal too short to stack shows only
+// the focused lens at full height.
+func TestSidebarHeightDivision(t *testing.T) {
+	prev := &fakePreviewer{out: map[string]string{"a": "hi"}}
+	m := mustModel(t, agentsN(3), prev, DefaultKeymap()) // focus defaults to Workspaces here
+	m.width = 160
+
+	for _, h := range []int{16, 24, 30, 40, 50} {
+		m.height = h
+		if !m.stackLenses() {
+			t.Fatalf("h=%d: expected the sidebar to stack both lenses", h)
+		}
+		a, w := m.agentsPaneRows(), m.workspacePaneRows()
+		if a+w != m.sidebarBodyRows() {
+			t.Fatalf("h=%d: agentsPaneRows(%d)+workspacePaneRows(%d) != sidebar budget %d", h, a, w, m.sidebarBodyRows())
+		}
+		if a < minLensRows || w < minLensRows {
+			t.Fatalf("h=%d: a pane fell below the minimum: agents=%d workspaces=%d", h, a, w)
+		}
+		// The two stacked panels (each + its border pair) equal the full-height preview beside them.
+		if a+2+w+2 != m.contentRows()+2 {
+			t.Fatalf("h=%d: stacked panels %d != body %d", h, a+2+w+2, m.contentRows()+2)
+		}
+	}
+
+	// Too short to stack: the focused lens (Workspaces here) takes the whole body.
+	m.height = 8
+	if m.stackLenses() {
+		t.Fatalf("a short terminal should not stack both lenses")
+	}
+	if m.workspacePaneRows() != m.contentRows() {
+		t.Fatalf("the focused single lens should take the whole body: %d != %d", m.workspacePaneRows(), m.contentRows())
+	}
+}
+
+// TestViewSidebarPreviewRight pins the composition: the sidebar stacks the lens titles (agents
+// above workspaces) on the left, and the preview renders to their right on the top row.
+func TestViewSidebarPreviewRight(t *testing.T) {
+	prev := &fakePreviewer{out: map[string]string{"a": strings.Repeat("x ", 200)}}
+	m := mustModel(t, agentsN(3), prev, DefaultKeymap())
+	m.width, m.height = 160, 30
+
+	// The sidebar stacks agents above workspaces.
+	sb := strings.Split(stripANSI(m.renderLenses()), "\n")
+	ag, ws := -1, -1
+	for i, ln := range sb {
+		if strings.Contains(ln, "agents") && ag == -1 {
+			ag = i
+		}
+		if strings.Contains(ln, "workspaces") {
+			ws = i
+		}
+	}
+	if ag == -1 || ws == -1 || ag >= ws {
+		t.Fatalf("the sidebar should stack agents (line %d) above workspaces (line %d)", ag, ws)
+	}
+
+	// The preview renders to the right of the sidebar: its title shares the top border row with
+	// the agents title, rather than sitting below the whole sidebar.
+	firstLine := strings.SplitN(stripANSI(m.View()), "\n", 2)[0]
+	if !strings.Contains(firstLine, "preview") || !strings.Contains(firstLine, "agents") {
+		t.Fatalf("the preview title should share the top row with the agents title, got:\n%s", firstLine)
 	}
 }
 
@@ -517,15 +586,18 @@ func TestListWindowsToCursorAndFits(t *testing.T) {
 
 	nm, _ := m.Update(key("G"))
 	m = nm.(model)
-	v := m.View()
-	if h := lipgloss.Height(v); h > m.height {
-		t.Fatalf("windowed view height %d exceeds terminal height %d:\n%s", h, m.height, v)
+	// The whole view (both stacked lenses) must fit the terminal height.
+	if h := lipgloss.Height(m.View()); h > m.height {
+		t.Fatalf("windowed view height %d exceeds terminal height %d:\n%s", h, m.height, m.View())
 	}
-	if !strings.Contains(v, "row39") {
-		t.Fatalf("the bottom row must be visible after G:\n%s", v)
+	// The focused Workspaces lens windows to its cursor: assert on its own render (the Agents
+	// lens above it keeps an independent cursor and window).
+	ws := stripANSI(m.renderRows())
+	if !strings.Contains(ws, "row39") {
+		t.Fatalf("the bottom row must be visible after G:\n%s", ws)
 	}
-	if strings.Contains(v, "row00") {
-		t.Fatalf("the top row should have scrolled out of the window:\n%s", v)
+	if strings.Contains(ws, "row00") {
+		t.Fatalf("the top row should have scrolled out of the window:\n%s", ws)
 	}
 
 	// Back to the top brings the first row into view and pushes the bottom out.
@@ -533,12 +605,12 @@ func TestListWindowsToCursorAndFits(t *testing.T) {
 	m = nm.(model)
 	nm, _ = m.Update(key("g"))
 	m = nm.(model)
-	v = m.View()
-	if !strings.Contains(v, "row00") {
-		t.Fatalf("the top row must be visible after gg:\n%s", v)
+	ws = stripANSI(m.renderRows())
+	if !strings.Contains(ws, "row00") {
+		t.Fatalf("the top row must be visible after gg:\n%s", ws)
 	}
-	if strings.Contains(v, "row39") {
-		t.Fatalf("the bottom row should be out of the window after gg:\n%s", v)
+	if strings.Contains(ws, "row39") {
+		t.Fatalf("the bottom row should be out of the window after gg:\n%s", ws)
 	}
 }
 
@@ -1020,9 +1092,9 @@ func TestLensFocusSwitchCarriesCounterpart(t *testing.T) {
 // drift back to reusing CursorGlyph and read as a rival pointer.
 func TestMirrorUsesBulletNotASecondCursor(t *testing.T) {
 	m := mustModel(t, agentsN(3), nil, DefaultKeymap()) // focus defaults to Workspaces
-	m.width, m.height = 200, 30                         // wide → both lenses render
-	if !m.dualLens() {
-		t.Fatalf("precondition: 200 cols should be dual-lens")
+	m.width, m.height = 200, 30                         // tall → the sidebar stacks both lenses
+	if !m.stackLenses() {
+		t.Fatalf("precondition: 200x30 should stack both lenses")
 	}
 	m = send(m, key("j")) // select an agent (b) so it has a counterpart to mirror
 
@@ -1049,7 +1121,7 @@ func TestAgentBandFoldCollapsesAndUnfolds(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.focus = lensAgents
-	m.width, m.height = 80, 30 // narrow → only the focused (agents) lens renders
+	m.width, m.height = 80, 30 // the fold is an Agents-lens concept; assert on renderAgents()
 
 	if len(m.agentNav) != 3 {
 		t.Fatalf("unfolded: want 3 navigable agents, got %d", len(m.agentNav))
@@ -1070,7 +1142,7 @@ func TestAgentBandFoldCollapsesAndUnfolds(t *testing.T) {
 	if it := m.agentItems[m.agentNav[m.agentCursor]]; !it.header || it.band != bandWorking {
 		t.Fatalf("cursor should rest on the WORKING band header, got %+v", it)
 	}
-	v := m.View()
+	v := m.renderAgents()
 	if strings.Contains(v, "busyone") || strings.Contains(v, "busytwo") {
 		t.Fatalf("a folded band must hide its agents:\n%s", v)
 	}
@@ -1085,35 +1157,36 @@ func TestAgentBandFoldCollapsesAndUnfolds(t *testing.T) {
 	if r, ok := m.agentsCurrentRow(); !ok || r.SessionID != "w1" {
 		t.Fatalf("unfolding should land on the band's first agent w1, got ok=%v id=%s", ok, r.SessionID)
 	}
-	if v := m.View(); !strings.Contains(v, "busyone") {
+	if v := m.renderAgents(); !strings.Contains(v, "busyone") {
 		t.Fatalf("unfolded band must show its agents again:\n%s", v)
 	}
 }
 
-// TestDualLensLayoutAndNarrowFallback: a wide terminal shows both lens panels; a narrow one
-// shows only the focused lens (the fallback), still switchable with the focus keys.
-func TestDualLensLayoutAndNarrowFallback(t *testing.T) {
+// TestSidebarStacksBothLensesShortFallback: a tall terminal stacks both lens panels in the
+// sidebar; a terminal too short to stack shows only the focused lens, still switchable with the
+// focus keys (ctrl+k up to agents, ctrl+j down to workspaces).
+func TestSidebarStacksBothLensesShortFallback(t *testing.T) {
 	prev := &fakePreviewer{out: map[string]string{}}
-	m := mustModel(t, agentsN(2), prev, DefaultKeymap())
+	m := mustModel(t, agentsN(2), prev, DefaultKeymap()) // focus defaults to Workspaces here
 
-	// Assert on renderLenses (the lens area) rather than View, so the help legend's
-	// "fold (workspaces)" hint doesn't masquerade as a lens title.
+	// Assert on renderLenses (the lens area) rather than View, so the help legend doesn't
+	// masquerade as a lens title.
 	m.width, m.height = 200, 30
 	if l := m.renderLenses(); !strings.Contains(l, "workspaces") || !strings.Contains(l, "agents") {
-		t.Fatalf("wide layout should show both lens titles")
+		t.Fatalf("a tall sidebar should stack both lens titles")
 	}
 
-	m.width, m.height = 80, 30 // below dualLensMinWidth → single lens
-	if m.dualLens() {
-		t.Fatalf("80 cols should not be dual-lens")
+	m.width, m.height = 200, 8 // too short to stack → only the focused lens
+	if m.stackLenses() {
+		t.Fatalf("8 rows should be too short to stack both lenses")
 	}
 	if l := m.renderLenses(); !strings.Contains(l, "workspaces") || strings.Contains(l, "agents") {
-		t.Fatalf("narrow layout should show only the focused (workspaces) lens")
+		t.Fatalf("a short sidebar should show only the focused (workspaces) lens")
 	}
-	// Toggling focus swaps which single lens shows; h focuses the left (agents) lens.
-	m = send(m, key("h"))
+	// ctrl+k focuses up to the agents lens.
+	m = send(m, key("ctrl+k"))
 	if l := m.renderLenses(); !strings.Contains(l, "agents") || strings.Contains(l, "workspaces") {
-		t.Fatalf("narrow layout after focus-left should show only the agents lens")
+		t.Fatalf("after focus-up the short sidebar should show only the agents lens")
 	}
 }
 
@@ -1140,7 +1213,9 @@ func TestFoldCollapsesAndUnfolds(t *testing.T) {
 	if it.kind != kindSession || it.sessionKey != "arewa" {
 		t.Fatalf("cursor should rest on the folded arewa header, got %+v", it)
 	}
-	v := m.View()
+	// Section folding is a Workspaces-lens concept; assert on its own render (the Agents lens
+	// beside it lists the same agents in its bands, independent of section folds).
+	v := m.renderRows()
 	if strings.Contains(v, "refactor auth") || strings.Contains(v, "write tests") {
 		t.Fatalf("a folded section must hide its agents:\n%s", v)
 	}
@@ -1231,31 +1306,6 @@ func TestColumnsFlexToFitContent(t *testing.T) {
 	}
 	if nameW <= nameColMin {
 		t.Fatalf("the title column should flex past the baseline %d to fit a long title, got %d", nameColMin, nameW)
-	}
-}
-
-// TestListFillsSplitShare pins that on a wide terminal the list pane fills its configured share
-// of the width (rather than collapsing to its content), so the preview is not left oversized.
-func TestListFillsSplitShare(t *testing.T) {
-	prev := &fakePreviewer{out: map[string]string{}}
-	rows := []Row{
-		{Kind: RowAgent, SessionID: "a", TmuxSession: "be", Repo: "r", GitDir: "/g", Worktree: "wt", Title: "qa", Status: StatusWorking, TmuxWindow: "1", TmuxPane: "%1"},
-	}
-	m, err := newModel(fixedRows{rows}, prev, DefaultKeymap(), 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	m.width = 200
-	m.split = 0.55
-
-	rendered := cursorColWidth + m.rowContentWidth() + 4
-	// The Workspaces list fills its share of the region left after the Agents lens claims its
-	// column (mainWidth), not the full terminal - the two lenses share the list area now.
-	want := int(float64(m.mainWidth()) * m.split)
-	// The pane should sit at its share (within a small rounding/frame slack), not collapse to
-	// the narrow content of a one-row list.
-	if rendered < want-6 || rendered > want+6 {
-		t.Fatalf("the list should fill ~%d%% of mainWidth %d (=%d), got %d", int(m.split*100), m.mainWidth(), want, rendered)
 	}
 }
 
