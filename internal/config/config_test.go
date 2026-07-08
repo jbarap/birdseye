@@ -187,6 +187,51 @@ roots = ["/srv/work", "~/clients"]
 	}
 }
 
+func TestWorkspacesEnabledDefaultsTrue(t *testing.T) {
+	if !Default().Workspaces.Enabled {
+		t.Fatal("the namespaces feature must be enabled by default")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	// An absent [workspaces] table must keep the built-in default (enabled).
+	if err := os.WriteFile(path, []byte("order = [\"tmux\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadFrom(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Workspaces.Enabled {
+		t.Fatal("an absent [workspaces] table must leave the feature enabled")
+	}
+}
+
+func TestWorkspacesEnabledExplicitFalse(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte("[workspaces]\nenabled = false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadFrom(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Workspaces.Enabled {
+		t.Fatal("explicit enabled = false must override the default")
+	}
+}
+
+func TestWorkspacesRejectsUnknownKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte("[workspaces]\nenabeld = true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadFrom(path); err == nil {
+		t.Fatal("a misspelled key under [workspaces] must be rejected by strict loading")
+	}
+}
+
 func TestResolveWorkspacesRejectsBadDeclarations(t *testing.T) {
 	cases := []struct {
 		name string
@@ -197,7 +242,7 @@ func TestResolveWorkspacesRejectsBadDeclarations(t *testing.T) {
 		{"duplicate name", []Workspace{{Name: "w", Roots: []string{"/a"}}, {Name: "w", Roots: []string{"/b"}}}},
 	}
 	for _, c := range cases {
-		if _, err := (Config{Workspaces: c.wss}).ResolveWorkspaces(); err == nil {
+		if _, err := (Config{WorkspaceDefs: c.wss}).ResolveWorkspaces(); err == nil {
 			t.Errorf("%s: expected an error, got nil", c.name)
 		}
 	}

@@ -334,7 +334,7 @@ func runDash() error {
 		orch = orchestrator{fleet: f, client: client, cfg: cfg}
 	}
 
-	chosen, err := agents.Run(rowSrc, prev, keys, accent, refresh, split, namespaces, orch)
+	chosen, err := agents.Run(rowSrc, prev, keys, accent, refresh, split, namespaces, cfg.Workspaces.Enabled, orch)
 	if err != nil {
 		return err
 	}

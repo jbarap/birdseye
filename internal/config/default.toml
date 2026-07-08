@@ -84,15 +84,19 @@ finished        = true                 # notify when an agent finishes a turn (w
 # delete       = ["dD"]                # close + git worktree remove, behind a popup; a chord
 # quit         = ["q", "esc", "ctrl+c"]
 
-# Dash namespaces ("workspaces"): slice `be dash` by life-context. Each [[workspace]] names a
-# tab and lists roots; a repository belongs to the workspace whose root contains its path
-# (longest match wins). A tab bar appears at the top of the dash - `All` first, then these in
-# order - and `]` / `[` switch between them. `All` shows everything; a named tab shows only its
-# repositories. A non-active tab shows a dot when it holds an agent that needs attention, so a
-# blocked agent in a hidden workspace is never invisible. A repository under no configured root
-# falls back to an automatic tab named after its parent directory, so nothing is orphaned to `All`
-# only (siblings under one parent share a tab). With no [[workspace]] declared the feature is
-# inert: no tab bar, no filtering, no automatic tabs.
+# Dash namespaces ("workspaces"): slice `be dash` by life-context. The feature is on by default:
+# repositories group into tabs by their parent directory automatically, so a tab bar appears the
+# moment you have repos under more than one parent - no configuration needed. `All` shows
+# everything; each other tab shows only its repositories, and `]` / `[` switch between them. A
+# non-active tab shows a dot when it holds an agent that needs attention, so a blocked agent in a
+# hidden workspace is never invisible. When `All` is the only tab (no second group) no bar is shown.
+[workspaces]
+enabled = true                         # master switch; set false to turn the feature fully off
+
+# Declare named workspaces to override the automatic grouping. Each [[workspace]] names a tab and
+# lists roots; a repository belongs to the workspace whose root contains its path (longest match
+# wins). Named tabs come first (in declaration order), then any automatic parent-derived tabs for
+# repositories under no declared root. Roots follow the tilde/glob conventions of [repo].roots.
 # [[workspace]]
 # name  = "personal"
 # roots = ["~/projects"]

@@ -128,15 +128,18 @@ stand-in carrying the same `▾`/`▸` glyph and a hidden count. An empty band h
 collapse, so it is never foldable. Below a height threshold only the focused lens shows (still
 toggled by the focus keys), sharing the sidebar; a narrow terminal drops the preview.
 
-When one or more **`[[workspace]]`** namespaces are configured, a tab bar sits above the lenses
-(`All`, then each configured namespace, then any automatic parent-derived workspaces) and `]` / `[`
-switch the active tab, filtering both lenses to that tab's repositories. A repository under no
-configured root falls back to an automatic tab named after its parent directory, so nothing is
-orphaned to `All` only; configured tabs hold fixed positions while the automatic tail tracks the
-live rows (an automatic tab you are viewing that empties drops you back to `All`). A non-active tab
-shows a red `●` when it holds a needs-attention agent, so a blocked agent in a tab you are not
-viewing still surfaces. The active tab is bracketed and accented, never color alone. With no
-namespaces configured the bar is absent and nothing changes.
+The **namespaces** feature is on by default (the `[workspaces]` master switch): a tab bar sits above
+the lenses and `]` / `[` switch the active tab, filtering both lenses to that tab's repositories.
+Repositories group into tabs automatically by their parent directory, so grouping appears with no
+configuration; declaring **`[[workspace]]`** namespaces overrides that for the roots they name. The
+bar lists `All` first, then each configured namespace (fixed positions), then any automatic
+parent-derived workspaces (the tail tracks the live rows, so an automatic tab you are viewing that
+empties drops you back to `All`). A non-active tab shows a red `●` when it holds a needs-attention
+agent, so a blocked agent in a tab you are not viewing still surfaces. The active tab is bracketed
+and accented, never color alone. The selected tab is remembered across launches (restored on the
+next open, falling back to `All` when it is no longer selectable). When `All` is the only tab -
+nothing to filter - the bar is absent; setting `[workspaces]` `enabled = false` turns the feature
+off entirely.
 
 **Action feedback** (a rejected action, an error, a confirmation) is *notable*, never the
 faint help line — otherwise a no-op looks like nothing happened. It renders on a fixed line

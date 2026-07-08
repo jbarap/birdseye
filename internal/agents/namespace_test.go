@@ -68,6 +68,7 @@ func nsModel(t *testing.T, activeTab string, rows []Row) model {
 	if err != nil {
 		t.Fatal(err)
 	}
+	m.wsEnabled = true
 	m.namespaces = testNamespaces
 	m.width, m.height = 120, 40
 	m.activeTab = activeTab
@@ -208,14 +209,118 @@ func TestTabBarUrgencyDotAndActiveMarker(t *testing.T) {
 	}
 }
 
-func TestTabBarInertWithoutNamespaces(t *testing.T) {
-	m, err := newModel(fixedRows{testRows()}, nil, DefaultKeymap(), 0)
+// TestDisabledIsInertEvenWithNamespaces checks the master switch: with the feature disabled the
+// dash renders no tab bar, forms no automatic workspaces, and does not filter, even when namespaces
+// are declared and unmatched repositories are present.
+func TestDisabledIsInertEvenWithNamespaces(t *testing.T) {
+	rows := []Row{
+		nsRow("p1", "blog", "g1", "/home/u/personal/blog", true, StatusIdle),
+		nsRow("e1", "foo", "g9", "/home/u/experiments/foo", true, StatusIdle),
+	}
+	m, err := newModel(fixedRows{rows}, nil, DefaultKeymap(), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
+	m.wsEnabled = false
+	m.namespaces = testNamespaces
 	m.width, m.height = 120, 40
+	m.setRows(m.allRows)
 	if m.tabBarLines() != 0 || m.tabBar() != "" {
-		t.Fatalf("with no namespaces the tab bar must be absent (inert)")
+		t.Fatalf("disabled feature must render no tab bar, got lines=%d bar=%q", m.tabBarLines(), m.tabBar())
+	}
+	if got := tabLabelsOf(m.tabList()); len(got) != 1 || got[0] != "All" {
+		t.Fatalf("disabled feature must expose only All, got %v", got)
+	}
+	if m.tabAssign != nil {
+		t.Fatalf("disabled feature must assign no repo tabs, got %v", m.tabAssign)
+	}
+}
+
+// TestEnabledFormsAutoTabsWithNoConfig checks that with the feature on and zero declared namespaces,
+// repositories under distinct parent directories each form an automatic parent-derived tab, so
+// grouping appears with no configuration.
+func TestEnabledFormsAutoTabsWithNoConfig(t *testing.T) {
+	rows := []Row{
+		nsRow("a1", "blog", "g1", "/home/u/personal/blog", true, StatusIdle),
+		nsRow("a2", "api", "g2", "/home/u/work/api", true, StatusIdle),
+	}
+	m, err := newModel(fixedRows{rows}, nil, DefaultKeymap(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.wsEnabled = true // no m.namespaces
+	m.width, m.height = 120, 40
+	m.setRows(m.allRows)
+	labels := tabLabelsOf(m.tabList())
+	want := []string{"All", "personal", "work"} // auto tabs labelled by parent dir, sorted
+	if strings.Join(labels, ",") != strings.Join(want, ",") {
+		t.Fatalf("tab labels = %v, want %v", labels, want)
+	}
+	if m.tabBarLines() != 1 {
+		t.Fatalf("more than one tab must show the bar, got %d lines", m.tabBarLines())
+	}
+}
+
+// TestEnabledHidesBarWhenAllIsOnlyTab checks that enabling the feature adds no chrome when there is
+// nothing to filter: with no recognized repository (only an incidental agent), the sole tab is All,
+// so no bar renders. Two repos under one parent still form one auto tab (All + parent = two tabs, a
+// real choice) - the no-bar case is strictly "no repository forms a second tab".
+func TestEnabledHidesBarWhenAllIsOnlyTab(t *testing.T) {
+	// A repository under a single parent still yields a second tab, so the bar shows.
+	twoRepos := []Row{
+		nsRow("a1", "blog", "g1", "/home/u/personal/blog", true, StatusIdle),
+		nsRow("a2", "diary", "g2", "/home/u/personal/diary", true, StatusIdle),
+	}
+	m, err := newModel(fixedRows{twoRepos}, nil, DefaultKeymap(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.wsEnabled = true // no m.namespaces; both repos share one parent -> one auto tab
+	m.width, m.height = 120, 40
+	m.setRows(m.allRows)
+	if got := tabLabelsOf(m.tabList()); len(got) != 2 {
+		t.Fatalf("one parent should yield All + one auto tab, got %v", got)
+	}
+	if m.tabBarLines() != 1 {
+		t.Fatalf("All + one auto tab is a real choice, bar should show, got %d lines", m.tabBarLines())
+	}
+
+	// No recognized repository: only an incidental agent maps to no tab, so All is the only tab.
+	incidental := []Row{nsRow("x", "", "", "/somewhere", false, StatusIdle)}
+	m2, err := newModel(fixedRows{incidental}, nil, DefaultKeymap(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m2.wsEnabled = true
+	m2.width, m2.height = 120, 40
+	m2.setRows(m2.allRows)
+	if got := tabLabelsOf(m2.tabList()); len(got) != 1 || got[0] != "All" {
+		t.Fatalf("no repository should yield only All, got %v", got)
+	}
+	if m2.tabBarLines() != 0 || m2.tabBar() != "" {
+		t.Fatalf("All-only must render no bar, got lines=%d bar=%q", m2.tabBarLines(), m2.tabBar())
+	}
+}
+
+// TestActiveTabPersistRoundTrip checks that the active-tab key survives a write/read cycle for
+// every kind of key: All (""), a configured name, and an automatic workspace key (which embeds a
+// NUL byte), and that a missing file reads as All.
+func TestActiveTabPersistRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	if got, err := readActiveTab(dir); err != nil || got != "" {
+		t.Fatalf("missing file should read as All: got %q err %v", got, err)
+	}
+	for _, key := range []string{"", "work", autoPrefix + "/home/u/experiments"} {
+		if err := writeActiveTab(dir, key); err != nil {
+			t.Fatalf("writeActiveTab(%q): %v", key, err)
+		}
+		got, err := readActiveTab(dir)
+		if err != nil {
+			t.Fatalf("readActiveTab after writing %q: %v", key, err)
+		}
+		if got != key {
+			t.Fatalf("round-trip mismatch: wrote %q, read %q", key, got)
+		}
 	}
 }
 
