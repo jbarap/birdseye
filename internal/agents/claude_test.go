@@ -402,7 +402,9 @@ func TestHandleHookWritesState(t *testing.T) {
 	stubNoTmuxRecovery(t)
 
 	payload := `{"session_id":"sess-123","cwd":"/home/u/projects/foo"}`
-	if err := HandleHook("Notification", strings.NewReader(payload)); err != nil {
+	// Drive the core with a silent policy (nil notifier): this test pins state writing, not
+	// notification delivery, and the exported HandleHook would fire a real notify-send.
+	if err := handleHook("Notification", strings.NewReader(payload), notifyPolicy{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -439,11 +441,13 @@ func TestHandleHookPersistsCWD(t *testing.T) {
 	t.Setenv("TMUX", "")
 	stubNoTmuxRecovery(t)
 
-	if err := HandleHook("SessionStart", strings.NewReader(`{"session_id":"s1","cwd":"/repo/wt"}`)); err != nil {
+	// Silent policy (nil notifier): this test pins cwd persistence across events, not
+	// notification delivery, and the exported HandleHook would fire a real notify-send.
+	if err := handleHook("SessionStart", strings.NewReader(`{"session_id":"s1","cwd":"/repo/wt"}`), notifyPolicy{}); err != nil {
 		t.Fatal(err)
 	}
 	// A later event with no cwd (an unexpected partial payload) must not erase it.
-	if err := HandleHook("Stop", strings.NewReader(`{"session_id":"s1"}`)); err != nil {
+	if err := handleHook("Stop", strings.NewReader(`{"session_id":"s1"}`), notifyPolicy{}); err != nil {
 		t.Fatal(err)
 	}
 
