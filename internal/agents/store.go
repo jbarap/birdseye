@@ -23,8 +23,10 @@ type record struct {
 	Updated        time.Time `json:"updated"`
 }
 
-// StateDir returns the directory where agent state files live, following the
-// XDG state convention ($XDG_STATE_HOME or ~/.local/state).
+// StateDir returns birdseye's state root, following the XDG state convention
+// ($XDG_STATE_HOME/birdseye or ~/.local/state/birdseye). Dash view state - mutes.json and
+// dash-state.json - lives directly here; per-session agent hook records live under the agents
+// subdirectory (see agentsDir).
 func StateDir() (string, error) {
 	base := os.Getenv("XDG_STATE_HOME")
 	if base == "" {
@@ -34,7 +36,18 @@ func StateDir() (string, error) {
 		}
 		base = filepath.Join(home, ".local", "state")
 	}
-	return filepath.Join(base, "birdseye", "agents"), nil
+	return filepath.Join(base, "birdseye"), nil
+}
+
+// agentsDir returns the directory holding per-session agent hook records, namespaced under the
+// state root because there is one record file per agent session and they are hook-produced agent
+// data rather than user/view state.
+func agentsDir() (string, error) {
+	root, err := StateDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, "agents"), nil
 }
 
 // sanitize makes a session id safe as a file name.
@@ -87,6 +100,24 @@ func readRecord(dir, sessionID string) (record, error) {
 // by session id so a mute follows the tmux location and survives a session rotating in
 // place. Only the view writes it; the source reads and prunes it.
 const muteFile = "mutes.json"
+
+// migrateLegacyMutes relocates mutes.json from the old agents/ subdirectory up to the state root,
+// a one-time move for state written before agent records and dash view state were separated. It is
+// best-effort and idempotent: a no-op once mutes.json is at the root, or was never written.
+func migrateLegacyMutes(root string) {
+	newPath := filepath.Join(root, muteFile)
+	if _, err := os.Stat(newPath); err == nil {
+		return
+	}
+	oldPath := filepath.Join(root, "agents", muteFile)
+	data, err := os.ReadFile(oldPath)
+	if err != nil {
+		return
+	}
+	if os.MkdirAll(root, 0o755) == nil && os.WriteFile(newPath, data, 0o644) == nil {
+		_ = os.Remove(oldPath)
+	}
+}
 
 // readMutes loads the set of muted location keys under dir. A missing file yields an empty
 // set, so mute is simply off until the user mutes something.

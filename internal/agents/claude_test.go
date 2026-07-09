@@ -167,6 +167,7 @@ func TestAgentsCorrectsLevelFromTitle(t *testing.T) {
 	}
 	s := &ClaudeSource{
 		dir:      dir,
+		recDir:   dir,
 		alive:    alwaysAlive,
 		detector: titleLevelDetector{},
 		titles:   func() (map[string]string, error) { calls++; return titles, nil },
@@ -258,7 +259,7 @@ func TestAgentsReclaimsDeadProcesses(t *testing.T) {
 		}
 	}
 
-	s := &ClaudeSource{dir: dir, alive: func(pid int) bool { return pid == 100 }}
+	s := &ClaudeSource{dir: dir, recDir: dir, alive: func(pid int) bool { return pid == 100 }}
 	got, err := s.Agents()
 	if err != nil {
 		t.Fatal(err)
@@ -291,7 +292,7 @@ func TestMutePersistsSnoozeAndReclaims(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	s := &ClaudeSource{dir: dir, alive: alwaysAlive}
+	s := &ClaudeSource{dir: dir, recDir: dir, alive: alwaysAlive}
 
 	workKey := locationKey("%1", "s", "", "work")
 	if err := s.SetMuted(workKey, true); err != nil {
@@ -350,7 +351,7 @@ func TestAgentsSortsNeedsAttentionFirst(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	s := &ClaudeSource{dir: dir, alive: alwaysAlive}
+	s := &ClaudeSource{dir: dir, recDir: dir, alive: alwaysAlive}
 	got, _ := s.Agents()
 	if len(got) == 0 || got[0].Status != StatusNeedsAttention {
 		t.Fatalf("needs-attention should sort first, got %+v", got)
@@ -374,7 +375,7 @@ func TestAgentsDedupsSharedLocation(t *testing.T) {
 		}
 	}
 
-	s := &ClaudeSource{dir: dir, alive: alwaysAlive}
+	s := &ClaudeSource{dir: dir, recDir: dir, alive: alwaysAlive}
 	got, err := s.Agents()
 	if err != nil {
 		t.Fatal(err)
@@ -458,5 +459,32 @@ func TestHandleHookPersistsCWD(t *testing.T) {
 	row := agentRow(Agent{SessionID: "s1", CWD: "/repo/wt"})
 	if row.AgentDir != "/repo/wt" {
 		t.Errorf("row should carry agent working directory, got %q", row.AgentDir)
+	}
+}
+
+// TestMigrateLegacyMutes moves a mutes.json written under the old agents/ subdir up to the state
+// root, removes the stale copy, and never clobbers an existing root file with a legacy one.
+func TestMigrateLegacyMutes(t *testing.T) {
+	root := t.TempDir()
+	legacy := filepath.Join(root, "agents")
+	if err := writeMutes(legacy, map[string]bool{"id:s1": true}); err != nil {
+		t.Fatal(err)
+	}
+
+	migrateLegacyMutes(root)
+	if got, err := readMutes(root); err != nil || !got["id:s1"] {
+		t.Fatalf("mute should be migrated to the root, got %v err %v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(legacy, muteFile)); !os.IsNotExist(err) {
+		t.Fatalf("legacy mutes.json should be removed after migration")
+	}
+
+	// A stale legacy file must not overwrite the migrated root file.
+	if err := writeMutes(legacy, map[string]bool{"id:s2": true}); err != nil {
+		t.Fatal(err)
+	}
+	migrateLegacyMutes(root)
+	if got, _ := readMutes(root); got["id:s2"] || !got["id:s1"] {
+		t.Fatalf("existing root mutes must win over a stale legacy file, got %v", got)
 	}
 }

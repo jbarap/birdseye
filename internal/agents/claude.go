@@ -23,7 +23,8 @@ import (
 // no time-based retention and no stale heuristic — process liveness is the single
 // signal for whether an agent is still there.
 type ClaudeSource struct {
-	dir      string
+	dir      string                            // state root: mutes.json (dash view state)
+	recDir   string                            // agents subdir: per-session hook records
 	alive    func(pid int) bool                // process-liveness check; overridable in tests
 	titles   func() (map[string]string, error) // pane id -> OSC title; overridable in tests
 	detector levelDetector                     // derives the live working/idle level
@@ -34,12 +35,18 @@ type ClaudeSource struct {
 // working/idle level is read from pane titles; the CLI wires a tmux-backed title
 // source via SetTitleSource, and absent that the source degrades to hook-only status.
 func NewClaudeSource() (*ClaudeSource, error) {
-	dir, err := StateDir()
+	root, err := StateDir()
+	if err != nil {
+		return nil, err
+	}
+	migrateLegacyMutes(root)
+	recDir, err := agentsDir()
 	if err != nil {
 		return nil, err
 	}
 	return &ClaudeSource{
-		dir:      dir,
+		dir:      root,
+		recDir:   recDir,
 		alive:    processAlive,
 		titles:   func() (map[string]string, error) { return map[string]string{}, nil },
 		detector: titleLevelDetector{},
@@ -125,7 +132,7 @@ var procParent = func(pid int) (int, string) {
 
 // Agents implements Source.
 func (s *ClaudeSource) Agents() ([]Agent, error) {
-	recs, err := readRecords(s.dir)
+	recs, err := readRecords(s.recDir)
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +152,7 @@ func (s *ClaudeSource) Agents() ([]Agent, error) {
 		// running. A dead (or unidentifiable) process means the session is gone, so
 		// delete its state — even if its tmux pane (a leftover shell) still lingers.
 		if !s.alive(r.PID) {
-			_ = os.Remove(filepath.Join(s.dir, sanitize(r.SessionID)+".json"))
+			_ = os.Remove(filepath.Join(s.recDir, sanitize(r.SessionID)+".json"))
 			continue
 		}
 		status := r.Status
@@ -418,7 +425,12 @@ func HandleHook(event string, r io.Reader) error {
 }
 
 func handleHook(event string, r io.Reader, policy notifyPolicy) error {
-	dir, err := StateDir()
+	root, err := StateDir()
+	if err != nil {
+		return err
+	}
+	migrateLegacyMutes(root)
+	recDir, err := agentsDir()
 	if err != nil {
 		return err
 	}
@@ -430,7 +442,7 @@ func handleHook(event string, r io.Reader, policy notifyPolicy) error {
 		in.SessionID = os.Getenv("CLAUDE_SESSION_ID")
 	}
 
-	rec, _ := readRecord(dir, in.SessionID)
+	rec, _ := readRecord(recDir, in.SessionID)
 	// Capture the prior status before the event overwrites it, so a notification can fire on
 	// the transition (the edge) rather than on merely being in a state.
 	old := rec.Status
@@ -468,12 +480,12 @@ func handleHook(event string, r io.Reader, policy notifyPolicy) error {
 		rec.CWD = in.CWD
 	}
 	rec.Title = title(rec.TmuxSession, rec.CWD)
-	if err := writeRecord(dir, rec); err != nil {
+	if err := writeRecord(recDir, rec); err != nil {
 		return err
 	}
 	// Notification is best-effort and downstream of the record: a delivery problem must never
-	// fail the hook chain or lose the status write.
-	maybeNotify(dir, old, rec, policy)
+	// fail the hook chain or lose the status write. Mute lives at the state root, not with records.
+	maybeNotify(root, old, rec, policy)
 	return nil
 }
 
