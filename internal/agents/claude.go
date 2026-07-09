@@ -736,7 +736,18 @@ func resolveTmux() (session, window, windowName, pane string) {
 		// env even though the owning claude process still lives in a tmux pane. Recover the
 		// server and pane from that process's environment (sessionPID already locates it) so
 		// a daemon-run agent maps to its tmux location and stays jumpable, instead of looking
-		// location-less. Best-effort: when it too has no tmux, the agent is genuinely headless.
+		// location-less. Best-effort: when it too has no tmux, the agent is genuinely headless
+		// (surfaced as a detached agent, see Workspace.Rows).
+		//
+		// Hazard: the recovered TMUX_PANE is only correct while sessionPID is a per-session
+		// process (the interactive client), whose environ pins the pane it launched in. If a
+		// future Claude version anchored sessions on a process shared across sessions (a daemon)
+		// whose environ carried a frozen TMUX_PANE, that one stale pane would be misattributed
+		// to every recovered session. This is safe today because observed daemon environs carry
+		// no TMUX at all, so recovery yields empties and the agent correctly reads as detached.
+		// No per-session pane oracle exists to validate a recovered pane, so rather than guess
+		// against unobserved behavior we prefer an honest detached agent to a mislabeled pane -
+		// revisit here if a bg session ever recovers a pane it does not actually occupy.
 		tmuxEnv, target = procTmux(sessionPID())
 		if tmuxEnv == "" {
 			return "", "", "", ""
