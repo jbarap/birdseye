@@ -46,7 +46,7 @@ func agentsN(n int) []Agent {
 	out := make([]Agent, n)
 	for i := range out {
 		id := string(rune('a' + i))
-		out[i] = Agent{SessionID: id, Title: id, Status: StatusWorking, TmuxSession: id}
+		out[i] = Agent{SessionID: id, Title: id, Status: StatusWorking, TmuxSession: id, TmuxPane: "%" + id}
 	}
 	return out
 }

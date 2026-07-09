@@ -130,6 +130,11 @@ const (
 	managedGlyph = "\U000f160e" // 󱘎 the managed-repo indicator
 	errGlyph     = "✗"          // a rejected/failed action (notice, red)
 	infoGlyph    = "•"          // a neutral confirmation (notice, accent)
+	// detachedGlyph marks a live agent with no tmux pane of its own — a background/daemon or
+	// headless session. It prefixes the agent's name (so it shows in both lenses without
+	// disturbing the fixed status-gutter grid) and signals that the pane-dependent verbs (jump,
+	// preview, close) have nothing to act on; the status glyph+word still convey what it is doing.
+	detachedGlyph = "⚯"
 )
 
 // lipColor adapts a shared-palette color to lipgloss, handing it the hex value;
@@ -1046,6 +1051,12 @@ func (m model) applyAction(a Action) (tea.Model, tea.Cmd) {
 			// for a slot) — the inverse of the `dd` that closed it.
 			if m.orch != nil && r.isWindowlessStructural() {
 				return m.wake(r)
+			}
+			// A detached agent (a live background/daemon or headless session) has no pane to
+			// connect to. Say so rather than quitting to a no-op jump the shell swallows.
+			if r.Kind == RowAgent && !r.hasWindow() {
+				m.setInfo("detached agent — no tmux pane to jump to")
+				return m, nil
 			}
 			m.chosen = &r
 		}
@@ -2134,7 +2145,7 @@ func (m model) bandBar(b agentBand, count, contentW int, folded bool, hl hlState
 func (m model) agentLeaf(r Row, w int, selected bool) string {
 	gutter, st := gutterFor(r)
 	nameW := max(w-statusColWidth, 1)
-	title := padRight(truncate(displayTitle(r.Title, r.TmuxSession), nameW), nameW)
+	title := padRight(truncate(leafTitle(r), nameW), nameW)
 	gutterSt, nameSt := st, nameColStyle
 	if selected {
 		gutterSt = gutterSt.Background(rowHL)
@@ -2204,7 +2215,7 @@ func (m model) leafRow(it renderItem, selected bool) string {
 	indent := strings.Repeat(" ", agentIndent)
 	windowW, nameW, hintW := m.colWidths()
 	win := padRight(truncate(it.window, windowW-1), windowW)
-	title := padRight(truncate(displayTitle(r.Title, r.TmuxSession), nameW), nameW)
+	title := padRight(truncate(leafTitle(r), nameW), nameW)
 
 	winSt, nameSt, hintSt := windowColStyle, nameColStyle, hintStyle
 	gutterSt := st
@@ -2245,6 +2256,17 @@ func gutterFor(r Row) (string, lipgloss.Style) {
 	default:
 		return " " + statusGlyph[r.Status] + " " + padRight(statusWord[r.Status], 4) + "  ", statusStyle[r.Status]
 	}
+}
+
+// leafTitle is the row's rendered name: its display title, prefixed with the detached marker
+// when it is a live agent with no window of its own, so a background/daemon or headless session
+// reads as un-jumpable in both lenses without disturbing the fixed status-gutter columns.
+func leafTitle(r Row) string {
+	t := displayTitle(r.Title, r.TmuxSession)
+	if r.Kind == RowAgent && !r.hasWindow() {
+		return detachedGlyph + " " + t
+	}
+	return t
 }
 
 // displayTitle drops a leading "<session>:" from a row title, since the session is

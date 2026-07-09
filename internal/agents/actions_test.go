@@ -394,7 +394,7 @@ func TestDeletePrimaryWithAgentBlocked(t *testing.T) {
 
 func TestDeleteAlwaysConfirms(t *testing.T) {
 	orch := &fakeOrch{dirty: false}
-	m := modelWith(t, orch, []Row{{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", Worktree: "feat", Dir: "/d"}})
+	m := modelWith(t, orch, []Row{{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", TmuxPane: "%1", Worktree: "feat", Dir: "/d"}})
 
 	// dd opens a confirmation and removes nothing yet — the safety gate.
 	nm, _ := m.startDelete()
@@ -454,7 +454,7 @@ func TestDeleteRefusedWithCoTenant(t *testing.T) {
 
 func TestDeleteConfirmCancelDoesNothing(t *testing.T) {
 	orch := &fakeOrch{dirty: false}
-	m := modelWith(t, orch, []Row{{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", Worktree: "feat", Dir: "/d"}})
+	m := modelWith(t, orch, []Row{{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", TmuxPane: "%1", Worktree: "feat", Dir: "/d"}})
 	nm, _ := m.startDelete()
 	m = nm.(model)
 	nm, _ = m.handleConfirmKey(key("n"))
@@ -468,7 +468,7 @@ func TestDeleteConfirmCancelDoesNothing(t *testing.T) {
 // safe default) and that ⏎ there cancels without removing anything.
 func TestDeleteConfirmDefaultsToCancel(t *testing.T) {
 	orch := &fakeOrch{dirty: false}
-	m := modelWith(t, orch, []Row{{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", Worktree: "feat", Dir: "/d"}})
+	m := modelWith(t, orch, []Row{{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", TmuxPane: "%1", Worktree: "feat", Dir: "/d"}})
 	nm, _ := m.startDelete()
 	m = nm.(model)
 	if m.confirmChoice != 0 {
@@ -485,7 +485,7 @@ func TestDeleteConfirmDefaultsToCancel(t *testing.T) {
 // activates it with ⏎ (no y keystroke), exercising the navigable-button path.
 func TestDeleteConfirmSelectThenEnter(t *testing.T) {
 	orch := &fakeOrch{dirty: false}
-	m := modelWith(t, orch, []Row{{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", Worktree: "feat", Dir: "/d"}})
+	m := modelWith(t, orch, []Row{{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", TmuxPane: "%1", Worktree: "feat", Dir: "/d"}})
 	nm, _ := m.startDelete()
 	m = nm.(model)
 	nm, _ = m.handleConfirmKey(key("right"))
@@ -502,7 +502,7 @@ func TestDeleteConfirmSelectThenEnter(t *testing.T) {
 
 func TestDeleteDirtyWorktreeEscalatesToForce(t *testing.T) {
 	orch := &fakeOrch{dirty: true}
-	m := modelWith(t, orch, []Row{{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", Worktree: "feat", Dir: "/d"}})
+	m := modelWith(t, orch, []Row{{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", TmuxPane: "%1", Worktree: "feat", Dir: "/d"}})
 
 	nm, _ := m.startDelete()
 	m = nm.(model)

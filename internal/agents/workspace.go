@@ -134,19 +134,14 @@ func (w *Workspace) Rows() ([]Row, error) {
 	if err != nil {
 		return nil, err
 	}
-	// The dash and headless verbs act on an agent through its tmux pane (jump, preview,
-	// send, close-window). An agent whose hook ran outside tmux has no pane, so it is not
-	// something this view can target or place in the tmux structure - it would otherwise
-	// render as an un-jumpable row (e.g. background/headless Claude sessions that share a
-	// repo's cwd, appearing as phantom agent rows in that repo). Drop it before recognition
-	// and bucketing so it neither lights up a repo on its own nor produces a dead row. The
-	// record stays on disk; the process-liveness GC still owns its removal.
-	agentList := make([]Agent, 0, len(all))
-	for _, a := range all {
-		if a.TmuxPane != "" {
-			agentList = append(agentList, a)
-		}
-	}
+	// Every live agent is surfaced, including one whose hook ran outside tmux (a
+	// background/daemon or headless Claude session, which Claude Code strips TMUX from). Such an
+	// agent has no pane to jump to, preview, or close, but it is real and running, so hiding it
+	// would misreport the fleet. It flows through recognition and bucketing like any other -
+	// grouped under its repo by cwd when one resolves, flat otherwise - and the view marks it
+	// as detached and gates the pane-dependent verbs on hasWindow. Liveness is the single
+	// existence signal (see ClaudeSource); the reconciler adds no separate presence gate.
+	agentList := all
 	panes, _ := w.panes.ListPanes() // best-effort: no tmux → every agent is a plain row
 
 	byPane := map[string]Agent{}     // pane id -> agent

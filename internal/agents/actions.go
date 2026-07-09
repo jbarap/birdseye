@@ -267,6 +267,8 @@ func (m model) startClose() (tea.Model, tea.Cmd) {
 // window and cannot be removed (`dD` is blocked on the anchor), so it must not suggest one.
 func nothingToCloseMsg(r Row) string {
 	switch {
+	case r.Kind == RowAgent && !r.hasWindow():
+		return "detached agent — no window to close"
 	case r.IsPrimary:
 		return "nothing to close — the repo base has no window"
 	case r.isManagedWorktree():
@@ -290,6 +292,13 @@ func (m model) startDelete() (tea.Model, tea.Cmd) {
 	}
 	if r.IsPrimary {
 		m.setError("the repo base cannot be deleted — dd closes its window")
+		return m, nil
+	}
+	// A detached agent (background/daemon or headless) has no window to close, so it cannot be
+	// cleared out of its worktree first; removing the worktree would pull it out from under a
+	// live agent. Refuse while it runs — the liveness GC drops it when the process exits.
+	if r.Kind == RowAgent && !r.hasWindow() {
+		m.setError("detached agent — no window to close; its worktree can't be removed while it runs")
 		return m, nil
 	}
 	// Sole-occupant guard: removing a worktree is permitted only when the target is the
