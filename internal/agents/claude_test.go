@@ -341,6 +341,48 @@ func TestParseProcStatHandlesCommWithParens(t *testing.T) {
 	}
 }
 
+// TestBgSessionEndDeletesRecord pins the background-session GC: a bg session records its kind
+// and, unlike an interactive session, has its record removed on SessionEnd (its anchor may be
+// shared, so pid liveness cannot be trusted to reclaim it), while an interactive session's
+// record survives SessionEnd for the liveness GC to own.
+func TestBgSessionEndDeletesRecord(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", dir)
+	t.Setenv("TMUX", "")
+	stubNoTmuxRecovery(t)
+	recs := recordsDir(t, dir)
+
+	// Interactive session: SessionEnd leaves the record in place.
+	if err := handleHook("UserPromptSubmit", strings.NewReader(`{"session_id":"fg"}`), notifyPolicy{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := handleHook("SessionEnd", strings.NewReader(`{"session_id":"fg"}`), notifyPolicy{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(recs, sanitize("fg")+".json")); err != nil {
+		t.Fatalf("interactive record must survive SessionEnd: %v", err)
+	}
+
+	// Background session: kind is captured, and SessionEnd removes the record.
+	t.Setenv("CLAUDE_CODE_SESSION_KIND", "bg")
+	if err := handleHook("UserPromptSubmit", strings.NewReader(`{"session_id":"bg"}`), notifyPolicy{}); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := readRecord(recs, "bg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Kind != "bg" {
+		t.Fatalf("bg session should record kind=bg, got %q", rec.Kind)
+	}
+	if err := handleHook("SessionEnd", strings.NewReader(`{"session_id":"bg"}`), notifyPolicy{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(recs, sanitize("bg")+".json")); !os.IsNotExist(err) {
+		t.Fatalf("bg record should be deleted on SessionEnd, stat err=%v", err)
+	}
+}
+
 func TestAgentsReclaimsDeadProcesses(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now()

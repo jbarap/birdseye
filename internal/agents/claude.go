@@ -558,10 +558,28 @@ func handleHook(event string, r io.Reader, policy notifyPolicy) error {
 	}
 
 	rec, _ := readRecord(recDir, in.SessionID)
+	// Claude Code marks background/daemon sessions with CLAUDE_CODE_SESSION_KIND=bg. Persist it
+	// verbatim (the raw fact, interpreted at read time), falling back to any kind already on the
+	// record so a payload that omits it does not erase what an earlier event captured.
+	kind := os.Getenv("CLAUDE_CODE_SESSION_KIND")
+	if kind == "" {
+		kind = rec.Kind
+	}
+	// A background session's anchor process can be shared across sessions (a daemon that outlives
+	// any one of them), so pid liveness alone may never reclaim its record. SessionEnd is the
+	// authoritative end of a session, so for a bg session remove the record now rather than
+	// leaving a row that never clears; the pid GC stays the backstop for a bg crash with no
+	// SessionEnd. Interactive sessions keep their record until the process exits (below), so
+	// their last status still lingers.
+	if event == "SessionEnd" && kind == "bg" {
+		_ = os.Remove(filepath.Join(recDir, sanitize(in.SessionID)+".json"))
+		return nil
+	}
 	// Capture the prior status before the event overwrites it, so a notification can fire on
 	// the transition (the edge) rather than on merely being in a state.
 	old := rec.Status
 	rec.SessionID = in.SessionID
+	rec.Kind = kind
 	// SessionEnd produces no terminal status: the session keeps its last status until its
 	// Claude process exits and the liveness GC reclaims it. Every other event maps to one.
 	if event != "SessionEnd" {

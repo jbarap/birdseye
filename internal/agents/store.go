@@ -17,7 +17,12 @@ type record struct {
 	// that process's life. The liveness GC compares it against the live pid's current token so a
 	// recycled pid does not keep a dead agent's record alive. Empty on platforms without /proc or
 	// on records predating this field, where the GC degrades to a bare liveness check.
-	PIDStart       string    `json:"pid_start,omitempty"`
+	PIDStart string `json:"pid_start,omitempty"`
+	// Kind is Claude Code's session kind (CLAUDE_CODE_SESSION_KIND), e.g. "bg" for a
+	// background/daemon session. Empty for an ordinary interactive session. It scopes the
+	// SessionEnd-terminal GC (a bg session's anchor may be shared, so it cannot rely on pid
+	// death) and lets the view mark detached sessions.
+	Kind           string    `json:"kind,omitempty"`
 	TmuxSession    string    `json:"tmux_session"`
 	TmuxWindow     string    `json:"tmux_window"`
 	TmuxWindowName string    `json:"tmux_window_name"`
