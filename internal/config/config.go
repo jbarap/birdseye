@@ -131,23 +131,24 @@ type Agents struct {
 	// fraction in (0,1): the stacked Agents/Projects lenses take this share of the width on the
 	// left and the preview fills the rest at full height. Zero keeps the built-in default.
 	Split float64 `toml:"split"`
-	// Notify configures the out-of-band notifications birdseye emits when an agent crosses
-	// into an urgent status. An absent [agents.notify] table means both edges notify with
-	// automatic delivery.
+	// Notify configures the out-of-band notifications birdseye emits about agent status. An absent
+	// [agents.notify] table means both notification classes are on with automatic delivery.
 	Notify Notify `toml:"notify"`
 }
 
-// Notify configures agent notifications. The edge flags default to true; that default lives in
-// Default() (like Dir.UseZoxide), so an absent [agents.notify] table means both edges notify
+// Notify configures agent notifications. The two class flags default to true; that default lives
+// in Default() (like Dir.UseZoxide), so an absent [agents.notify] table means both classes notify
 // while an explicit `false` in the file overrides it.
 type Notify struct {
 	// Command is a shell command run to deliver each notification, receiving the alert as the
 	// environment variables BE_AGENT, BE_STATUS, BE_REPO, BE_CWD, BE_MESSAGE. Empty selects the
 	// auto-detected platform notifier (notify-send/osascript, terminal-bell fallback).
 	Command string `toml:"command"`
-	// NeedsAttention gates the "an agent entered needs-attention" edge.
+	// NeedsAttention gates the immediate escalation: an agent entering needs-attention (a block on
+	// the user). This is the one always-on push; it is never batched.
 	NeedsAttention bool `toml:"needs_attention"`
-	// Finished gates the "an agent finished its turn (working -> idle)" edge.
+	// Finished gates the run-settled digest: a single summary emitted when the last working agent
+	// settles (working -> idle with no other agent still working), rather than a ping per finish.
 	Finished bool `toml:"finished"`
 }
 

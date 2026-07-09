@@ -155,6 +155,56 @@ func writeMutes(dir string, set map[string]bool) error {
 	return os.Rename(tmp, final)
 }
 
+// notifyBatchFile is the single per-state-dir file accumulating the titles of agents that have
+// finished (working -> idle) while a run is still active, so the run-settled digest can name them.
+// It lives at the state root beside mutes.json because it is birdseye-owned derived state written
+// across independent hook processes, not per-session data. It is best-effort like the notification
+// itself: a lost or duplicated entry only skews one digest's list, never blocks work.
+const notifyBatchFile = "notify-batch.json"
+
+// appendNotifyBatch records one finished agent's title in the pending digest batch. It
+// read-modify-writes the file atomically; a concurrent hook can still race and drop an entry, which
+// is acceptable for a best-effort digest.
+func appendNotifyBatch(dir, title string) error {
+	titles := readNotifyBatch(dir)
+	titles = append(titles, title)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(titles, "", "  ")
+	if err != nil {
+		return err
+	}
+	final := filepath.Join(dir, notifyBatchFile)
+	tmp := final + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, final)
+}
+
+// readNotifyBatch loads the pending digest batch. A missing or corrupt file yields no titles, so
+// the batch simply starts empty.
+func readNotifyBatch(dir string) []string {
+	data, err := os.ReadFile(filepath.Join(dir, notifyBatchFile))
+	if err != nil {
+		return nil
+	}
+	var titles []string
+	if err := json.Unmarshal(data, &titles); err != nil {
+		return nil
+	}
+	return titles
+}
+
+// takeNotifyBatch reads the pending digest batch and clears it, so the flushed run's finishes are
+// not carried into the next run's digest.
+func takeNotifyBatch(dir string) []string {
+	titles := readNotifyBatch(dir)
+	_ = os.Remove(filepath.Join(dir, notifyBatchFile))
+	return titles
+}
+
 // dashStateFile is the single per-state-dir file holding the dash's persisted view state. It is a
 // JSON object so more view state can be added later without a format migration; only the view reads
 // and writes it.

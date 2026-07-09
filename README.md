@@ -44,11 +44,14 @@ birdseye draws on ideas/visuals/concepts from these projects:
   navigates with **vim-native, configurable** keys. It groups what it shows by
   **repository** (see below), letting you spin agents up and tear them down in place.
   Press `s` to open a new session from the same fuzzy picker without leaving the view.
-- **Notifications** — with the Claude hooks installed, birdseye fires an OS notification when an
-  agent **needs you** (a permission/input block) or **finishes** a turn, straight from the hook so
-  it reaches you even when the dash is closed. A muted agent is never notified. Delivery
-  auto-detects `notify-send`/`osascript`, or set `[agents.notify].command` to route it yourself
-  (it gets `BE_AGENT`, `BE_STATUS`, `BE_REPO`, `BE_CWD`, `BE_MESSAGE`); see `be config --defaults`.
+- **Notifications** — with the Claude hooks installed, birdseye pushes only what needs you.
+  The contract: silence means it is working, a ping means you are needed, a digest means it is
+  done. An agent that **needs you** (a permission/input block) pushes immediately; a routine
+  finish stays quiet on the `be agents` surface, and one **run-settled digest** fires when the
+  last working agent settles - not a ping per agent. A muted agent is never notified. Toggle the
+  two classes with `[agents.notify].needs_attention` / `finished`. Delivery auto-detects
+  `notify-send`/`osascript`, or set `[agents.notify].command` to route it yourself (it gets
+  `BE_AGENT`, `BE_STATUS`, `BE_REPO`, `BE_CWD`, `BE_MESSAGE`); see `be config --defaults`.
 - **`be agents`** — the same agent lifecycle headlessly, for scripts and orchestrating
   agents: `list`, `status`, `spawn`, `send`, `jump`, `close`, `delete`. Data verbs emit
   `--json`. Work is addressed by a derived `repo/worktree` handle (a worktreeless agent

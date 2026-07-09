@@ -82,13 +82,20 @@ func processAlive(pid int) bool {
 // older record, or a platform without /proc) or a currently unreadable start time degrades to
 // the bare liveness check, so a live agent is never falsely reclaimed on a transient read miss.
 func (s *ClaudeSource) recordAlive(r record) bool {
-	if !s.alive(r.PID) {
+	return recordLiveWith(r, s.alive, s.startTime)
+}
+
+// recordLiveWith is the liveness rule of recordAlive with its process probes passed in, so the
+// source (test-injected probes) and the hook path (real processAlive/procStartTime) share one
+// definition of "still the same live process" and cannot drift.
+func recordLiveWith(r record, alive func(int) bool, startTime func(int) string) bool {
+	if !alive(r.PID) {
 		return false
 	}
-	if r.PIDStart == "" || s.startTime == nil {
+	if r.PIDStart == "" || startTime == nil {
 		return true
 	}
-	if cur := s.startTime(r.PID); cur != "" && cur != r.PIDStart {
+	if cur := startTime(r.PID); cur != "" && cur != r.PIDStart {
 		return false
 	}
 	return true
@@ -621,7 +628,7 @@ func handleHook(event string, r io.Reader, policy notifyPolicy) error {
 	}
 	// Notification is best-effort and downstream of the record: a delivery problem must never
 	// fail the hook chain or lose the status write. Mute lives at the state root, not with records.
-	maybeNotify(root, old, rec, policy)
+	maybeNotify(root, recDir, old, rec, policy)
 	return nil
 }
 
@@ -674,41 +681,101 @@ func classifyEdge(old, cur Status) edge {
 	return edgeNone
 }
 
-// maybeNotify emits a notification for a qualifying, enabled edge on a non-muted agent. It
-// swallows every error: notification is best-effort and must not disturb the hook.
-func maybeNotify(dir string, old Status, rec record, policy notifyPolicy) {
+// maybeNotify decides what this agent's status transition pushes out of band. It swallows every
+// error: notification is best-effort and must not disturb the hook. The policy is:
+//   - Entering needs-attention pushes immediately (the block on the user) - the one always-on
+//     escalation, never batched.
+//   - A finish (working -> idle) is routine progress and pushes nothing on its own; it accrues
+//     into a batch and flushes as a single run-settled digest only when this agent was the last
+//     live worker to settle. Everything else is visible on the `be agents` pull surface.
+//
+// A muted agent is fully suppressed: no escalation, no digest, no batch entry.
+func maybeNotify(dir, recDir string, old Status, rec record, policy notifyPolicy) {
 	e := classifyEdge(old, rec.Status)
 	if e == edgeNone || policy.notifier == nil {
 		return
 	}
-	if e == edgeNeedsAttention && !policy.needsAttention {
-		return
-	}
-	if e == edgeFinished && !policy.finished {
-		return
-	}
-	// Reuse the per-location mute as the suppression control: a muted agent is never notified.
 	mutes, _ := readMutes(dir)
 	if mutes[locationKey(rec.TmuxPane, rec.TmuxSession, rec.TmuxWindow, rec.SessionID)] {
 		return
 	}
-	_ = policy.notifier.Notify(notificationFor(e, rec))
-}
-
-// notificationFor builds the Notification for an edge from the agent's record.
-func notificationFor(e edge, rec record) Notification {
-	msg := rec.Title
 	switch e {
 	case edgeNeedsAttention:
-		msg = rec.Title + " needs you"
+		if !policy.needsAttention {
+			return
+		}
+		_ = policy.notifier.Notify(notificationFor(rec))
 	case edgeFinished:
-		msg = rec.Title + " finished"
+		if !policy.finished {
+			return
+		}
+		live := func(r record) bool { return recordLiveWith(r, processAlive, procStartTime) }
+		recs, _ := readRecords(recDir)
+		// Not the last to settle: the run is still active. Record the finish for the digest and
+		// stay silent - the pull surface already shows the new idle status.
+		if anyLiveWorker(recs, rec.SessionID, live) {
+			_ = appendNotifyBatch(dir, rec.Title)
+			return
+		}
+		// Last live worker settled: flush one digest for the whole run.
+		finished := dedup(append(takeNotifyBatch(dir), rec.Title))
+		_ = policy.notifier.Notify(digestNotification(finished, liveBlockedTitles(recs, rec.SessionID, live)))
 	}
+}
+
+// anyLiveWorker reports whether any record other than exceptID is a live, working agent. Only live
+// records count, so a crashed agent whose record is stuck at working does not hold the run open
+// and suppress every future digest.
+func anyLiveWorker(recs []record, exceptID string, live func(record) bool) bool {
+	for _, r := range recs {
+		if r.SessionID == exceptID || r.Status != StatusWorking {
+			continue
+		}
+		if live(r) {
+			return true
+		}
+	}
+	return false
+}
+
+// liveBlockedTitles returns the titles of live agents (other than exceptID) currently in
+// needs-attention. A blocked agent is not "working", so it does not hold the run open; when the
+// run settles the digest names these first as the anomaly worth acting on.
+func liveBlockedTitles(recs []record, exceptID string, live func(record) bool) []string {
+	var out []string
+	for _, r := range recs {
+		if r.SessionID == exceptID || r.Status != StatusNeedsAttention {
+			continue
+		}
+		if live(r) {
+			out = append(out, r.Title)
+		}
+	}
+	return dedup(out)
+}
+
+// dedup returns titles with duplicates removed, preserving first-seen order (an agent that
+// finished twice within one run is named once).
+func dedup(titles []string) []string {
+	seen := make(map[string]bool, len(titles))
+	out := titles[:0:0]
+	for _, t := range titles {
+		if seen[t] {
+			continue
+		}
+		seen[t] = true
+		out = append(out, t)
+	}
+	return out
+}
+
+// notificationFor builds the immediate needs-attention escalation from the agent's record.
+func notificationFor(rec record) Notification {
 	return Notification{
 		Agent:   rec.Title,
 		Status:  rec.Status,
 		CWD:     rec.CWD,
-		Message: msg,
+		Message: rec.Title + " needs you",
 	}
 }
 

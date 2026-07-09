@@ -7,8 +7,8 @@ import (
 	"testing"
 )
 
-// TestNotifyDefaults pins that an absent [agents.notify] table means both edges notify with
-// automatic delivery.
+// TestNotifyDefaults pins that an absent [agents.notify] table means both notification classes
+// (escalation and run-settled digest) are on with automatic delivery.
 func TestNotifyDefaults(t *testing.T) {
 	cfg, err := LoadFrom(filepath.Join(t.TempDir(), "nope.toml"))
 	if err != nil {
@@ -40,7 +40,7 @@ func TestNotifyExplicitFalseWins(t *testing.T) {
 	}
 	n := cfg.Agents.Notify
 	if n.Finished {
-		t.Error("finished=false should disable the finished edge")
+		t.Error("finished=false should disable the run-settled digest")
 	}
 	if !n.NeedsAttention {
 		t.Error("an unset needs_attention should stay on when finished is set false")
