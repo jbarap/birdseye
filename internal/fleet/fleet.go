@@ -103,16 +103,20 @@ func kindOf(r agents.Row) string {
 }
 
 // handleOf derives a row's address: `<repo>` for the primary worktree (base),
-// `<repo>/<worktree>` for a linked worktree, the tmux pane id for a worktreeless agent.
-// The base keys on IsPrimary so a recognized agent in it still addresses as `<repo>`.
+// `<repo>/<worktree>` for a linked worktree, the tmux pane id for a worktreeless agent, and
+// the session id for a detached agent (no pane, no worktree). The base keys on IsPrimary so a
+// recognized agent in it still addresses as `<repo>`; the session-id tier keeps a
+// background/daemon or headless agent addressable rather than yielding an empty handle.
 func handleOf(r agents.Row) string {
 	switch {
 	case r.IsPrimary:
 		return r.Repo
 	case r.Worktree != "" && r.Repo != "":
 		return r.Repo + "/" + r.Worktree
-	default:
+	case r.TmuxPane != "":
 		return r.TmuxPane
+	default:
+		return r.SessionID
 	}
 }
 

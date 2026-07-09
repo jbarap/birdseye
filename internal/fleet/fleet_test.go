@@ -132,6 +132,36 @@ func TestHandlesAndKinds(t *testing.T) {
 	}
 }
 
+// TestDetachedAgentAddressesBySessionID pins the handle fallback for a detached agent (a
+// background/daemon or headless session with no pane and no recognized worktree): it addresses
+// by its session id rather than an empty handle, and resolves back to itself.
+func TestDetachedAgentAddressesBySessionID(t *testing.T) {
+	src := fakeSource{list: []agents.Agent{
+		// No tmux location and a cwd outside any known repo: an incidental detached agent.
+		{SessionID: "bg-sess-0001", CWD: "/tmp/scratch", Title: "scratch", Status: agents.StatusWorking},
+	}}
+	f := New(fakeClient(), config.Config{}, src, fakePanes{}, fakeRepos{})
+
+	recs, err := f.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != 1 || recs[0].Handle != "bg-sess-0001" {
+		t.Fatalf("a detached agent should address by its session id, got %+v", recs)
+	}
+	if recs[0].Kind != "agent" || recs[0].Pane != "" {
+		t.Fatalf("a detached agent is a paneless incidental agent, got %+v", recs[0])
+	}
+
+	got, err := f.Resolve("bg-sess-0001")
+	if err != nil {
+		t.Fatalf("resolve detached handle: %v", err)
+	}
+	if got.Handle != "bg-sess-0001" {
+		t.Fatalf("resolve should round-trip the session-id handle, got %+v", got)
+	}
+}
+
 // TestPrimaryWorktreeWithAgentAddressesAsBase guards the conflation fix end-to-end: a
 // recognized agent in the primary worktree must still address as `<repo>` and resolve as a
 // primary (base), so `be agents delete` refuses it cleanly instead of `proj/proj` slipping
