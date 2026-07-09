@@ -101,24 +101,6 @@ func readRecord(dir, sessionID string) (record, error) {
 // place. Only the view writes it; the source reads and prunes it.
 const muteFile = "mutes.json"
 
-// migrateLegacyMutes relocates mutes.json from the old agents/ subdirectory up to the state root,
-// a one-time move for state written before agent records and dash view state were separated. It is
-// best-effort and idempotent: a no-op once mutes.json is at the root, or was never written.
-func migrateLegacyMutes(root string) {
-	newPath := filepath.Join(root, muteFile)
-	if _, err := os.Stat(newPath); err == nil {
-		return
-	}
-	oldPath := filepath.Join(root, "agents", muteFile)
-	data, err := os.ReadFile(oldPath)
-	if err != nil {
-		return
-	}
-	if os.MkdirAll(root, 0o755) == nil && os.WriteFile(newPath, data, 0o644) == nil {
-		_ = os.Remove(oldPath)
-	}
-}
-
 // readMutes loads the set of muted location keys under dir. A missing file yields an empty
 // set, so mute is simply off until the user mutes something.
 func readMutes(dir string) (map[string]bool, error) {
