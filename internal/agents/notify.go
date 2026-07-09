@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 )
 
 // Notification is one out-of-band alert about an agent crossing an urgent status edge.
@@ -27,6 +28,49 @@ type Notification struct {
 // error so a delivery problem never disturbs the agent's hook chain.
 type Notifier interface {
 	Notify(n Notification) error
+}
+
+// digestTitleCap bounds how many finished-agent titles the run-settled digest names before
+// collapsing the remainder to "(+N more)", so a large run yields a readable one-liner.
+const digestTitleCap = 3
+
+// digestNotification builds the single run-settled digest emitted when the last live worker
+// settles. finished is the agents that hit working -> idle during the run; blocked is any agent
+// still in needs-attention. Blocked agents are the anomaly and are named first.
+func digestNotification(finished, blocked []string) Notification {
+	return Notification{
+		Agent:   fmt.Sprintf("%d finished", len(finished)),
+		Status:  StatusIdle,
+		Message: finishDigest(finished, blocked),
+	}
+}
+
+// finishDigest renders the digest line: blocked agents first ("web-api needs you"), then the
+// finished titles up to digestTitleCap with the rest collapsed ("finished: worker, docs (+2 more)").
+func finishDigest(finished, blocked []string) string {
+	var parts []string
+	if len(blocked) > 0 {
+		verb := "needs you"
+		if len(blocked) > 1 {
+			verb = "need you"
+		}
+		parts = append(parts, strings.Join(blocked, ", ")+" "+verb)
+	}
+	if len(finished) > 0 {
+		parts = append(parts, "finished: "+cappedList(finished, digestTitleCap))
+	}
+	if len(parts) == 0 {
+		return "run settled"
+	}
+	return strings.Join(parts, "; ")
+}
+
+// cappedList joins the first n items with commas and collapses any remainder to "(+N more)".
+func cappedList(items []string, n int) string {
+	if len(items) <= n {
+		return strings.Join(items, ", ")
+	}
+	return fmt.Sprintf("%s (+%d more)", strings.Join(items[:n], ", "), len(items)-n)
 }
 
 // notifierFor returns the notifier selected by command: the user's command template when

@@ -101,6 +101,171 @@ func TestHandleHookNotifiesOnEdges(t *testing.T) {
 	}
 }
 
+// TestAnyLiveWorker pins that only a live, working, non-self record holds a run open: a dead
+// worker (not live) and idle/self records do not.
+func TestAnyLiveWorker(t *testing.T) {
+	live := func(r record) bool { return r.PID > 0 } // pid>0 stands in for "live" here
+	recs := []record{
+		{SessionID: "self", Status: StatusWorking, PID: 1},
+		{SessionID: "idle", Status: StatusIdle, PID: 1},
+		{SessionID: "deadworker", Status: StatusWorking, PID: 0}, // stuck at working but not live
+	}
+	if anyLiveWorker(recs, "self", live) {
+		t.Fatal("only a dead worker plus idle/self remain; the run should read as settled")
+	}
+	recs = append(recs, record{SessionID: "liveworker", Status: StatusWorking, PID: 2})
+	if !anyLiveWorker(recs, "self", live) {
+		t.Fatal("a live working sibling should hold the run open")
+	}
+}
+
+// TestNotifyBatchStore pins append order, take-and-clear, and empty-on-missing.
+func TestNotifyBatchStore(t *testing.T) {
+	dir := t.TempDir()
+	if got := readNotifyBatch(dir); len(got) != 0 {
+		t.Fatalf("a missing batch should be empty, got %v", got)
+	}
+	_ = appendNotifyBatch(dir, "a")
+	_ = appendNotifyBatch(dir, "b")
+	got := takeNotifyBatch(dir)
+	if len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Fatalf("batch should preserve append order, got %v", got)
+	}
+	if got := readNotifyBatch(dir); len(got) != 0 {
+		t.Fatal("take should clear the batch")
+	}
+}
+
+// TestFinishDigest pins the digest line: blocked agents first, finished titles capped.
+func TestFinishDigest(t *testing.T) {
+	cases := []struct {
+		finished, blocked []string
+		want              string
+	}{
+		{[]string{"a", "b"}, nil, "finished: a, b"},
+		{[]string{"a", "b", "c", "d", "e"}, nil, "finished: a, b, c (+2 more)"},
+		{[]string{"w"}, []string{"api"}, "api needs you; finished: w"},
+		{nil, []string{"api", "db"}, "api, db need you"},
+	}
+	for _, c := range cases {
+		if got := finishDigest(c.finished, c.blocked); got != c.want {
+			t.Errorf("finishDigest(%v,%v) = %q, want %q", c.finished, c.blocked, got, c.want)
+		}
+	}
+}
+
+// TestHandleHookDigestOnSettle pins the core policy: a finish while a sibling is still working is
+// silent (it batches), and the last agent to settle flushes exactly one digest naming both.
+func TestHandleHookDigestOnSettle(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", dir)
+	t.Setenv("TMUX", "")
+	stubNoTmuxRecovery(t)
+	f := &fakeNotifier{}
+	p := onPolicy(f)
+
+	// A live, working sibling so s1's finish is not the last to settle.
+	if err := writeRecord(recordsDir(t, dir), record{SessionID: "s2", Status: StatusWorking, Title: "bar", PID: os.Getpid()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := handleHook("UserPromptSubmit", strings.NewReader(`{"session_id":"s1","cwd":"/r/foo"}`), p); err != nil {
+		t.Fatal(err)
+	}
+	if err := handleHook("Stop", strings.NewReader(`{"session_id":"s1","cwd":"/r/foo"}`), p); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.calls) != 0 {
+		t.Fatalf("a finish with a sibling still working must be silent, got %d: %+v", len(f.calls), f.calls)
+	}
+	// s2 finishes last: the run settles into one digest naming both.
+	if err := handleHook("Stop", strings.NewReader(`{"session_id":"s2","cwd":"/r/bar"}`), p); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.calls) != 1 {
+		t.Fatalf("run settling should push exactly one digest, got %d: %+v", len(f.calls), f.calls)
+	}
+	if msg := f.calls[0].Message; !strings.Contains(msg, "foo") || !strings.Contains(msg, "bar") {
+		t.Errorf("digest should name both finished agents, got %q", msg)
+	}
+}
+
+// TestHandleHookStaleWorkerDoesNotHoldRun pins that a crashed agent stuck at working (pid gone) does
+// not suppress the digest forever.
+func TestHandleHookStaleWorkerDoesNotHoldRun(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", dir)
+	t.Setenv("TMUX", "")
+	stubNoTmuxRecovery(t)
+	f := &fakeNotifier{}
+	p := onPolicy(f)
+
+	// A stale working record whose process is gone (pid 0 -> not live).
+	if err := writeRecord(recordsDir(t, dir), record{SessionID: "dead", Status: StatusWorking, Title: "dead", PID: 0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := handleHook("UserPromptSubmit", strings.NewReader(`{"session_id":"s1","cwd":"/r/foo"}`), p); err != nil {
+		t.Fatal(err)
+	}
+	if err := handleHook("Stop", strings.NewReader(`{"session_id":"s1","cwd":"/r/foo"}`), p); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.calls) != 1 {
+		t.Fatalf("a dead working record must not hold the run open; expected 1 digest, got %d", len(f.calls))
+	}
+}
+
+// TestHandleHookEscalationImmediateWhileWorking pins that entering needs-attention pushes at once
+// even while other agents are still working - escalations are never batched.
+func TestHandleHookEscalationImmediateWhileWorking(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", dir)
+	t.Setenv("TMUX", "")
+	stubNoTmuxRecovery(t)
+	f := &fakeNotifier{}
+	p := onPolicy(f)
+
+	if err := writeRecord(recordsDir(t, dir), record{SessionID: "s2", Status: StatusWorking, Title: "bar", PID: os.Getpid()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := handleHook("UserPromptSubmit", strings.NewReader(`{"session_id":"s1","cwd":"/r/foo"}`), p); err != nil {
+		t.Fatal(err)
+	}
+	if err := handleHook("Notification", strings.NewReader(`{"session_id":"s1","cwd":"/r/foo"}`), p); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.calls) != 1 || !strings.Contains(f.calls[0].Message, "needs you") {
+		t.Fatalf("escalation should push immediately while a sibling works, got %+v", f.calls)
+	}
+}
+
+// TestHandleHookDigestNamesBlockedFirst pins that when the run settles with an agent still blocked,
+// the digest names the blocked agent first.
+func TestHandleHookDigestNamesBlockedFirst(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", dir)
+	t.Setenv("TMUX", "")
+	stubNoTmuxRecovery(t)
+	f := &fakeNotifier{}
+	p := onPolicy(f)
+
+	// A live, blocked sibling: not working, so it does not hold the run open.
+	if err := writeRecord(recordsDir(t, dir), record{SessionID: "s2", Status: StatusNeedsAttention, Title: "api", PID: os.Getpid()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := handleHook("UserPromptSubmit", strings.NewReader(`{"session_id":"s1","cwd":"/r/foo"}`), p); err != nil {
+		t.Fatal(err)
+	}
+	if err := handleHook("Stop", strings.NewReader(`{"session_id":"s1","cwd":"/r/foo"}`), p); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.calls) != 1 {
+		t.Fatalf("expected one digest, got %d: %+v", len(f.calls), f.calls)
+	}
+	if msg := f.calls[0].Message; !strings.HasPrefix(msg, "api needs you") {
+		t.Errorf("digest should name the blocked agent first, got %q", msg)
+	}
+}
+
 // TestHandleHookMuteSuppresses pins that a muted location emits no notifications.
 func TestHandleHookMuteSuppresses(t *testing.T) {
 	dir := t.TempDir()
