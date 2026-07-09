@@ -39,7 +39,6 @@ func NewClaudeSource() (*ClaudeSource, error) {
 	if err != nil {
 		return nil, err
 	}
-	migrateLegacyMutes(root)
 	recDir, err := agentsDir()
 	if err != nil {
 		return nil, err
@@ -429,7 +428,6 @@ func handleHook(event string, r io.Reader, policy notifyPolicy) error {
 	if err != nil {
 		return err
 	}
-	migrateLegacyMutes(root)
 	recDir, err := agentsDir()
 	if err != nil {
 		return err

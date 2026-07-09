@@ -461,30 +461,3 @@ func TestHandleHookPersistsCWD(t *testing.T) {
 		t.Errorf("row should carry agent working directory, got %q", row.AgentDir)
 	}
 }
-
-// TestMigrateLegacyMutes moves a mutes.json written under the old agents/ subdir up to the state
-// root, removes the stale copy, and never clobbers an existing root file with a legacy one.
-func TestMigrateLegacyMutes(t *testing.T) {
-	root := t.TempDir()
-	legacy := filepath.Join(root, "agents")
-	if err := writeMutes(legacy, map[string]bool{"id:s1": true}); err != nil {
-		t.Fatal(err)
-	}
-
-	migrateLegacyMutes(root)
-	if got, err := readMutes(root); err != nil || !got["id:s1"] {
-		t.Fatalf("mute should be migrated to the root, got %v err %v", got, err)
-	}
-	if _, err := os.Stat(filepath.Join(legacy, muteFile)); !os.IsNotExist(err) {
-		t.Fatalf("legacy mutes.json should be removed after migration")
-	}
-
-	// A stale legacy file must not overwrite the migrated root file.
-	if err := writeMutes(legacy, map[string]bool{"id:s2": true}); err != nil {
-		t.Fatal(err)
-	}
-	migrateLegacyMutes(root)
-	if got, _ := readMutes(root); got["id:s2"] || !got["id:s1"] {
-		t.Fatalf("existing root mutes must win over a stale legacy file, got %v", got)
-	}
-}
