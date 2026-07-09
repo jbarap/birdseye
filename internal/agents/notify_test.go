@@ -43,8 +43,15 @@ func TestClassifyEdge(t *testing.T) {
 	}
 }
 
-// stateDir returns the resolved state dir for a test whose XDG_STATE_HOME is dir.
+// stateDir returns the resolved state root for a test whose XDG_STATE_HOME is dir, where mutes.json
+// lives (agent records live under its agents subdirectory).
 func stateDir(t *testing.T, dir string) string {
+	t.Helper()
+	return filepath.Join(dir, "birdseye")
+}
+
+// recordsDir returns the resolved agent-records directory for a test whose XDG_STATE_HOME is dir.
+func recordsDir(t *testing.T, dir string) string {
 	t.Helper()
 	return filepath.Join(dir, "birdseye", "agents")
 }
@@ -160,7 +167,7 @@ func TestHandleHookNotifyIsBestEffort(t *testing.T) {
 	if err := handleHook("Stop", strings.NewReader(`{"session_id":"s1"}`), p); err != nil {
 		t.Fatalf("a notifier error must not fail the hook: %v", err)
 	}
-	rec, err := readRecord(stateDir(t, dir), "s1")
+	rec, err := readRecord(recordsDir(t, dir), "s1")
 	if err != nil {
 		t.Fatal(err)
 	}
