@@ -244,6 +244,45 @@ func TestWalkToClaudeFindsSessionProcess(t *testing.T) {
 	}
 }
 
+// TestWalkToClaudeClimbsToOutermostClaude pins that a daemon/background session anchors on the
+// durable session process (the top of the contiguous Claude chain), not the inner, rotatable
+// bg-spare/bg-pty-host where the hook actually fires. This is the Claude Code daemon layout:
+// claude --resume (client) -> claude daemon run -> bg-pty-host -> bg-spare -> hook shell.
+func TestWalkToClaudeClimbsToOutermostClaude(t *testing.T) {
+	// hook(30) -> bg-spare(24) -> bg-pty-host(23) -> daemon(22) -> client(21) -> zsh(20).
+	// argv[0] is "claude" for every host (Claude renames only comm, not argv0).
+	chain := map[int]struct {
+		ppid  int
+		argv0 string
+	}{
+		30: {24, "sh"}, // ephemeral hook shell
+		24: {23, "claude"},
+		23: {22, "claude"},
+		22: {21, "/home/u/.local/bin/claude"},
+		21: {20, "claude"}, // the durable client
+		20: {1, "zsh"},
+	}
+	parent := func(pid int) (int, string) { return chain[pid].ppid, chain[pid].argv0 }
+	if got, ok := walkToClaude(30, parent); !ok || got != 21 {
+		t.Fatalf("walk should climb to the outermost claude (client 21), got pid=%d ok=%v", got, ok)
+	}
+
+	// A non-Claude gap ends the chain: a Claude launched inside another Claude's shell must
+	// resolve to its own (inner) client, not the outer session. inner(12) -> zsh(11) -> outer(10).
+	nested := map[int]struct {
+		ppid  int
+		argv0 string
+	}{
+		13: {12, "sh"}, // hook shell under the inner session
+		12: {11, "claude"},
+		11: {10, "zsh"},
+		10: {1, "claude"},
+	}
+	if got, ok := walkToClaude(13, func(p int) (int, string) { return nested[p].ppid, nested[p].argv0 }); !ok || got != 12 {
+		t.Fatalf("walk should stop at the inner claude across a gap, got pid=%d ok=%v", got, ok)
+	}
+}
+
 // TestParsePsParentKeysOnArgv0 pins that the parent lookup identifies a process by argv[0],
 // not comm. Claude Code renames the comm of its background host processes to the version
 // string, so a comm-based match would miss the durable process a daemon/background session

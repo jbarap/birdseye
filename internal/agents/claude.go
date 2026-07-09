@@ -75,10 +75,9 @@ func processAlive(pid int) bool {
 // sessionPID returns the pid of the Claude session process that owns this hook
 // invocation. Claude Code runs each hook in a short-lived shell, so os.Getppid()
 // is that shell — it exits the instant the hook returns, which would make a live
-// agent's recorded pid dead within milliseconds. The durable handle is the
-// nearest ancestor that is the Claude process itself, so we walk up to it. If no
-// Claude ancestor is found (an unexpected install), fall back to the immediate
-// parent as a best effort.
+// agent's recorded pid dead within milliseconds. The durable handle is the outermost
+// Claude ancestor (see walkToClaude), so we walk up to it. If no Claude ancestor is
+// found (an unexpected install), fall back to the immediate parent as a best effort.
 func sessionPID() int {
 	parent := os.Getppid()
 	if pid, ok := walkToClaude(parent, procParent); ok {
@@ -87,22 +86,35 @@ func sessionPID() int {
 	return parent
 }
 
-// walkToClaude walks the ancestry starting at pid, returning the first ancestor
-// (including the start) whose command is the Claude binary. parent reports a
-// pid's parent pid and command name; the bound and the pid<=1 guard keep the walk
-// finite even if the chain is cyclic or rooted at init.
-func walkToClaude(start int, parent func(int) (ppid int, comm string)) (int, bool) {
-	for cur, hops := start, 0; cur > 1 && hops < 32; hops++ {
-		ppid, comm := parent(cur)
-		if isClaudeComm(comm) {
-			return cur, true
+// walkToClaude walks the ancestry from start and returns the outermost process in the
+// contiguous run of Claude ancestors: the session's entry process, not the inner hosts it
+// spawns. Claude Code runs a session as a chain of Claude processes - an interactive client
+// (`claude --resume`) or per-session detached host, above a daemon and a rotating
+// bg-pty-host/bg-spare pool that actually run the agent and execute hooks. Those inner hosts
+// are recycled independently of the session, so anchoring liveness on the nearest one (where
+// the hook fires) reclaims a live agent the moment its host rotates. Climbing to the top of
+// the contiguous Claude chain anchors on the durable session process instead; a non-Claude
+// gap (a Claude launched inside another Claude's shell) ends the chain, so a nested session
+// still resolves to its own client. parent reports a pid's parent pid and argv[0]; the hop
+// bound and pid<=1 guard keep the walk finite even if the chain is cyclic or rooted at init.
+func walkToClaude(start int, parent func(int) (ppid int, argv0 string)) (int, bool) {
+	top := -1
+	for cur, hops := start, 0; cur > 1 && hops < 64; hops++ {
+		ppid, argv0 := parent(cur)
+		if isClaudeComm(argv0) {
+			top = cur // highest Claude seen so far in the contiguous chain
+		} else if top >= 0 {
+			break // left the Claude chain: the previous Claude was the outermost
 		}
 		if ppid <= 0 {
 			break
 		}
 		cur = ppid
 	}
-	return 0, false
+	if top < 0 {
+		return 0, false
+	}
+	return top, true
 }
 
 // isClaudeComm reports whether a process's invoked executable (its argv[0], possibly a
