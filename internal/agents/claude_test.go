@@ -374,6 +374,56 @@ func TestAgentsReclaimsDeadProcesses(t *testing.T) {
 	}
 }
 
+// TestAgentsReclaimsRecycledPID pins the pid-reuse guard: when a record carries a start-time
+// token, a live pid whose current start time differs (the original process exited and an
+// unrelated one recycled the number) is reclaimed, while a matching token, an empty recorded
+// token, and a transiently unreadable current token all keep the agent.
+func TestAgentsReclaimsRecycledPID(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	for _, r := range []record{
+		{SessionID: "same", PID: 100, PIDStart: "111", TmuxSession: "s", TmuxPane: "%1", Title: "same", Status: StatusWorking, Updated: now},
+		{SessionID: "recycled", PID: 200, PIDStart: "222", TmuxSession: "s", TmuxPane: "%2", Title: "recycled", Status: StatusWorking, Updated: now},
+		{SessionID: "unreadable", PID: 300, PIDStart: "333", TmuxSession: "s", TmuxPane: "%3", Title: "unreadable", Status: StatusWorking, Updated: now},
+		{SessionID: "notoken", PID: 400, TmuxSession: "s", TmuxPane: "%4", Title: "notoken", Status: StatusWorking, Updated: now},
+	} {
+		if err := writeRecord(dir, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	s := &ClaudeSource{
+		dir: dir, recDir: dir,
+		alive: alwaysAlive,
+		startTime: func(pid int) string {
+			switch pid {
+			case 100:
+				return "111" // matches: same process
+			case 200:
+				return "999" // differs: pid recycled by another process
+			default:
+				return "" // unreadable: must not reclaim a live agent
+			}
+		},
+	}
+	got, err := s.Agents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept := map[string]bool{}
+	for _, a := range got {
+		kept[a.SessionID] = true
+	}
+	if kept["recycled"] {
+		t.Error("a recycled pid (start time changed) must be reclaimed")
+	}
+	for _, id := range []string{"same", "unreadable", "notoken"} {
+		if !kept[id] {
+			t.Errorf("%s must remain alive", id)
+		}
+	}
+}
+
 // TestMutePersistsSnoozeAndReclaims pins the mute store's three rules: a mute persists and
 // stamps the agent (sorting it last), a needs-attention agent is force-unmuted with its key
 // pruned (the snooze "wake me on something new" rule), and a dead location's mute is

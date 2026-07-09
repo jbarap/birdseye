@@ -11,8 +11,13 @@ import (
 
 // record is the on-disk per-session state a hook writes and the source reads.
 type record struct {
-	SessionID      string    `json:"session_id"`
-	PID            int       `json:"pid"`
+	SessionID string `json:"session_id"`
+	PID       int    `json:"pid"`
+	// PIDStart is the anchor process's start-time token (Linux /proc stat field 22), fixed for
+	// that process's life. The liveness GC compares it against the live pid's current token so a
+	// recycled pid does not keep a dead agent's record alive. Empty on platforms without /proc or
+	// on records predating this field, where the GC degrades to a bare liveness check.
+	PIDStart       string    `json:"pid_start,omitempty"`
 	TmuxSession    string    `json:"tmux_session"`
 	TmuxWindow     string    `json:"tmux_window"`
 	TmuxWindowName string    `json:"tmux_window_name"`

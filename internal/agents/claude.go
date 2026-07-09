@@ -24,11 +24,12 @@ import (
 // no time-based retention and no stale heuristic — process liveness is the single
 // signal for whether an agent is still there.
 type ClaudeSource struct {
-	dir      string                            // state root: mutes.json (dash view state)
-	recDir   string                            // agents subdir: per-session hook records
-	alive    func(pid int) bool                // process-liveness check; overridable in tests
-	titles   func() (map[string]string, error) // pane id -> OSC title; overridable in tests
-	detector levelDetector                     // derives the live working/idle level
+	dir       string                            // state root: mutes.json (dash view state)
+	recDir    string                            // agents subdir: per-session hook records
+	alive     func(pid int) bool                // process-liveness check; overridable in tests
+	startTime func(pid int) string              // anchor pid start time, for pid-reuse detection; overridable in tests
+	titles    func() (map[string]string, error) // pane id -> OSC title; overridable in tests
+	detector  levelDetector                     // derives the live working/idle level
 }
 
 // NewClaudeSource returns a source reading from the default state dir, using real
@@ -45,11 +46,12 @@ func NewClaudeSource() (*ClaudeSource, error) {
 		return nil, err
 	}
 	return &ClaudeSource{
-		dir:      root,
-		recDir:   recDir,
-		alive:    processAlive,
-		titles:   func() (map[string]string, error) { return map[string]string{}, nil },
-		detector: titleLevelDetector{},
+		dir:       root,
+		recDir:    recDir,
+		alive:     processAlive,
+		startTime: procStartTime,
+		titles:    func() (map[string]string, error) { return map[string]string{}, nil },
+		detector:  titleLevelDetector{},
 	}, nil
 }
 
@@ -71,6 +73,25 @@ func processAlive(pid int) bool {
 	}
 	err := syscall.Kill(pid, 0)
 	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+// recordAlive reports whether the process that reported this record is still that same live
+// process. Liveness is the anchor pid being alive; when a start-time token was recorded it must
+// also still match, so a recycled pid (the original process exited and an unrelated one now
+// holds the number) does not keep a dead agent's record alive indefinitely. A missing token (an
+// older record, or a platform without /proc) or a currently unreadable start time degrades to
+// the bare liveness check, so a live agent is never falsely reclaimed on a transient read miss.
+func (s *ClaudeSource) recordAlive(r record) bool {
+	if !s.alive(r.PID) {
+		return false
+	}
+	if r.PIDStart == "" || s.startTime == nil {
+		return true
+	}
+	if cur := s.startTime(r.PID); cur != "" && cur != r.PIDStart {
+		return false
+	}
+	return true
 }
 
 // sessionPID returns the pid of the Claude session process that owns this hook
@@ -179,6 +200,18 @@ func parseProcStat(data []byte) (ppid int, startTime string, ok bool) {
 	return p, fields[19], true
 }
 
+// procStartTime returns a process's start-time token (see readProcStat), or "" when it cannot
+// be read (non-Linux, or the process is gone). It is compared against the token recorded when
+// the agent was last seen: an equal token means the same process still holds the pid, a
+// different one means the pid was recycled. A package var so tests can supply synthetic values.
+var procStartTime = func(pid int) string {
+	_, start, ok := readProcStat(pid)
+	if !ok {
+		return ""
+	}
+	return start
+}
+
 // procArgv0 reads a process's argv[0] from /proc/<pid>/cmdline (NUL-separated). Unlike comm,
 // argv[0] is not renamed by Claude Code's background hosts, so it reliably reads "claude".
 // Empty on any failure (non-Linux, unreadable, or a zombie with no cmdline).
@@ -231,9 +264,10 @@ func (s *ClaudeSource) Agents() ([]Agent, error) {
 	at := map[string]int{} // dedup key -> index in out
 	for _, r := range recs {
 		// Liveness GC: an agent exists only while the process that reported it is
-		// running. A dead (or unidentifiable) process means the session is gone, so
-		// delete its state — even if its tmux pane (a leftover shell) still lingers.
-		if !s.alive(r.PID) {
+		// running. A dead (or unidentifiable) process, or a pid the process recycled,
+		// means the session is gone, so delete its state — even if its tmux pane (a
+		// leftover shell) still lingers.
+		if !s.recordAlive(r) {
 			_ = os.Remove(filepath.Join(s.recDir, sanitize(r.SessionID)+".json"))
 			continue
 		}
@@ -537,8 +571,11 @@ func handleHook(event string, r io.Reader, policy notifyPolicy) error {
 	// Record the Claude session process so `be agents` can treat that process's
 	// liveness as the agent's liveness (a closed Claude → its entry is reclaimed).
 	// The hook runs in a short-lived shell, so we walk up to the Claude process
-	// rather than recording our immediate (ephemeral) parent.
+	// rather than recording our immediate (ephemeral) parent. The pid's start time
+	// pins the identity of that exact process, so a later pid reuse cannot keep this
+	// record alive (see recordAlive).
 	rec.PID = sessionPID()
+	rec.PIDStart = procStartTime(rec.PID)
 
 	session, window, windowName, pane := resolveTmux()
 	if session != "" {
