@@ -452,6 +452,40 @@ func TestDeleteRefusedWithCoTenant(t *testing.T) {
 	}
 }
 
+// TestDetachedAgentInWorktreeGuardsDeleteAndClose pins the guards for a detached agent (no
+// window) that occupies a linked worktree: dD refuses (the agent can't be closed first, so
+// removing the worktree would pull it out from under a live process), and dd reports it as a
+// detached agent with no window rather than mislabeling it an empty slot.
+func TestDetachedAgentInWorktreeGuardsDeleteAndClose(t *testing.T) {
+	const gd = "/code/proj/.git"
+	// A live detached agent, sole occupant of the feat worktree, no window of its own.
+	detached := []Row{{Kind: RowAgent, SessionID: "bg", Worktree: "feat", Repo: "proj", Dir: "/code/proj.worktrees/feat", GitDir: gd}}
+	orch := &fakeOrch{}
+
+	m := modelWith(t, orch, detached)
+	nm, _ := m.startDelete()
+	m = nm.(model)
+	if m.mode != modeNormal {
+		t.Fatalf("dD on a detached agent must not open the confirmation, mode=%v", m.mode)
+	}
+	if m.notice == "" || m.noticeLevel != noticeError {
+		t.Fatalf("dD on a detached agent should report a refusal, notice=%q level=%v", m.notice, m.noticeLevel)
+	}
+	if len(orch.removes) != 0 {
+		t.Fatalf("dD on a detached agent must remove nothing, got %+v", orch.removes)
+	}
+
+	m2 := modelWith(t, orch, detached)
+	nm2, _ := m2.startClose()
+	m2 = nm2.(model)
+	if len(orch.closes) != 0 {
+		t.Fatalf("closing a detached agent has no window, got %+v", orch.closes)
+	}
+	if !strings.Contains(m2.notice, "detached") || strings.Contains(m2.notice, "slot") {
+		t.Fatalf("a detached-agent close must read as detached, not a slot, notice=%q", m2.notice)
+	}
+}
+
 func TestDeleteConfirmCancelDoesNothing(t *testing.T) {
 	orch := &fakeOrch{dirty: false}
 	m := modelWith(t, orch, []Row{{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", TmuxPane: "%1", Worktree: "feat", Dir: "/d"}})
