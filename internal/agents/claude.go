@@ -105,19 +105,31 @@ func walkToClaude(start int, parent func(int) (ppid int, comm string)) (int, boo
 	return 0, false
 }
 
-// isClaudeComm reports whether a process command name is the Claude Code binary.
-func isClaudeComm(comm string) bool {
-	return filepath.Base(strings.TrimSpace(comm)) == "claude"
+// isClaudeComm reports whether a process's invoked executable (its argv[0], possibly a
+// full path) is the Claude Code binary.
+func isClaudeComm(argv0 string) bool {
+	return filepath.Base(strings.TrimSpace(argv0)) == "claude"
 }
 
-// procParent reports a pid's parent pid and command name via ps, which works on
-// both Linux and macOS (the tool's domain). It is a package var so tests can
+// procParent reports a pid's parent pid and invoked executable (argv[0]) via ps, which
+// works on both Linux and macOS (the tool's domain). It is a package var so tests can
 // supply a synthetic process tree. A failed lookup yields (0, "").
 var procParent = func(pid int) (int, string) {
-	out, err := exec.Command("ps", "-o", "ppid=,comm=", "-p", strconv.Itoa(pid)).Output()
+	out, err := exec.Command("ps", "-o", "ppid=,args=", "-p", strconv.Itoa(pid)).Output()
 	if err != nil {
 		return 0, ""
 	}
+	return parsePsParent(out)
+}
+
+// parsePsParent extracts the parent pid and argv[0] from one `ps -o ppid=,args=` line. It
+// keys off argv[0], not comm: Claude Code renames the comm of its background host processes
+// to the version string (e.g. "2.1.204"), so comm no longer reads as "claude" for daemon and
+// background sessions, while argv[0] stays the claude executable across every variant
+// (interactive "claude --resume", "claude daemon run", "claude bg-spare", "claude bg-pty-host").
+// Anchoring liveness on comm would miss those durable processes and fall back to the ephemeral
+// hook shell, whose pid dies at once - reclaiming the agent the moment it is recorded.
+func parsePsParent(out []byte) (int, string) {
 	fields := strings.Fields(strings.TrimSpace(string(out)))
 	if len(fields) < 2 {
 		return 0, ""
@@ -126,7 +138,7 @@ var procParent = func(pid int) (int, string) {
 	if err != nil {
 		return 0, ""
 	}
-	return ppid, strings.Join(fields[1:], " ")
+	return ppid, fields[1] // argv[0]; isClaudeComm takes its basename
 }
 
 // Agents implements Source.

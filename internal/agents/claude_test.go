@@ -244,6 +244,38 @@ func TestWalkToClaudeFindsSessionProcess(t *testing.T) {
 	}
 }
 
+// TestParsePsParentKeysOnArgv0 pins that the parent lookup identifies a process by argv[0],
+// not comm. Claude Code renames the comm of its background host processes to the version
+// string, so a comm-based match would miss the durable process a daemon/background session
+// hangs off of; argv[0] stays "claude" across every variant.
+func TestParsePsParentKeysOnArgv0(t *testing.T) {
+	cases := []struct {
+		name      string
+		line      string
+		wantPPID  int
+		wantAgent bool // isClaudeComm(argv0)
+	}{
+		// Real layouts observed from `ps -o ppid=,args=`.
+		{"bg-spare, comm renamed to version", " 585168 claude bg-spare --bg-spare /tmp/cc-daemon/x.claim.sock", 585168, true},
+		{"bg-pty-host", " 4609 claude bg-pty-host --bg-pty-host /tmp/cc-daemon/x.pty.sock 200 50", 4609, true},
+		{"daemon, full path argv0", " 584010 /home/u/.local/bin/claude daemon run --origin transient", 584010, true},
+		{"interactive", " 22791 claude --resume", 22791, true},
+		{"non-claude ancestor", " 1 zsh", 1, false},
+		{"empty", "", 0, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ppid, argv0 := parsePsParent([]byte(c.line))
+			if ppid != c.wantPPID {
+				t.Errorf("ppid = %d, want %d", ppid, c.wantPPID)
+			}
+			if got := isClaudeComm(argv0); got != c.wantAgent {
+				t.Errorf("isClaudeComm(%q) = %v, want %v", argv0, got, c.wantAgent)
+			}
+		})
+	}
+}
+
 func TestAgentsReclaimsDeadProcesses(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now()
