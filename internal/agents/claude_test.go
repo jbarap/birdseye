@@ -315,6 +315,32 @@ func TestParsePsParentKeysOnArgv0(t *testing.T) {
 	}
 }
 
+// TestParseProcStatHandlesCommWithParens pins the /proc/<pid>/stat parse against a comm that
+// contains spaces and parentheses (the field is not sanitized by the kernel), so ppid and
+// start time are read from after the final ')'.
+func TestParseProcStatHandlesCommWithParens(t *testing.T) {
+	// comm is "a) b" - it embeds a ')' and a space; state S, ppid 42, then filler up to the
+	// 22nd field (starttime) = 987654.
+	line := "1234 (a) b) S 42 1 1 0 -1 4194304 100 0 0 0 5 6 0 0 20 0 1 0 987654 100000\n"
+	ppid, start, ok := parseProcStat([]byte(line))
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if ppid != 42 {
+		t.Errorf("ppid = %d, want 42", ppid)
+	}
+	if start != "987654" {
+		t.Errorf("startTime = %q, want %q", start, "987654")
+	}
+
+	if _, _, ok := parseProcStat([]byte("garbage with no paren")); ok {
+		t.Error("a line with no ')' should not parse")
+	}
+	if _, _, ok := parseProcStat([]byte("1 (x) S 2 3")); ok {
+		t.Error("a truncated stat line should not parse")
+	}
+}
+
 func TestAgentsReclaimsDeadProcesses(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now()

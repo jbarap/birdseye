@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -123,10 +124,21 @@ func isClaudeComm(argv0 string) bool {
 	return filepath.Base(strings.TrimSpace(argv0)) == "claude"
 }
 
-// procParent reports a pid's parent pid and invoked executable (argv[0]) via ps, which
-// works on both Linux and macOS (the tool's domain). It is a package var so tests can
-// supply a synthetic process tree. A failed lookup yields (0, "").
+// procParent reports a pid's parent pid and invoked executable (argv[0]). sessionPID walks
+// the ancestry on every hook event, and PreToolUse/PostToolUse fire per tool call, so on Linux
+// it reads /proc directly (stat for the parent pid, cmdline for argv[0]) rather than forking ps
+// per hop. It falls back to ps on platforms without /proc or on any read failure. It is a
+// package var so tests can supply a synthetic process tree. A failed lookup yields (0, "").
 var procParent = func(pid int) (int, string) {
+	if ppid, _, ok := readProcStat(pid); ok {
+		return ppid, procArgv0(pid)
+	}
+	return psParent(pid)
+}
+
+// psParent is the portable ps-backed parent lookup, used on platforms without /proc (macOS) or
+// when a /proc read fails. A failed lookup yields (0, "").
+func psParent(pid int) (int, string) {
 	out, err := exec.Command("ps", "-o", "ppid=,args=", "-p", strconv.Itoa(pid)).Output()
 	if err != nil {
 		return 0, ""
@@ -134,8 +146,55 @@ var procParent = func(pid int) (int, string) {
 	return parsePsParent(out)
 }
 
-// parsePsParent extracts the parent pid and argv[0] from one `ps -o ppid=,args=` line. It
-// keys off argv[0], not comm: Claude Code renames the comm of its background host processes
+// readProcStat parses /proc/<pid>/stat for the parent pid and the process start time. The
+// start time (field 22, clock ticks since boot) is fixed for the life of a process and never
+// reused, so it distinguishes a still-running process from a different one that recycled its
+// pid. ok is false when /proc is unavailable (non-Linux) or the file cannot be read or parsed.
+// A package var so tests can supply synthetic /proc contents.
+var readProcStat = func(pid int) (ppid int, startTime string, ok bool) {
+	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return 0, "", false
+	}
+	return parseProcStat(data)
+}
+
+// parseProcStat extracts the parent pid and start time from a /proc/<pid>/stat line. The comm
+// field (2) is wrapped in parentheses and can itself contain spaces and ')', so the numeric
+// fields are taken from after the final ')': fields[0] is state (stat field 3), so ppid (field
+// 4) is fields[1] and starttime (field 22) is fields[19].
+func parseProcStat(data []byte) (ppid int, startTime string, ok bool) {
+	i := bytes.LastIndexByte(data, ')')
+	if i < 0 {
+		return 0, "", false
+	}
+	fields := strings.Fields(string(data[i+1:]))
+	if len(fields) < 20 {
+		return 0, "", false
+	}
+	p, err := strconv.Atoi(fields[1])
+	if err != nil {
+		return 0, "", false
+	}
+	return p, fields[19], true
+}
+
+// procArgv0 reads a process's argv[0] from /proc/<pid>/cmdline (NUL-separated). Unlike comm,
+// argv[0] is not renamed by Claude Code's background hosts, so it reliably reads "claude".
+// Empty on any failure (non-Linux, unreadable, or a zombie with no cmdline).
+var procArgv0 = func(pid int) string {
+	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cmdline")
+	if err != nil {
+		return ""
+	}
+	if i := bytes.IndexByte(data, 0); i >= 0 {
+		return string(data[:i])
+	}
+	return string(data)
+}
+
+// parsePsParent extracts the parent pid and argv[0] from one `ps -o ppid=,args=` line (the
+// macOS/fallback path). It keys off argv[0], not comm: Claude Code renames the comm of its background host processes
 // to the version string (e.g. "2.1.204"), so comm no longer reads as "claude" for daemon and
 // background sessions, while argv[0] stays the claude executable across every variant
 // (interactive "claude --resume", "claude daemon run", "claude bg-spare", "claude bg-pty-host").
