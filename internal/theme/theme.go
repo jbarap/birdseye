@@ -33,11 +33,9 @@ var (
 	Border = Color{"#3a3a3a", 240} // borders, info chrome
 	Red    = Color{"#ff6b6b", 203} // needs-attention / errors
 
-	Text      = Color{"#e6e6e6", 254} // primary row text (agent name)
-	Accent    = Color{"#c792ea", 176} // tool-wide selection + brand accent (cursor, title, picker chrome); configurable
-	SessionBg = Color{"#1d2b3f", 235} // agents view: session section-bar background
-	SessionFg = Color{"#9cc7ff", 153} // agents view: session section-bar text
-	RowHL     = Color{"#2c2c34", 236} // agents view: selected-row highlight background
+	Text   = Color{"#e6e6e6", 254} // primary row text (agent name)
+	Accent = Color{"#c792ea", 176} // tool-wide selection + brand accent (cursor, title, picker chrome); configurable
+	RowHL  = Color{"#2c2c34", 236} // agents view: selected-row highlight background
 )
 
 // CursorGlyph is the tool-wide selection pointer: the agents-view cursor and the
@@ -87,4 +85,19 @@ func (c Color) Spec(truecolor bool) string {
 func (c Color) rgb() (r, g, b int) {
 	v, _ := strconv.ParseUint(strings.TrimPrefix(c.Hex, "#"), 16, 32)
 	return int(v>>16) & 0xff, int(v>>8) & 0xff, int(v) & 0xff
+}
+
+// Darken scales a #rrggbb hex toward black by factor (0.8 = 20% darker), returning a new
+// #rrggbb literal. A value that is not a #rrggbb string is returned unchanged. Used to derive a
+// slightly deeper shade of the (possibly user-configured) accent for focused-panel borders.
+func Darken(hex string, factor float64) string {
+	if len(hex) != 7 || hex[0] != '#' {
+		return hex
+	}
+	v, err := strconv.ParseUint(hex[1:], 16, 32)
+	if err != nil {
+		return hex
+	}
+	scale := func(shift uint) int { return int(float64(int(v>>shift)&0xff) * factor) }
+	return fmt.Sprintf("#%02x%02x%02x", scale(16), scale(8), scale(0))
 }
