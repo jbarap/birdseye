@@ -2246,12 +2246,14 @@ func (m model) sectionLabel(name string, folded, current bool, hl hlState) strin
 }
 
 // bandBar renders a triage band's header. A populated band is a titled rule: the ▾/▸ fold
-// caret, the bold uppercase band name, a hairline drawn to the right edge, and the agent count
-// docked at its end (a folded band shows ▸ and its hidden-agent count; the band holding the
-// focused selection takes the accent). An empty band is a plain lowercase Gray word - no caret,
-// count, or hairline - legible as "all clear" but clearly quieter than a populated band. A band
-// is foldable only while populated. Every line is padded to the full width so the panel holds
-// its width even when all four bands are empty.
+// caret, the bold uppercase band name, and a hairline drawn to the right edge (the band holding
+// the focused selection takes the accent). The hidden-agent count docks at the end only when the
+// band is FOLDED - the sole window into the rows it hides, mirroring the Projects lens summary.
+// Expanded, the count is dropped: its Gray digits would sit in the same right-edge column as the
+// rows' Gray ages and read as just another time. An empty band is a plain lowercase Gray word -
+// no caret, count, or hairline - legible as "all clear" but clearly quieter than a populated
+// band. A band is foldable only while populated. Every line is padded to the full width so the
+// panel holds its width even when all four bands are empty.
 func (m model) bandBar(b agentBand, count, contentW int, folded, current bool, hl hlState) string {
 	fullW := cursorColWidth + contentW
 	if count == 0 {
@@ -2263,7 +2265,11 @@ func (m model) bandBar(b agentBand, count, contentW int, folded, current bool, h
 		return padToWidth(body, fullW)
 	}
 	head := m.sectionLabel(bandLabels[b], folded, current, hl)
-	return titledRule(head, fmt.Sprintf("%d", count), fullW)
+	right := ""
+	if folded {
+		right = fmt.Sprintf("%d", count)
+	}
+	return titledRule(head, right, fullW)
 }
 
 // padToWidth right-pads a (possibly styled) line with spaces to exactly w display cells,

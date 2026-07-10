@@ -1185,9 +1185,9 @@ func TestAgentBandFoldCollapsesAndUnfolds(t *testing.T) {
 	}
 }
 
-// TestBandHeaderStyling: a populated band renders as a titled rule (uppercase name, a
-// hairline, its count) while an empty band recedes to a dim lowercase word. The two styles
-// must stay distinct so empty lanes read as "all clear", not as identical section bars.
+// TestBandHeaderStyling: a populated band renders as a titled rule (uppercase name and a
+// hairline) while an empty band recedes to a dim lowercase word. The two styles must stay
+// distinct so empty lanes read as "all clear", not as identical section bars.
 func TestBandHeaderStyling(t *testing.T) {
 	in := []Agent{
 		{SessionID: "w", Title: "busy", Status: StatusWorking, TmuxSession: "w"},
@@ -1217,6 +1217,42 @@ func TestBandHeaderStyling(t *testing.T) {
 		if strings.Contains(v, loud) {
 			t.Fatalf("empty band should not render its uppercase label %q:\n%s", loud, v)
 		}
+	}
+}
+
+// TestBandCountOnlyWhenFolded: an expanded band drops its agent count (the Gray digits would
+// sit in the same right-edge column as the rows' Gray ages and read as another time); a folded
+// band shows the count as the only window into the agents it hides, mirroring the Projects lens.
+func TestBandCountOnlyWhenFolded(t *testing.T) {
+	in := []Agent{
+		{SessionID: "w1", Title: "one", Status: StatusWorking, TmuxSession: "w1"},
+		{SessionID: "w2", Title: "two", Status: StatusWorking, TmuxSession: "w2"},
+	}
+	m, err := nm(&fakeSource{list: in}, nil, DefaultKeymap())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.focus = lensAgents
+	m.width, m.height = 80, 30
+
+	header := func() string {
+		for _, ln := range strings.Split(stripANSI(m.renderAgents()), "\n") {
+			if strings.Contains(ln, "WORKING") {
+				return ln
+			}
+		}
+		return ""
+	}
+
+	// Expanded (default): the two rows speak for themselves, so no docked count.
+	if h := header(); strings.ContainsRune(h, '2') {
+		t.Fatalf("expanded band header should not dock its count:\n%s", h)
+	}
+
+	m.bandFolded[bandWorking] = true
+	// Folded: the rows are hidden, so the count is the only window into them.
+	if h := header(); !strings.ContainsRune(h, '2') {
+		t.Fatalf("folded band header should dock its hidden-agent count:\n%s", h)
 	}
 }
 
