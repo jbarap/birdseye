@@ -129,13 +129,17 @@ func (c *Client) Connect(name string) error {
 	return c.attach("attach-session", "-t", name)
 }
 
-// CapturePane returns the recent visible content of the target pane as plain
-// text. target is a tmux target such as "session" or "session:window"; the
-// active pane of that target is captured. When lines > 0, that many lines of
-// scrollback above the visible screen are included. A capture failure (no such
-// session, no server) is returned as an error for the caller to handle.
+// CapturePane returns the recent visible content of the target pane. target is
+// a tmux target such as "session" or "session:window"; the active pane of that
+// target is captured. When lines > 0, that many lines of scrollback above the
+// visible screen are included. A capture failure (no such session, no server)
+// is returned as an error for the caller to handle.
+//
+// -e preserves the pane's SGR escape sequences so the preview keeps the agent's
+// own colors; the caller is responsible for containing them (a per-line reset)
+// and for escape-aware width handling.
 func (c *Client) CapturePane(target string, lines int) (string, error) {
-	args := []string{"capture-pane", "-p", "-t", target}
+	args := []string{"capture-pane", "-p", "-e", "-t", target}
 	if lines > 0 {
 		args = append(args, "-S", fmt.Sprintf("-%d", lines))
 	}

@@ -2504,9 +2504,14 @@ func (m model) previewPlaceholder() string {
 // Trailing blank lines are dropped first: a pane showing only a shell prompt at
 // the top would otherwise present an all-blank tail. The last h non-empty-tail
 // lines are kept so a full-screen TUI shows its most recent (bottom) content.
+//
+// Captured content carries the pane's own SGR escapes (tmux capture -e), so each
+// line ends with a reset: a color the pane left open on its last cell would
+// otherwise bleed into the frame border and the rows below. truncate is
+// escape-aware, so cutting a line to w never slices a sequence in half.
 func previewLines(content string, h, w int) []string {
 	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
-	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+	for len(lines) > 0 && strings.TrimSpace(ansi.Strip(lines[len(lines)-1])) == "" {
 		lines = lines[:len(lines)-1]
 	}
 	if len(lines) == 0 {
@@ -2517,7 +2522,7 @@ func previewLines(content string, h, w int) []string {
 	}
 	out := make([]string, len(lines))
 	for i, ln := range lines {
-		out[i] = truncate(ln, w)
+		out[i] = truncate(ln, w) + ansi.ResetStyle
 	}
 	return out
 }
