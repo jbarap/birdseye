@@ -1332,15 +1332,73 @@ func TestColumnsFlexToFitContent(t *testing.T) {
 	}
 	m.width = 200
 
-	windowW, nameW, _ := m.colWidths()
-	if windowW <= windowColMin {
-		t.Fatalf("the worktree column should flex past the baseline %d to fit a long label, got %d", windowColMin, windowW)
+	identityW, detailW, _ := m.colWidths()
+	if identityW <= identityColMin {
+		t.Fatalf("the identity column should flex past the baseline %d to fit a long label, got %d", identityColMin, identityW)
 	}
-	if windowW < lipgloss.Width("a-long-worktree-name")+1 || windowW > windowColMax {
-		t.Fatalf("the worktree column should fit the label (clamped to %d), got %d", windowColMax, windowW)
+	if identityW < lipgloss.Width("a-long-worktree-name")+1 || identityW > identityColMax {
+		t.Fatalf("the identity column should fit the label (clamped to %d), got %d", identityColMax, identityW)
 	}
-	if nameW <= nameColMin {
-		t.Fatalf("the title column should flex past the baseline %d to fit a long title, got %d", nameColMin, nameW)
+	// The title diverges from the worktree, so it rides the difference-only detail column, which
+	// flexes to fit it (clamped to detailColMax).
+	if detailW <= 0 || detailW > detailColMax {
+		t.Fatalf("the detail column should flex to fit the divergent title (clamped to %d), got %d", detailColMax, detailW)
+	}
+}
+
+func TestRelAge(t *testing.T) {
+	now := time.Now()
+	cases := []struct {
+		at   time.Time
+		want string
+	}{
+		{time.Time{}, ""}, // no recorded activity
+		{now.Add(-30 * time.Second), "now"},
+		{now.Add(-5 * time.Minute), "5m"},
+		{now.Add(-3 * time.Hour), "3h"},
+		{now.Add(-4 * 24 * time.Hour), "4d"},
+		{now.Add(-3 * 7 * 24 * time.Hour), "3w"},
+	}
+	for _, c := range cases {
+		if got := relAge(c.at); got != c.want {
+			t.Errorf("relAge(%v) = %q, want %q", c.at, got, c.want)
+		}
+		if lipgloss.Width(relAge(c.at)) > ageColWidth {
+			t.Errorf("relAge(%v) = %q exceeds ageColWidth %d", c.at, relAge(c.at), ageColWidth)
+		}
+	}
+}
+
+// TestRowDetailDifferenceOnly pins that the detail column is a divergence annotation: it shows the
+// title when it differs from the identity, else a divergent branch, and is empty when neither adds
+// a fact (the common case where the title slugs to the repo name and the branch matches).
+func TestRowDetailDifferenceOnly(t *testing.T) {
+	// Title equals the identity (the redundant a2x/a2x case) and the branch matches: no detail.
+	if d := rowDetail(Row{Title: "a2x", Branch: "a2x"}, "a2x"); d != "" {
+		t.Errorf("a redundant title and matching branch should yield no detail, got %q", d)
+	}
+	// A divergent title wins.
+	if d := rowDetail(Row{Title: "court", Branch: "main"}, "a2x"); d != "· court" {
+		t.Errorf("a divergent title should show, got %q", d)
+	}
+	// With no divergent title, a divergent branch shows (glyph-prefixed).
+	if d := rowDetail(Row{Title: "ai-jobs", Branch: "main"}, "ai-jobs"); d != branchGlyph+" main" {
+		t.Errorf("a divergent branch should show, got %q", d)
+	}
+}
+
+// TestRowAgeOnlyForAgents pins that only a live agent row carries an age; an anchor (base) or slot
+// row has no agent and so no age - the blank is itself signal.
+func TestRowAgeOnlyForAgents(t *testing.T) {
+	old := time.Now().Add(-5 * time.Minute)
+	if a := rowAge(Row{Kind: RowAgent, Updated: old}); a != "5m" {
+		t.Errorf("an agent row should carry its age, got %q", a)
+	}
+	if a := rowAge(Row{Kind: RowAnchor, Updated: old}); a != "" {
+		t.Errorf("a base row should carry no age, got %q", a)
+	}
+	if a := rowAge(Row{Kind: RowSlot, Updated: old}); a != "" {
+		t.Errorf("a slot row should carry no age, got %q", a)
 	}
 }
 
