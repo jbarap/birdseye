@@ -504,13 +504,36 @@ func TestPreviewLinesStripsTrailingBlanks(t *testing.T) {
 		fmt.Fprintf(&sb, "line %d\n", i)
 	}
 	got = previewLines(sb.String(), 3, 50)
-	if len(got) != 3 || got[0] != "line 17" || got[2] != "line 19" {
+	if len(got) != 3 || ansi.Strip(got[0]) != "line 17" || ansi.Strip(got[2]) != "line 19" {
 		t.Fatalf("expected last 3 lines, got %q", got)
 	}
 
 	// Truly blank capture yields nothing (caller shows a placeholder).
 	if got := previewLines("\n\n\n", 6, 50); len(got) != 0 {
 		t.Fatalf("blank pane should yield no lines, got %q", got)
+	}
+}
+
+func TestPreviewLinesContainsColor(t *testing.T) {
+	// Captured content carries SGR escapes (tmux capture -e). Each emitted line must
+	// end with a reset so a color the pane left open cannot bleed into the border.
+	colored := "\x1b[31mred text"
+	got := previewLines(colored, 6, 50)
+	if len(got) != 1 {
+		t.Fatalf("expected one line, got %q", got)
+	}
+	if !strings.HasSuffix(got[0], ansi.ResetStyle) {
+		t.Fatalf("line must end with a reset, got %q", got[0])
+	}
+	if !strings.Contains(got[0], "\x1b[31m") {
+		t.Fatalf("line must preserve the pane's color, got %q", got[0])
+	}
+
+	// A tail line that is visually blank but carries escapes (a reset, colored
+	// spaces) is still a blank tail and must be dropped, not rendered.
+	pane := "content\n\x1b[0m\n\x1b[44m   \x1b[0m"
+	if got := previewLines(pane, 6, 50); len(got) != 1 || ansi.Strip(got[0]) != "content" {
+		t.Fatalf("escape-only tail should be stripped, got %q", got)
 	}
 }
 

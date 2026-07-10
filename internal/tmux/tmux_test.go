@@ -116,7 +116,7 @@ func TestConnectSwitchInsideTmux(t *testing.T) {
 
 func TestCapturePane(t *testing.T) {
 	rec := newRecorder()
-	rec.replies["capture-pane -p -t proj:1"] = "line one\nline two\n"
+	rec.replies["capture-pane -p -e -t proj:1"] = "line one\nline two\n"
 	c := NewWithRunner(rec.run, false)
 
 	out, err := c.CapturePane("proj:1", 0)
@@ -128,17 +128,17 @@ func TestCapturePane(t *testing.T) {
 	}
 
 	rec2 := newRecorder()
-	rec2.replies["capture-pane -p -t proj -S -100"] = "scrollback"
+	rec2.replies["capture-pane -p -e -t proj -S -100"] = "scrollback"
 	c2 := NewWithRunner(rec2.run, false)
 	if _, err := c2.CapturePane("proj", 100); err != nil {
 		t.Fatal(err)
 	}
-	if !rec2.called("capture-pane -p -t proj -S -100") {
+	if !rec2.called("capture-pane -p -e -t proj -S -100") {
 		t.Fatalf("expected scrollback range arg, calls=%v", rec2.calls)
 	}
 
 	rec3 := newRecorder()
-	rec3.errs["capture-pane -p -t gone"] = errors.New("no such session")
+	rec3.errs["capture-pane -p -e -t gone"] = errors.New("no such session")
 	c3 := NewWithRunner(rec3.run, false)
 	if _, err := c3.CapturePane("gone", 0); err == nil {
 		t.Fatal("expected error to propagate when capture fails")
