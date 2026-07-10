@@ -12,12 +12,14 @@ import (
 // stubNoTmuxRecovery neutralizes the owning-process tmux recovery so a test that sets
 // TMUX="" to simulate "not in tmux" is hermetic: without it, resolveTmux would read the real
 // /proc environment of whatever process runs the suite and pick up a live pane when the tests
-// are run from inside tmux.
+// are run from inside tmux. It also stubs paneTitles to an empty map so the notify path never
+// shells out to a real tmux server; a test needing synthetic titles overrides it afterward.
 func stubNoTmuxRecovery(t *testing.T) {
 	t.Helper()
-	prev := procTmux
+	prevTmux, prevTitles := procTmux, paneTitles
 	procTmux = func(int) (string, string) { return "", "" }
-	t.Cleanup(func() { procTmux = prev })
+	paneTitles = func() map[string]string { return map[string]string{} }
+	t.Cleanup(func() { procTmux, paneTitles = prevTmux, prevTitles })
 }
 
 // TestParseTmuxEnv pins recovery of a Claude daemon's tmux location from its NUL-separated

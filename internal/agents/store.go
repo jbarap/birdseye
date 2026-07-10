@@ -162,16 +162,29 @@ func writeMutes(dir string, set map[string]bool) error {
 // itself: a lost or duplicated entry only skews one digest's list, never blocks work.
 const notifyBatchFile = "notify-batch.json"
 
-// appendNotifyBatch records one finished agent's title in the pending digest batch. It
+// batchEntry is one held finish: the agent's title and when it was recorded. The digest flushes
+// only on a finish edge; if the last worker dies without one (a SIGKILL, a crash), a batch would
+// otherwise persist forever and dump a day-old list of unrelated titles into the next digest.
+// The timestamp lets takeNotifyBatch shed entries past batchEntryTTL instead.
+type batchEntry struct {
+	Title string    `json:"title"`
+	At    time.Time `json:"at"`
+}
+
+// batchEntryTTL bounds how long a held finish survives in the pending digest batch. A run whose
+// last worker never re-fires a finish edge sheds entries older than this at flush time, so a stuck
+// batch degrades to a few missing names rather than a dump of ancient history.
+const batchEntryTTL = 24 * time.Hour
+
+// appendNotifyBatch records one finished agent's title, stamped now, in the pending digest batch. It
 // read-modify-writes the file atomically; a concurrent hook can still race and drop an entry, which
 // is acceptable for a best-effort digest.
 func appendNotifyBatch(dir, title string) error {
-	titles := readNotifyBatch(dir)
-	titles = append(titles, title)
+	entries := append(readNotifyBatch(dir), batchEntry{Title: title, At: time.Now()})
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(titles, "", "  ")
+	data, err := json.MarshalIndent(entries, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -183,25 +196,34 @@ func appendNotifyBatch(dir, title string) error {
 	return os.Rename(tmp, final)
 }
 
-// readNotifyBatch loads the pending digest batch. A missing or corrupt file yields no titles, so
+// readNotifyBatch loads the pending digest batch. A missing or corrupt file yields no entries, so
 // the batch simply starts empty.
-func readNotifyBatch(dir string) []string {
+func readNotifyBatch(dir string) []batchEntry {
 	data, err := os.ReadFile(filepath.Join(dir, notifyBatchFile))
 	if err != nil {
 		return nil
 	}
-	var titles []string
-	if err := json.Unmarshal(data, &titles); err != nil {
+	var entries []batchEntry
+	if err := json.Unmarshal(data, &entries); err != nil {
 		return nil
 	}
-	return titles
+	return entries
 }
 
-// takeNotifyBatch reads the pending digest batch and clears it, so the flushed run's finishes are
-// not carried into the next run's digest.
+// takeNotifyBatch reads the pending digest batch, clears it, and returns the titles of entries
+// still within batchEntryTTL (in append order), so the flushed run's finishes are not carried into
+// the next run's digest and ancient stuck entries are dropped rather than dumped.
 func takeNotifyBatch(dir string) []string {
-	titles := readNotifyBatch(dir)
+	entries := readNotifyBatch(dir)
 	_ = os.Remove(filepath.Join(dir, notifyBatchFile))
+	cutoff := time.Now().Add(-batchEntryTTL)
+	var titles []string
+	for _, e := range entries {
+		if e.At.Before(cutoff) {
+			continue
+		}
+		titles = append(titles, e.Title)
+	}
 	return titles
 }
 

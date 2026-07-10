@@ -689,6 +689,11 @@ func classifyEdge(old, cur Status) edge {
 //     into a batch and flushes as a single run-settled digest only when this agent was the last
 //     live worker to settle. Everything else is visible on the `be agents` pull surface.
 //
+// "Last live worker" is judged machine-wide across every sibling record (any live worker anywhere
+// holds the run open, by design), using the same pane-title reconciliation the dash renders - not
+// the raw hook status, which goes stale and would let a session idle at its prompt but frozen at
+// "working" suppress every digest indefinitely.
+//
 // A muted agent is fully suppressed: no escalation, no digest, no batch entry.
 func maybeNotify(dir, recDir string, old Status, rec record, policy notifyPolicy) {
 	e := classifyEdge(old, rec.Status)
@@ -711,24 +716,44 @@ func maybeNotify(dir, recDir string, old Status, rec record, policy notifyPolicy
 		}
 		live := func(r record) bool { return recordLiveWith(r, processAlive, procStartTime) }
 		recs, _ := readRecords(recDir)
+		// Judge "still working" by the same reconciled signal the dash renders - the live pane
+		// level correcting a stale hook status - not the raw record: a session frozen at "working"
+		// whose pane shows the idle sparkle must not hold the run open forever.
+		titles := paneTitles()
 		// Not the last to settle: the run is still active. Record the finish for the digest and
 		// stay silent - the pull surface already shows the new idle status.
-		if anyLiveWorker(recs, rec.SessionID, live) {
+		if anyLiveWorker(recs, rec.SessionID, live, titles) {
 			_ = appendNotifyBatch(dir, rec.Title)
 			return
 		}
 		// Last live worker settled: flush one digest for the whole run.
 		finished := dedup(append(takeNotifyBatch(dir), rec.Title))
-		_ = policy.notifier.Notify(digestNotification(finished, liveBlockedTitles(recs, rec.SessionID, live)))
+		_ = policy.notifier.Notify(digestNotification(finished, liveBlockedTitles(recs, rec.SessionID, live, titles)))
 	}
 }
 
-// anyLiveWorker reports whether any record other than exceptID is a live, working agent. Only live
-// records count, so a crashed agent whose record is stuck at working does not hold the run open
-// and suppress every future digest.
-func anyLiveWorker(recs []record, exceptID string, live func(record) bool) bool {
+// siblingStatus resolves a sibling record's status the way the view does: the live pane level
+// (Claude's spinner while working, the sparkle when idle) corrects a stale hook-written status. It
+// is the single definition of "working"/"blocked" the digest shares with the dash, so a record
+// frozen at "working" whose pane is actually idle cannot wedge the run open. A record with no pane,
+// or a title carrying no recognized glyph, has no level and falls back to its raw hook status.
+func siblingStatus(r record, titles map[string]string) Status {
+	status := r.Status
+	if status == "" {
+		status = StatusUnknown
+	}
+	level, ok := titleLevelDetector{}.Level(r.TmuxPane, titles)
+	return reconcile(status, level, ok)
+}
+
+// anyLiveWorker reports whether any record other than exceptID is a live, working agent. "Working"
+// is the reconciled status (siblingStatus), not the raw record: a crashed worker (pid gone) is
+// filtered by liveness, and a live session frozen at "working" whose pane is actually idle is
+// filtered by the pane-title reconciliation - either alone would otherwise hold the run open and
+// suppress every future digest.
+func anyLiveWorker(recs []record, exceptID string, live func(record) bool, titles map[string]string) bool {
 	for _, r := range recs {
-		if r.SessionID == exceptID || r.Status != StatusWorking {
+		if r.SessionID == exceptID || siblingStatus(r, titles) != StatusWorking {
 			continue
 		}
 		if live(r) {
@@ -739,12 +764,13 @@ func anyLiveWorker(recs []record, exceptID string, live func(record) bool) bool 
 }
 
 // liveBlockedTitles returns the titles of live agents (other than exceptID) currently in
-// needs-attention. A blocked agent is not "working", so it does not hold the run open; when the
-// run settles the digest names these first as the anomaly worth acting on.
-func liveBlockedTitles(recs []record, exceptID string, live func(record) bool) []string {
+// needs-attention, judged by the same reconciled status the dash shows (a block the pane has since
+// resolved to working no longer counts). A blocked agent is not "working", so it does not hold the
+// run open; when the run settles the digest names these first as the anomaly worth acting on.
+func liveBlockedTitles(recs []record, exceptID string, live func(record) bool, titles map[string]string) []string {
 	var out []string
 	for _, r := range recs {
-		if r.SessionID == exceptID || r.Status != StatusNeedsAttention {
+		if r.SessionID == exceptID || siblingStatus(r, titles) != StatusNeedsAttention {
 			continue
 		}
 		if live(r) {
@@ -868,4 +894,47 @@ func parseTmuxEnv(environ []byte) (tmux, pane string) {
 		}
 	}
 	return tmux, pane
+}
+
+// paneTitles returns every pane's current OSC title keyed by pane id, read from the same tmux
+// server the hook resolves against - recovering it from the session process's environment when the
+// hook's own TMUX is stripped (the daemon case, exactly as resolveTmux does), so a bg-orchestrated
+// run reconciles against the right server rather than silently degrading to raw status. The notify
+// path uses it to correct a sibling's stale hook status against the level its pane is actually
+// broadcasting. Best-effort: no server or any query failure yields an empty map, so the digest
+// falls back to raw status. A package var so tests can supply synthetic titles.
+var paneTitles = func() map[string]string {
+	tmuxEnv := os.Getenv("TMUX")
+	if tmuxEnv == "" {
+		if tmuxEnv, _ = procTmux(sessionPID()); tmuxEnv == "" {
+			return map[string]string{}
+		}
+	}
+	cmd := exec.Command("tmux", "list-panes", "-a", "-F", "#{pane_id}\t#{pane_title}")
+	// Point tmux at the recovered server when the hook's own env has none, mirroring resolveTmux.
+	if os.Getenv("TMUX") == "" {
+		cmd.Env = append(os.Environ(), "TMUX="+tmuxEnv)
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		return map[string]string{}
+	}
+	return parsePaneTitles(out)
+}
+
+// parsePaneTitles parses the tab-separated "pane_id\tpane_title" lines of `tmux list-panes -a`
+// into a pane-id -> title map, skipping blank or id-less lines.
+func parsePaneTitles(out []byte) map[string]string {
+	titles := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		id, title, _ := strings.Cut(line, "\t")
+		if id == "" {
+			continue
+		}
+		titles[id] = title
+	}
+	return titles
 }

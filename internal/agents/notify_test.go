@@ -1,11 +1,13 @@
 package agents
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 type fakeNotifier struct{ calls []Notification }
@@ -110,12 +112,19 @@ func TestAnyLiveWorker(t *testing.T) {
 		{SessionID: "idle", Status: StatusIdle, PID: 1},
 		{SessionID: "deadworker", Status: StatusWorking, PID: 0}, // stuck at working but not live
 	}
-	if anyLiveWorker(recs, "self", live) {
+	// No titles: siblingStatus falls back to the raw record status.
+	if anyLiveWorker(recs, "self", live, nil) {
 		t.Fatal("only a dead worker plus idle/self remain; the run should read as settled")
 	}
 	recs = append(recs, record{SessionID: "liveworker", Status: StatusWorking, PID: 2})
-	if !anyLiveWorker(recs, "self", live) {
+	if !anyLiveWorker(recs, "self", live, nil) {
 		t.Fatal("a live working sibling should hold the run open")
+	}
+	// A live sibling frozen at "working" whose pane broadcasts idle (the sparkle) must not hold the
+	// run open: the pane-title reconciliation corrects the stale record, matching what the dash shows.
+	recs = []record{{SessionID: "stale", Status: StatusWorking, PID: 3, TmuxPane: "%9"}}
+	if anyLiveWorker(recs, "self", live, map[string]string{"%9": "✳ idle at prompt"}) {
+		t.Fatal("a stale working record whose pane shows idle must not hold the run open")
 	}
 }
 
@@ -186,6 +195,52 @@ func TestHandleHookDigestOnSettle(t *testing.T) {
 	}
 	if msg := f.calls[0].Message; !strings.Contains(msg, "foo") || !strings.Contains(msg, "bar") {
 		t.Errorf("digest should name both finished agents, got %q", msg)
+	}
+}
+
+// TestHandleHookStaleWorkerReconciledIdleDoesNotHoldRun pins the core fix: a live sibling frozen at
+// "working" (no Stop hook fired) whose pane broadcasts idle must not suppress the digest. The notify
+// path reconciles the stale record against the live pane title, exactly as the dash does.
+func TestHandleHookStaleWorkerReconciledIdleDoesNotHoldRun(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", dir)
+	t.Setenv("TMUX", "")
+	stubNoTmuxRecovery(t)
+	// A live (own pid) sibling recorded working, but its pane shows the idle sparkle.
+	paneTitles = func() map[string]string { return map[string]string{"%9": "✳ waiting"} }
+	f := &fakeNotifier{}
+	p := onPolicy(f)
+
+	if err := writeRecord(recordsDir(t, dir), record{SessionID: "s2", Status: StatusWorking, Title: "bar", PID: os.Getpid(), TmuxPane: "%9"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := handleHook("UserPromptSubmit", strings.NewReader(`{"session_id":"s1","cwd":"/r/foo"}`), p); err != nil {
+		t.Fatal(err)
+	}
+	if err := handleHook("Stop", strings.NewReader(`{"session_id":"s1","cwd":"/r/foo"}`), p); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.calls) != 1 {
+		t.Fatalf("a sibling frozen at working but actually idle must not hold the run open; expected 1 digest, got %d: %+v", len(f.calls), f.calls)
+	}
+}
+
+// TestTakeNotifyBatchDropsExpired pins that entries older than batchEntryTTL are shed at flush time,
+// so a batch stuck open by a worker that died without a finish edge does not dump ancient titles.
+func TestTakeNotifyBatchDropsExpired(t *testing.T) {
+	dir := t.TempDir()
+	old := batchEntry{Title: "ancient", At: time.Now().Add(-batchEntryTTL - time.Hour)}
+	fresh := batchEntry{Title: "recent", At: time.Now()}
+	data, err := json.MarshalIndent([]batchEntry{old, fresh}, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, notifyBatchFile), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := takeNotifyBatch(dir)
+	if len(got) != 1 || got[0] != "recent" {
+		t.Fatalf("take should drop entries past the TTL, got %v", got)
 	}
 }
 
