@@ -27,11 +27,11 @@ const noticeTTL = 4 * time.Second
 const (
 	cursorColWidth = 2  // leftmost gutter: cursor glyph on the selected row, else blank
 	statusColWidth = 9  // " G word  " — status glyph + 4-char word, pinned across rows
-	agentIndent    = 6  // a row's columns sit this far right of the session bar's label
-	windowColMin   = 11 // worktree/window-label column: baseline, flexes to fit content
-	windowColMax   = 28 // ... but never past this
-	nameColMin     = 8  // title column: baseline, flexes to fit content
-	nameColMax     = 48 // ... but never past this
+	agentIndent    = 3  // a row's columns sit this far right of the status gutter
+	identityColMin = 11 // identity column (worktree/window label): baseline, flexes to fit content
+	identityColMax = 28 // ... but never past this
+	detailColMax   = 48 // difference-only detail column (divergent title/branch): flexes, never past this
+	ageColWidth    = 4  // right-docked relative-age column ("now", "12m", "3h", "4d"), right-aligned
 	minPreviewCols = 24 // the preview is dropped rather than rendered narrower than this
 	minLensRows    = 3  // each stacked lens keeps at least this many body rows
 	minSidebarCols = 34 // the lens column never shrinks below this content width (one legible row)
@@ -67,46 +67,57 @@ func (m model) sidebarWidth() int {
 // and the frame). The colWidths shrink loop trims the Projects columns to this.
 func (m model) sidebarContentWidth() int { return m.sidebarWidth() - cursorColWidth - 4 }
 
-// rawRowWidth is the width the columns actually need: the gutter, indent, the worktree and
-// title columns, and (when any row carries one) a one-space gap plus the locator-hint column.
-func rawRowWidth(windowW, nameW, hintW int) int {
-	w := statusColWidth + agentIndent + windowW + nameW
-	if hintW > 0 {
-		w += 1 + hintW
+// rawRowWidth is the width a leaf row needs: the status gutter and indent, the identity column,
+// a one-space gap plus the detail column when any row carries detail, then the right-docked
+// cluster - a minimum one-space gap, the optional locator, and the always-reserved age column.
+func rawRowWidth(identityW, detailW, hintW int) int {
+	left := statusColWidth + agentIndent + identityW
+	if detailW > 0 {
+		left += 1 + detailW
 	}
-	return w
+	right := ageColWidth
+	if hintW > 0 {
+		right += hintW + 1
+	}
+	return left + 1 + right
 }
 
-// colWidths returns the worktree-label, title, and locator-hint column widths for the current
-// rows. Each flexes to fit the widest value present — so a label like "algorithms2" shows in
-// full rather than clipped — clamped to a sane band, then narrowed (title first, then worktree)
-// so the columns never starve the preview. The hint is its own fixed-width column so every
-// "[in: …]" lines up at the same x, rather than floating behind each title's trailing edge.
-func (m model) colWidths() (windowW, nameW, hintW int) {
-	windowW, nameW = windowColMin, nameColMin
+// colWidths returns the identity, detail, and locator-hint column widths for the current rows.
+// The identity column (worktree/window label) flexes to its widest value - so a label like
+// "algorithms2" shows in full rather than clipped - clamped to a band. The detail column
+// (difference-only divergent title/branch) flexes to its widest present value and is zero when no
+// row carries detail, so it costs nothing in the common case. When a row cannot fit the content
+// width, columns shed in priority order - detail first (dim, secondary), then the locator, then
+// the identity truncates - while the right-docked age is always kept, since it is the column that
+// turns the list into a dashboard. The hint is its own fixed-width column so every "[in: …]"
+// lines up at the same x.
+func (m model) colWidths() (identityW, detailW, hintW int) {
+	identityW = identityColMin
 	for i := range m.rows {
 		r := m.rows[i]
-		if w := lipgloss.Width(rowLabel(r)) + 1; w > windowW { // +1 keeps a trailing space
-			windowW = w
+		if w := lipgloss.Width(rowIdentity(r)) + 1; w > identityW { // +1 keeps a trailing space
+			identityW = w
 		}
-		if w := lipgloss.Width(displayTitle(r.Title, r.TmuxSession)); w > nameW {
-			nameW = w
+		if w := lipgloss.Width(rowDetail(r, rowLabel(r))); w > detailW {
+			detailW = w
 		}
 		if w := lipgloss.Width(locatorHint(r)); w > hintW {
 			hintW = w
 		}
 	}
-	if windowW > windowColMax {
-		windowW = windowColMax
+	if identityW > identityColMax {
+		identityW = identityColMax
 	}
-	if nameW > nameColMax {
-		nameW = nameColMax
+	if detailW > detailColMax {
+		detailW = detailColMax
 	}
-	for cap := m.sidebarContentWidth(); cap > 0 && rawRowWidth(windowW, nameW, hintW) > cap; {
-		if nameW > nameColMin {
-			nameW--
-		} else if windowW > windowColMin {
-			windowW--
+	for cap := m.sidebarContentWidth(); cap > 0 && rawRowWidth(identityW, detailW, hintW) > cap; {
+		if detailW > 0 {
+			detailW--
+		} else if hintW > 0 {
+			hintW = 0
+		} else if identityW > identityColMin {
+			identityW--
 		} else {
 			break
 		}
@@ -128,6 +139,7 @@ const (
 	slotGlyph    = "◌" // a managed worktree with no agent (a spawn target)
 	slotWord     = "slot"
 	managedGlyph = "\U000f160e" // 󱘎 the managed-repo indicator
+	branchGlyph  = ""          //  the git-branch mark prefixing a divergent-branch detail
 	errGlyph     = "✗"          // a rejected/failed action (notice, red)
 	infoGlyph    = "•"          // a neutral confirmation (notice, accent)
 	// detachedGlyph marks a live agent with no tmux pane of its own — a background/daemon or
@@ -182,10 +194,12 @@ var (
 	helpStyle        = lipgloss.NewStyle().Faint(true).MarginTop(1)
 	placeholderStyle = lipgloss.NewStyle().Faint(true).Italic(true)
 
-	windowColStyle = lipgloss.NewStyle().Foreground(lipColor(theme.Gray))
-	nameColStyle   = lipgloss.NewStyle().Foreground(lipColor(theme.Text))
-	hintStyle      = lipgloss.NewStyle().Faint(true).Foreground(lipColor(theme.Gray))
-	rowHL          = lipColor(theme.RowHL)
+	identityColStyle = lipgloss.NewStyle().Foreground(lipColor(theme.Gray))             // the row's identity: worktree/window label
+	nameColStyle     = lipgloss.NewStyle().Foreground(lipColor(theme.Text))             // the Agents lens title
+	detailColStyle   = lipgloss.NewStyle().Faint(true).Foreground(lipColor(theme.Gray)) // difference-only divergent title/branch
+	ageColStyle      = lipgloss.NewStyle().Foreground(lipColor(theme.Gray))             // right-docked relative age
+	hintStyle        = lipgloss.NewStyle().Faint(true).Foreground(lipColor(theme.Gray))
+	rowHL            = lipColor(theme.RowHL)
 
 	// Both lenses draw a section header as a titled rule: the name in bold primary text, a
 	// hairline to the right edge, and a subordinate right-docked annotation (a band's count, a
@@ -1687,6 +1701,10 @@ type renderItem struct {
 	// bar's non-positional status badge. badgeStatus is "" when the section has no agents.
 	badgeStatus Status
 	badgeCount  int
+	// mostRecent is the section's newest agent activity, surfaced as an age on the folded
+	// header so collapsing a repo does not hide whether anything in it moved recently. Zero when
+	// the section has no live agents.
+	mostRecent time.Time
 }
 
 // windowLabel is how a row's window is shown in the gray column: its tmux window name
@@ -1774,7 +1792,7 @@ func groupRows(in []Row) ([]Row, []renderItem) {
 			}
 		}
 		badgeStatus, badgeCount := sectionBadge(g.rows)
-		items = append(items, renderItem{kind: kindSession, label: label, note: note, sessionKey: g.key, count: len(g.rows), managed: g.isRepo, worktrees: g.worktrees, badgeStatus: badgeStatus, badgeCount: badgeCount})
+		items = append(items, renderItem{kind: kindSession, label: label, note: note, sessionKey: g.key, count: len(g.rows), managed: g.isRepo, worktrees: g.worktrees, badgeStatus: badgeStatus, badgeCount: badgeCount, mostRecent: sectionMostRecent(g.rows)})
 		for _, r := range g.rows {
 			ordered = append(ordered, r)
 			items = append(items, renderItem{
@@ -1879,6 +1897,22 @@ func agentsByBand(in []Row) [numBands][]Row {
 // muting is a request to stop competing for attention, so a muted agent does not raise the
 // badge. It returns ("", 0) when the section has no unmuted live agents, so a quiet (or
 // fully muted) section shows no badge and is not ranked by it.
+// sectionMostRecent returns the newest Updated among a section's live agent rows, for the folded
+// header's age. Muted agents count (they are still activity); anchor/slot rows have no agent and
+// are skipped. Zero when the section has no agents.
+func sectionMostRecent(rows []Row) time.Time {
+	var newest time.Time
+	for _, r := range rows {
+		if r.Kind != RowAgent {
+			continue
+		}
+		if r.Updated.After(newest) {
+			newest = r.Updated
+		}
+	}
+	return newest
+}
+
 func sectionBadge(rows []Row) (Status, int) {
 	best := Status("")
 	bestRank := int(^uint(0) >> 1)
@@ -1921,13 +1955,71 @@ func locatorHint(r Row) string {
 	return "[in: " + r.TmuxSession + "]"
 }
 
-// rowLabel is the gray-column label for a leaf row: the worktree name when the row is
+// rowLabel is the identity label for a leaf row: the worktree name when the row is
 // a managed worktree (or anchor), else the tmux window label.
 func rowLabel(r Row) string {
 	if r.Worktree != "" {
 		return r.Worktree
 	}
 	return windowLabel(r.TmuxWindow, r.TmuxWindowName)
+}
+
+// rowIdentity is the row's rendered identity: its label (rowLabel), prefixed with the detached
+// marker when it is a live agent with no window of its own, so a background/daemon or headless
+// session reads as un-jumpable. The marker moved here from the title because the title now rides
+// the difference-only detail column, which is empty on a plain agent.
+func rowIdentity(r Row) string {
+	label := rowLabel(r)
+	if r.Kind == RowAgent && !r.hasWindow() {
+		return detachedGlyph + " " + label
+	}
+	return label
+}
+
+// rowDetail is a leaf row's difference-only annotation: the agent's display title when it diverges
+// from the identity label, else the checked-out branch when it diverges. Empty when neither adds a
+// fact - the common case where the title slugs to the repo name and the branch matches the
+// worktree - so the column costs nothing until it carries something. Each variant is glyph-prefixed
+// ("· " for a title, the branch mark for a branch) so it reads without relying on color.
+func rowDetail(r Row, identity string) string {
+	if t := displayTitle(r.Title, r.TmuxSession); t != "" && t != identity {
+		return "· " + t
+	}
+	if r.Branch != "" && r.Branch != identity {
+		return branchGlyph + " " + r.Branch
+	}
+	return ""
+}
+
+// rowAge is a leaf row's right-docked relative age. Only a live agent row carries one; an anchor
+// (base) or slot has no agent and so no age, and the blank is itself signal.
+func rowAge(r Row) string {
+	if r.Kind != RowAgent {
+		return ""
+	}
+	return relAge(r.Updated)
+}
+
+// relAge renders a last-activity time as a compact right-docked age: "now" under a minute, then
+// "5m", "3h", "4d", "2w" as it grows. A zero time yields "" (nothing has been recorded). The
+// units stay within ageColWidth so the column holds a fixed x for every row.
+func relAge(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	case d < 7*24*time.Hour:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	default:
+		return fmt.Sprintf("%dw", int(d.Hours()/(24*7)))
+	}
 }
 
 // rowLess orders rows within a section stably: the anchor first, empty slots last, and
@@ -2189,14 +2281,17 @@ func padToWidth(s string, w int) string {
 // highlight; the cursor/mirror glyph is drawn separately in the cursor column.
 func (m model) agentLeaf(r Row, w int, selected bool) string {
 	gutter, st := gutterFor(r)
-	nameW := max(w-statusColWidth, 1)
+	// Reserve the right-docked age column (plus a one-space gap) so the Agents lens ages line up
+	// with the Projects lens's directly below - an age in one but not its sibling reads as a bug.
+	nameW := max(w-statusColWidth-ageColWidth-1, 1)
 	title := padRight(truncate(leafTitle(r), nameW), nameW)
-	gutterSt, nameSt := st, nameColStyle
+	gutterSt, nameSt, ageSt := st, nameColStyle, ageColStyle
 	if selected {
-		gutterSt = gutterSt.Background(rowHL)
+		hl := func(s lipgloss.Style) lipgloss.Style { return s.Background(rowHL) }
+		gutterSt, ageSt = hl(gutterSt), hl(ageSt)
 		nameSt = nameSt.Background(rowHL).Bold(true)
 	}
-	return gutterSt.Render(gutter) + nameSt.Render(title)
+	return gutterSt.Render(gutter) + nameSt.Render(title) + nameSt.Render(" ") + ageSt.Render(padLeft(rowAge(r), ageColWidth))
 }
 
 // cursorCol is the leftmost column of a row: the accent cursor glyph on the focused selection,
@@ -2245,6 +2340,9 @@ func (m model) sessionBarRight(it renderItem) string {
 	if it.badgeStatus != "" {
 		parts = append(parts, statusGlyph[it.badgeStatus]+" "+fmt.Sprintf("%d", it.badgeCount))
 	}
+	if age := relAge(it.mostRecent); age != "" {
+		parts = append(parts, age)
+	}
 	if it.note != "" {
 		parts = append(parts, it.note)
 	}
@@ -2254,43 +2352,51 @@ func (m model) sessionBarRight(it renderItem) string {
 	return strings.Join(parts, "  ")
 }
 
-// leafRow renders one row at fixed columns: the status/marker gutter (glyph + word), an
-// indent, the gray window/worktree label, then the white name. The selected row carries
-// a full-row highlight spanning gutter→name in addition to the cursor glyph.
+// leafRow renders one row: the status/marker gutter (glyph + word), an indent, the identity
+// column (worktree/window label), then a difference-only detail column (a divergent title or
+// branch, dim) - all packed left - with a right-docked cluster carrying the "[in: …]" locator and
+// the relative age flush to the pane's right edge. The surplus between the two clusters is the
+// row's breathing room, not trailing waste. The selected row carries a full-row highlight in
+// addition to the cursor glyph.
 func (m model) leafRow(it renderItem, selected bool) string {
 	r := m.rows[it.rowIdx]
 	gutter, st := gutterFor(r)
-	indent := strings.Repeat(" ", agentIndent)
-	windowW, nameW, hintW := m.colWidths()
-	win := padRight(truncate(it.window, windowW-1), windowW)
-	title := padRight(truncate(leafTitle(r), nameW), nameW)
+	identityW, detailW, hintW := m.colWidths()
 
-	winSt, nameSt, hintSt := windowColStyle, nameColStyle, hintStyle
+	fill := nameColStyle
+	idSt, detailSt, hintSt, ageSt := identityColStyle, detailColStyle, hintStyle, ageColStyle
 	gutterSt := st
 	if selected {
 		hl := func(s lipgloss.Style) lipgloss.Style { return s.Background(rowHL) }
-		winSt, hintSt, gutterSt = hl(winSt), hl(hintSt), hl(gutterSt)
-		nameSt = nameSt.Background(rowHL).Bold(true)
+		detailSt, hintSt, ageSt, gutterSt, fill = hl(detailSt), hl(hintSt), hl(ageSt), hl(gutterSt), hl(fill)
+		idSt = idSt.Background(rowHL).Bold(true)
 	}
 
-	// Columns pack left: gutter, indent, worktree, title. The "[in: …]" locator is an exception
-	// annotation, so it rides a rightmost column flush to the pane's target width — every hint
-	// lines up at the same right edge, and any surplus is the gap between the title and that
-	// column, never trailing space past the hint.
-	row := gutterSt.Render(gutter) + nameSt.Render(indent) + winSt.Render(win) + nameSt.Render(title)
-	used := statusColWidth + agentIndent + windowW + nameW
-	if hintW > 0 {
-		// Reserve one space before the hint column, then push the rest of the surplus into it so
-		// the locator sits at the right edge.
-		gap := 1
-		if pad := m.rowContentWidth() - used - hintW; pad > gap {
-			gap = pad
-		}
-		row += nameSt.Render(strings.Repeat(" ", gap)) + hintSt.Render(padRight(truncate(locatorHint(r), hintW), hintW))
-	} else if pad := m.rowContentWidth() - used; pad > 0 {
-		row += nameSt.Render(strings.Repeat(" ", pad))
+	// Left cluster: gutter, indent, identity, and (when any row carries one) a spaced detail column.
+	left := gutterSt.Render(gutter) + fill.Render(strings.Repeat(" ", agentIndent)) +
+		idSt.Render(padRight(truncate(rowIdentity(r), identityW-1), identityW))
+	leftW := statusColWidth + agentIndent + identityW
+	if detailW > 0 {
+		left += fill.Render(" ") + detailSt.Render(padRight(truncate(rowDetail(r, rowLabel(r)), detailW), detailW))
+		leftW += 1 + detailW
 	}
-	return row
+
+	// Right cluster: the optional locator then the age, docked to the pane's right edge so every
+	// age (and every "[in: …]") lines up at a common x. The gap between the clusters absorbs the
+	// surplus.
+	right := ""
+	rightW := ageColWidth
+	if hintW > 0 {
+		right += hintSt.Render(padRight(truncate(locatorHint(r), hintW), hintW)) + fill.Render(" ")
+		rightW += hintW + 1
+	}
+	right += ageSt.Render(padLeft(rowAge(r), ageColWidth))
+
+	gap := m.rowContentWidth() - leftW - rightW
+	if gap < 1 {
+		gap = 1
+	}
+	return left + fill.Render(strings.Repeat(" ", gap)) + right
 }
 
 // gutterFor returns the pinned status/marker gutter for a row and the style to render
@@ -2580,6 +2686,16 @@ func padRight(s string, n int) string {
 		return s
 	}
 	return s + strings.Repeat(" ", n-len(r))
+}
+
+// padLeft right-aligns s in a field of n cells, left-padding with spaces. Used for the age column
+// so ages dock at a common right edge. Like padRight it counts runs, which suits the ASCII age.
+func padLeft(s string, n int) string {
+	r := []rune(s)
+	if len(r) >= n {
+		return s
+	}
+	return strings.Repeat(" ", n-len(r)) + s
 }
 
 // truncate shortens s to at most n display cells, appending an ellipsis when it
