@@ -257,7 +257,7 @@ func validHex(s string) bool {
 }
 
 // helpOrder is the order actions appear in the help line. Focus-switch comes right after
-// navigation; the two focus keys collapse to one "h/l lens" hint (see renderHelp).
+// navigation; the two focus keys collapse to one "^k/^j lens" hint (see renderHelp).
 var helpOrder = []Action{ActionDown, ActionUp, ActionTop, ActionBottom, ActionPrevSection, ActionNextSection, ActionFocusLeft, ActionNextNamespace, ActionFold, ActionNewSession, ActionNewAgent, ActionClose, ActionDelete, ActionMute, ActionSelect, ActionQuit}
 
 var actionLabel = map[Action]string{

@@ -1054,8 +1054,8 @@ func TestDefaultFocusIsAgents(t *testing.T) {
 	}
 }
 
-// TestLensFocusSwitchCarriesCounterpart: h focuses the left (Agents) lens and lands on the
-// same agent selected in Workspaces; l returns focus to the right (Workspaces) lens.
+// TestLensFocusSwitchCarriesCounterpart: ctrl+k focuses the left (Agents) lens and lands on the
+// same agent selected in Workspaces; ctrl+j returns focus to the right (Workspaces) lens.
 // Navigation routes to the focused lens.
 func TestLensFocusSwitchCarriesCounterpart(t *testing.T) {
 	m := mustModel(t, agentsN(3), nil, DefaultKeymap()) // a,b,c working, stable order
@@ -1064,9 +1064,9 @@ func TestLensFocusSwitchCarriesCounterpart(t *testing.T) {
 		t.Fatalf("precondition: workspaces should select b, got %s", r.SessionID)
 	}
 
-	m = send(m, key("h")) // focus the left (Agents) lens
+	m = send(m, key("ctrl+k")) // focus the left (Agents) lens
 	if m.focus != lensAgents {
-		t.Fatalf("h should focus the Agents lens")
+		t.Fatalf("ctrl+k should focus the Agents lens")
 	}
 	if r, ok := m.currentRow(); !ok || r.SessionID != "b" {
 		t.Fatalf("Agents lens should land on the counterpart b, got ok=%v id=%s", ok, r.SessionID)
@@ -1077,9 +1077,9 @@ func TestLensFocusSwitchCarriesCounterpart(t *testing.T) {
 		t.Fatalf("j in the Agents lens should advance to c, got %s", r.SessionID)
 	}
 
-	m = send(m, key("l")) // back to Workspaces; selection is linked, so it follows to c
+	m = send(m, key("ctrl+j")) // back to Workspaces; selection is linked, so it follows to c
 	if m.focus != lensProjects {
-		t.Fatalf("l should focus the Workspaces lens")
+		t.Fatalf("ctrl+j should focus the Workspaces lens")
 	}
 	if r, _ := m.currentRow(); r.SessionID != "c" {
 		t.Fatalf("the linked selection should carry c back to Workspaces, got %s", r.SessionID)
