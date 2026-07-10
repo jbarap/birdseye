@@ -141,6 +141,15 @@ const (
 // lipgloss performs its own profile-based downgrade (truecolor → 256 → 16).
 func lipColor(c theme.Color) lipgloss.Color { return lipgloss.Color(c.Hex) }
 
+// accentBorderScale darkens the accent for a focused panel's border: the frame reads as accent
+// but a shade deeper than the brighter title text and selection glyphs, so it doesn't compete.
+const accentBorderScale = 0.6
+
+// accentBorder returns the focused-panel border shade: the accent scaled toward black.
+func accentBorder(accent lipgloss.Color) lipgloss.Color {
+	return lipgloss.Color(theme.Darken(string(accent), accentBorderScale))
+}
+
 var statusStyle = map[Status]lipgloss.Style{
 	StatusNeedsAttention: lipgloss.NewStyle().Bold(true).Foreground(lipColor(theme.Red)),
 	StatusWorking:        lipgloss.NewStyle().Foreground(lipColor(theme.Gold)),
@@ -1635,7 +1644,8 @@ func (m model) fitLine(s string) string {
 func (m model) emptyView() string {
 	body := placeholderStyle.Render("No agents tracked yet.\n" +
 		"Wire up Claude Code hooks (see README) so sessions report status here.")
-	panel := panelTitle(frameStyle.Render(body), "Agents", m.accent)
+	// The lone Agents panel is the active surface, so it takes the accent on border and title.
+	panel := panelTitleBordered(frameStyle.BorderForeground(accentBorder(m.accent)).Render(body), "Agents", m.accent, accentBorder(m.accent))
 	help := "q quit"
 	// With orchestration, opening a session is the natural next step from an empty view.
 	if m.orch != nil {
@@ -1982,18 +1992,19 @@ func (m model) renderLenses() string {
 }
 
 // sidebarPanel frames a lens's body with its title at a fixed inner height so the two stacked
-// panels tile the sidebar's height exactly. The title is accented when the lens is focused and
-// gray otherwise. Height is left unforced before the first size message (rows is unbounded then).
+// panels tile the sidebar's height exactly. The focused lens takes the accent on both its border
+// and title; the unfocused lens reads gray. Height is left unforced before the first size message
+// (rows is unbounded then).
 func (m model) sidebarPanel(lens lensID, title, body string, rows int) string {
-	color := lipColor(theme.Gray)
+	borderColor, titleColor := lipColor(theme.Border), lipColor(theme.Gray)
 	if m.focus == lens {
-		color = m.accent
+		borderColor, titleColor = accentBorder(m.accent), m.accent
 	}
-	fs := frameStyle
+	fs := frameStyle.BorderForeground(borderColor)
 	if m.height > 0 {
-		fs = frameStyle.Height(rows)
+		fs = fs.Height(rows)
 	}
-	return panelTitle(fs.Render(body), title, color)
+	return panelTitleBordered(fs.Render(body), title, titleColor, borderColor)
 }
 
 func (m model) renderRows() string {

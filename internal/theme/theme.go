@@ -86,3 +86,18 @@ func (c Color) rgb() (r, g, b int) {
 	v, _ := strconv.ParseUint(strings.TrimPrefix(c.Hex, "#"), 16, 32)
 	return int(v>>16) & 0xff, int(v>>8) & 0xff, int(v) & 0xff
 }
+
+// Darken scales a #rrggbb hex toward black by factor (0.8 = 20% darker), returning a new
+// #rrggbb literal. A value that is not a #rrggbb string is returned unchanged. Used to derive a
+// slightly deeper shade of the (possibly user-configured) accent for focused-panel borders.
+func Darken(hex string, factor float64) string {
+	if len(hex) != 7 || hex[0] != '#' {
+		return hex
+	}
+	v, err := strconv.ParseUint(hex[1:], 16, 32)
+	if err != nil {
+		return hex
+	}
+	scale := func(shift uint) int { return int(float64(int(v>>shift)&0xff) * factor) }
+	return fmt.Sprintf("#%02x%02x%02x", scale(16), scale(8), scale(0))
+}

@@ -124,8 +124,8 @@ band read as the same kind of thing.
   Status is a per-row indicator and a section-header badge, never a position. The incidental
   `(no-repo)` bucket states why it offers no worktrees (e.g. `not a git repo`).
 
-Exactly one lens holds focus; `ctrl+k`/`ctrl+j` switch between them and the focused lens's title
-takes the accent (the other reads gray). The focused selection drives the preview and shows in the
+Exactly one lens holds focus; `ctrl+k`/`ctrl+j` switch between them and the focused lens's panel -
+both its border and its title - takes the accent (the other reads gray). The focused selection drives the preview and shows in the
 other lens with an accent **mirror** bullet (`theme.MirrorGlyph`, see Selection), so the same
 agent is visibly linked across both without the unfocused lens sprouting a rival cursor. Folding (`tab`) works in **both** lenses and stays consistent: a Projects
 section collapses its rows, an Agents band collapses its agents - each to a navigable header
