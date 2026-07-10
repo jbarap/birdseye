@@ -257,7 +257,7 @@ func validHex(s string) bool {
 }
 
 // helpOrder is the order actions appear in the help line. Focus-switch comes right after
-// navigation; the two focus keys collapse to one "h/l lens" hint (see renderHelp).
+// navigation; the two focus keys collapse to one "^k/^j lens" hint (see renderHelp).
 var helpOrder = []Action{ActionDown, ActionUp, ActionTop, ActionBottom, ActionPrevSection, ActionNextSection, ActionFocusLeft, ActionNextNamespace, ActionFold, ActionNewSession, ActionNewAgent, ActionClose, ActionDelete, ActionMute, ActionSelect, ActionQuit}
 
 var actionLabel = map[Action]string{
@@ -1626,7 +1626,7 @@ func (m model) fitLine(s string) string {
 func (m model) emptyView() string {
 	body := placeholderStyle.Render("No agents tracked yet.\n" +
 		"Wire up Claude Code hooks (see README) so sessions report status here.")
-	panel := panelTitle(frameStyle.Render(body), "agents", m.accent)
+	panel := panelTitle(frameStyle.Render(body), "Agents", m.accent)
 	help := "q quit"
 	// With orchestration, opening a session is the natural next step from an empty view.
 	if m.orch != nil {
@@ -1963,12 +1963,12 @@ const (
 func (m model) renderLenses() string {
 	if !m.stackLenses() {
 		if m.focus == lensAgents {
-			return m.sidebarPanel(lensAgents, "agents", m.renderAgents(), m.agentsPaneRows())
+			return m.sidebarPanel(lensAgents, "Agents", m.renderAgents(), m.agentsPaneRows())
 		}
-		return m.sidebarPanel(lensProjects, "projects", m.renderRows(), m.projectsPaneRows())
+		return m.sidebarPanel(lensProjects, "Projects", m.renderRows(), m.projectsPaneRows())
 	}
-	ag := m.sidebarPanel(lensAgents, "agents", m.renderAgents(), m.agentsPaneRows())
-	ws := m.sidebarPanel(lensProjects, "projects", m.renderRows(), m.projectsPaneRows())
+	ag := m.sidebarPanel(lensAgents, "Agents", m.renderAgents(), m.agentsPaneRows())
+	ws := m.sidebarPanel(lensProjects, "Projects", m.renderRows(), m.projectsPaneRows())
 	return lipgloss.JoinVertical(lipgloss.Left, ag, ws)
 }
 
@@ -2322,7 +2322,7 @@ func (m model) renderPreview() string {
 	// push the panel past its height budget and overflow the terminal. MaxHeight clips it to the
 	// border-inclusive height so the body always fits m.height.
 	box = lipgloss.NewStyle().MaxHeight(inner + 2).Render(box)
-	return panelTitle(box, "preview", m.accent)
+	return panelTitle(box, "Preview", m.accent)
 }
 
 // previewPlaceholder is shown when the preview pane has nothing to capture. A windowless

@@ -412,12 +412,12 @@ func TestViewWideShowsPreviewNarrowHides(t *testing.T) {
 	m := mustModel(t, agentsN(2), prev, DefaultKeymap())
 
 	m.width, m.height = 120, 30
-	if !strings.Contains(m.View(), "preview") {
+	if !strings.Contains(m.View(), "Preview") {
 		t.Fatalf("a wide view should include the preview pane")
 	}
 
 	m.width, m.height = 50, 30
-	if strings.Contains(m.View(), "preview") {
+	if strings.Contains(m.View(), "Preview") {
 		t.Fatalf("a narrow view should hide the preview pane")
 	}
 }
@@ -470,10 +470,10 @@ func TestViewSidebarPreviewRight(t *testing.T) {
 	sb := strings.Split(stripANSI(m.renderLenses()), "\n")
 	ag, ws := -1, -1
 	for i, ln := range sb {
-		if strings.Contains(ln, "agents") && ag == -1 {
+		if strings.Contains(ln, "Agents") && ag == -1 {
 			ag = i
 		}
-		if strings.Contains(ln, "projects") {
+		if strings.Contains(ln, "Projects") {
 			ws = i
 		}
 	}
@@ -484,7 +484,7 @@ func TestViewSidebarPreviewRight(t *testing.T) {
 	// The preview renders to the right of the sidebar: its title shares the top border row with
 	// the agents title, rather than sitting below the whole sidebar.
 	firstLine := strings.SplitN(stripANSI(m.View()), "\n", 2)[0]
-	if !strings.Contains(firstLine, "preview") || !strings.Contains(firstLine, "agents") {
+	if !strings.Contains(firstLine, "Preview") || !strings.Contains(firstLine, "Agents") {
 		t.Fatalf("the preview title should share the top row with the agents title, got:\n%s", firstLine)
 	}
 }
@@ -1054,8 +1054,8 @@ func TestDefaultFocusIsAgents(t *testing.T) {
 	}
 }
 
-// TestLensFocusSwitchCarriesCounterpart: h focuses the left (Agents) lens and lands on the
-// same agent selected in Workspaces; l returns focus to the right (Workspaces) lens.
+// TestLensFocusSwitchCarriesCounterpart: ctrl+k focuses the left (Agents) lens and lands on the
+// same agent selected in Workspaces; ctrl+j returns focus to the right (Workspaces) lens.
 // Navigation routes to the focused lens.
 func TestLensFocusSwitchCarriesCounterpart(t *testing.T) {
 	m := mustModel(t, agentsN(3), nil, DefaultKeymap()) // a,b,c working, stable order
@@ -1064,9 +1064,9 @@ func TestLensFocusSwitchCarriesCounterpart(t *testing.T) {
 		t.Fatalf("precondition: workspaces should select b, got %s", r.SessionID)
 	}
 
-	m = send(m, key("h")) // focus the left (Agents) lens
+	m = send(m, key("ctrl+k")) // focus the left (Agents) lens
 	if m.focus != lensAgents {
-		t.Fatalf("h should focus the Agents lens")
+		t.Fatalf("ctrl+k should focus the Agents lens")
 	}
 	if r, ok := m.currentRow(); !ok || r.SessionID != "b" {
 		t.Fatalf("Agents lens should land on the counterpart b, got ok=%v id=%s", ok, r.SessionID)
@@ -1077,9 +1077,9 @@ func TestLensFocusSwitchCarriesCounterpart(t *testing.T) {
 		t.Fatalf("j in the Agents lens should advance to c, got %s", r.SessionID)
 	}
 
-	m = send(m, key("l")) // back to Workspaces; selection is linked, so it follows to c
+	m = send(m, key("ctrl+j")) // back to Workspaces; selection is linked, so it follows to c
 	if m.focus != lensProjects {
-		t.Fatalf("l should focus the Workspaces lens")
+		t.Fatalf("ctrl+j should focus the Workspaces lens")
 	}
 	if r, _ := m.currentRow(); r.SessionID != "c" {
 		t.Fatalf("the linked selection should carry c back to Workspaces, got %s", r.SessionID)
@@ -1172,7 +1172,7 @@ func TestSidebarStacksBothLensesShortFallback(t *testing.T) {
 	// Assert on renderLenses (the lens area) rather than View, so the help legend doesn't
 	// masquerade as a lens title.
 	m.width, m.height = 200, 30
-	if l := m.renderLenses(); !strings.Contains(l, "projects") || !strings.Contains(l, "agents") {
+	if l := m.renderLenses(); !strings.Contains(l, "Projects") || !strings.Contains(l, "Agents") {
 		t.Fatalf("a tall sidebar should stack both lens titles")
 	}
 
@@ -1180,12 +1180,12 @@ func TestSidebarStacksBothLensesShortFallback(t *testing.T) {
 	if m.stackLenses() {
 		t.Fatalf("8 rows should be too short to stack both lenses")
 	}
-	if l := m.renderLenses(); !strings.Contains(l, "projects") || strings.Contains(l, "agents") {
+	if l := m.renderLenses(); !strings.Contains(l, "Projects") || strings.Contains(l, "Agents") {
 		t.Fatalf("a short sidebar should show only the focused (workspaces) lens")
 	}
 	// ctrl+k focuses up to the agents lens.
 	m = send(m, key("ctrl+k"))
-	if l := m.renderLenses(); !strings.Contains(l, "agents") || strings.Contains(l, "projects") {
+	if l := m.renderLenses(); !strings.Contains(l, "Agents") || strings.Contains(l, "Projects") {
 		t.Fatalf("after focus-up the short sidebar should show only the agents lens")
 	}
 }
