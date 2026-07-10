@@ -173,14 +173,23 @@ var (
 	helpStyle        = lipgloss.NewStyle().Faint(true).MarginTop(1)
 	placeholderStyle = lipgloss.NewStyle().Faint(true).Italic(true)
 
-	sessionBarStyle = lipgloss.NewStyle().Bold(true).Foreground(lipColor(theme.SessionFg)).Background(lipColor(theme.SessionBg))
-	// sessionBarCountStyle is the bar's trailing worktree count: same bar background,
-	// but faint and unbolded so it reads as a subordinate annotation, not a heading.
-	sessionBarCountStyle = lipgloss.NewStyle().Faint(true).Foreground(lipColor(theme.SessionFg)).Background(lipColor(theme.SessionBg))
-	windowColStyle       = lipgloss.NewStyle().Foreground(lipColor(theme.Gray))
-	nameColStyle         = lipgloss.NewStyle().Foreground(lipColor(theme.Text))
-	hintStyle            = lipgloss.NewStyle().Faint(true).Foreground(lipColor(theme.Gray))
-	rowHL                = lipColor(theme.RowHL)
+	windowColStyle = lipgloss.NewStyle().Foreground(lipColor(theme.Gray))
+	nameColStyle   = lipgloss.NewStyle().Foreground(lipColor(theme.Text))
+	hintStyle      = lipgloss.NewStyle().Faint(true).Foreground(lipColor(theme.Gray))
+	rowHL          = lipColor(theme.RowHL)
+
+	// Both lenses draw a section header as a titled rule: the name in bold primary text, a
+	// hairline to the right edge, and a subordinate right-docked annotation (a band's count, a
+	// repo's badge/worktree summary). One shared language, so a repository header and a status
+	// band read as the same kind of thing (see DESIGN.md, Two lenses).
+	sectionLabelStyle = lipgloss.NewStyle().Bold(true).Foreground(lipColor(theme.Text))
+	sectionRuleStyle  = lipgloss.NewStyle().Foreground(lipColor(theme.Border))
+	sectionCountStyle = lipgloss.NewStyle().Foreground(lipColor(theme.Gray))
+	// bandEmptyStyle draws an empty triage band's label: a plain lowercase Gray word (no caret,
+	// count, hairline, or bold), so the band stays legible as "all clear" while reading clearly
+	// subordinate to a populated band. Not Faint - faint Gray is too quiet to notice; and no
+	// hairline - a Border-colored rule reads as a stray panel-border fragment.
+	bandEmptyStyle = lipgloss.NewStyle().Foreground(lipColor(theme.Gray))
 )
 
 // cursorGlyphStyle renders a gutter selection glyph in the model's accent (so the cursor
@@ -1994,8 +2003,10 @@ func (m model) renderRows() string {
 	end := min(top+h, len(vis))
 
 	selItem := -1
+	curSection := ""
 	if m.focus == lensProjects && m.cursor >= 0 && m.cursor < len(m.nav) {
 		selItem = m.nav[m.cursor]
+		curSection = m.items[selItem].sessionKey // the section the cursor is in
 	}
 	mirrorID := ""
 	if m.focus == lensAgents {
@@ -2012,7 +2023,7 @@ func (m model) renderRows() string {
 			hl = hlMirror
 		}
 		if it.kind == kindSession {
-			rows = append(rows, m.sessionBar(it, hl))
+			rows = append(rows, m.sessionBar(it, selItem >= 0 && it.sessionKey == curSection, hl))
 			continue
 		}
 		rows = append(rows, m.cursorCol(hl)+m.leafRow(it, hl == hlCursor))
@@ -2020,9 +2031,9 @@ func (m model) renderRows() string {
 	return strings.Join(rows, "\n")
 }
 
-// renderAgents draws the Agents lens: always all four band headers (a section bar when
-// populated, faint when empty), with each unfolded band's agents beneath, windowed to the
-// visible height. A folded band collapses to its header. The focused cursor highlights the
+// renderAgents draws the Agents lens: always all four band headers (a titled rule when
+// populated, a plain lowercase-Gray word when empty), with each unfolded band's agents beneath,
+// windowed to the visible height. A folded band collapses to its header. The focused cursor highlights the
 // selected agent (or folded band header); when the Projects lens is focused instead, its
 // selected agent shows here with the dimmer mirror highlight (on the band header if that
 // band is folded).
@@ -2034,8 +2045,10 @@ func (m model) renderAgents() string {
 	end := min(top+h, len(vis))
 
 	selItem := -1
+	curBand := agentBand(-1)
 	if m.focus == lensAgents && m.agentCursor >= 0 && m.agentCursor < len(m.agentNav) {
 		selItem = m.agentNav[m.agentCursor]
+		curBand = m.agentItems[selItem].band // the band the cursor is in
 	}
 	mirrorID := ""
 	if m.focus == lensProjects {
@@ -2053,7 +2066,7 @@ func (m model) renderAgents() string {
 			case folded && mirrorID != "" && m.bandHasAgent(it.band, mirrorID):
 				hl = hlMirror
 			}
-			rows = append(rows, m.bandBar(it.band, it.count, cw, folded, hl))
+			rows = append(rows, m.bandBar(it.band, it.count, cw, folded, it.band == curBand, hl))
 			continue
 		}
 		r := m.agentRows[it.rowIdx]
@@ -2080,63 +2093,84 @@ func (m model) bandHasAgent(b agentBand, id string) bool {
 	return false
 }
 
-// barGutter renders the cursor-column cell over the section-bar background: the accent
-// cursor glyph on the focused selection, the accent mirror bullet on its mirror, else a blank
-// cell - so a section bar's distinct background runs unbroken across the gutter.
-func (m model) barGutter(hl hlState) string {
+// titledRule composes a section header from an already-styled head segment (the gutter plus
+// the caret-and-name label) and a right annotation (a count or badge summary, may be ""): a
+// hairline fills the gap so the header reads as a divider and the annotation docks at the right
+// edge in subordinate chrome. The line is padded (or truncated) to exactly fullW so the panel
+// holds its width. Shared by both lenses; see sectionGutter for the gutter glyph.
+func titledRule(head, right string, fullW int) string {
+	if right == "" {
+		if ruleN := fullW - lipgloss.Width(head) - 1; ruleN >= 1 {
+			return head + " " + sectionRuleStyle.Render(strings.Repeat("─", ruleN))
+		}
+		return padToWidth(head, fullW)
+	}
+	rightSeg := sectionCountStyle.Render(right)
+	if ruleN := fullW - lipgloss.Width(head) - lipgloss.Width(rightSeg) - 2; ruleN >= 1 {
+		return head + " " + sectionRuleStyle.Render(strings.Repeat("─", ruleN)) + " " + rightSeg
+	}
+	return padToWidth(head+" "+rightSeg, fullW)
+}
+
+// sectionGutter renders the cursor-column cell for a section header (either lens): the accent
+// pointer on the selected header, the accent mirror bullet when the other lens's selection
+// lives here, else blank. A titled-rule header has no fill, so the gutter carries no background.
+func (m model) sectionGutter(hl hlState) string {
 	switch hl {
 	case hlCursor:
-		return cursorGlyphStyle(m.accent).Background(lipColor(theme.SessionBg)).Render(theme.CursorGlyph + " ")
+		return cursorGlyphStyle(m.accent).Render(theme.CursorGlyph + " ")
 	case hlMirror:
-		return cursorGlyphStyle(m.accent).Background(lipColor(theme.SessionBg)).Render(theme.MirrorGlyph + " ")
+		return cursorGlyphStyle(m.accent).Render(theme.MirrorGlyph + " ")
 	default:
-		return sessionBarStyle.Render(strings.Repeat(" ", cursorColWidth))
+		return strings.Repeat(" ", cursorColWidth)
 	}
 }
 
-// sectionBar renders an edge-to-edge section header over the full list width (cursor gutter
-// included), shared by both lenses so a repository header and a status band read as the same
-// kind of thing. left is pinned to the start (after the gutter), right (a count or badge, may
-// be "") is pinned to the right edge, and the cursor/mirror glyph sits in the gutter over the
-// bar. A faint bar (an empty band) drops to dim text with a blank gutter.
-func (m model) sectionBar(left, right string, contentW int, hl hlState, faint bool) string {
-	fullW := cursorColWidth + contentW
-	if faint {
-		body := strings.Repeat(" ", cursorColWidth) + left
-		return sessionBarStyle.Bold(false).Faint(true).Width(fullW).Render(truncate(body, fullW))
-	}
-	leftSeg := m.barGutter(hl) + sessionBarStyle.Render(left)
-	gap := fullW - lipgloss.Width(leftSeg) - lipgloss.Width(right)
-	if gap < 1 {
-		body := strings.Repeat(" ", cursorColWidth) + left
-		if right != "" {
-			body += "  " + right
-		}
-		return sessionBarStyle.Width(fullW).Render(truncate(body, fullW))
-	}
-	out := leftSeg + sessionBarStyle.Render(strings.Repeat(" ", gap))
-	if right != "" {
-		out += sessionBarCountStyle.Render(right)
-	}
-	return out
-}
-
-// bandBar renders a triage band's header as a section bar. A populated band is bold, carries
-// the ▾/▸ fold caret, and pins its count to the right edge (a folded band shows the collapsed
-// caret and its hidden-agent count). An empty band keeps the bar but goes faint with no caret
-// or count - still clearly a section, just a quiet "all clear". It is not foldable.
-func (m model) bandBar(b agentBand, count, contentW int, folded bool, hl hlState) string {
-	label := bandLabels[b]
-	if count == 0 {
-		// Indent by the caret's width ("▾ ") so an empty band's label lines up with the
-		// populated bands' labels rather than sitting two columns to its left.
-		return m.sectionBar("  "+label, "", contentW, hlNone, true)
-	}
+// sectionLabel renders a header's gutter + "<caret> <name>" segment. The name takes the accent
+// when current - the section holds the focused lens's selection - so the section the cursor is
+// in is highlighted whether the cursor rests on the header itself (a folded section) or on one
+// of its rows. Shared by both lenses so a band header and a repo header build identically.
+func (m model) sectionLabel(name string, folded, current bool, hl hlState) string {
 	caret := "▾"
 	if folded {
 		caret = "▸"
 	}
-	return m.sectionBar(caret+" "+label, fmt.Sprintf("%d", count), contentW, hl, false)
+	style := sectionLabelStyle
+	if current {
+		style = style.Foreground(m.accent)
+	}
+	return m.sectionGutter(hl) + style.Render(caret+" "+name)
+}
+
+// bandBar renders a triage band's header. A populated band is a titled rule: the ▾/▸ fold
+// caret, the bold uppercase band name, a hairline drawn to the right edge, and the agent count
+// docked at its end (a folded band shows ▸ and its hidden-agent count; the band holding the
+// focused selection takes the accent). An empty band is a plain lowercase Gray word - no caret,
+// count, or hairline - legible as "all clear" but clearly quieter than a populated band. A band
+// is foldable only while populated. Every line is padded to the full width so the panel holds
+// its width even when all four bands are empty.
+func (m model) bandBar(b agentBand, count, contentW int, folded, current bool, hl hlState) string {
+	fullW := cursorColWidth + contentW
+	if count == 0 {
+		// An empty band is just a lowercase Gray word - no caret, count, or hairline. It omits
+		// the rule on purpose: a Border-colored rule reads as a stray panel-border fragment.
+		// Indent past the gutter and the caret's width ("▾ ") so its label lines up under the
+		// populated bands' labels.
+		body := strings.Repeat(" ", cursorColWidth+2) + bandEmptyStyle.Render(strings.ToLower(bandLabels[b]))
+		return padToWidth(body, fullW)
+	}
+	head := m.sectionLabel(bandLabels[b], folded, current, hl)
+	return titledRule(head, fmt.Sprintf("%d", count), fullW)
+}
+
+// padToWidth right-pads a (possibly styled) line with spaces to exactly w display cells,
+// truncating with an ellipsis when it is already wider. It measures with lipgloss.Width so
+// ANSI escapes and wide glyphs are counted correctly (padRight would miscount both).
+func padToWidth(s string, w int) string {
+	if pad := w - lipgloss.Width(s); pad > 0 {
+		return s + strings.Repeat(" ", pad)
+	}
+	return truncate(s, w)
 }
 
 // agentLeaf renders one agent row in the Agents lens: the status gutter (glyph + word) then
@@ -2154,11 +2188,11 @@ func (m model) agentLeaf(r Row, w int, selected bool) string {
 	return gutterSt.Render(gutter) + nameSt.Render(title)
 }
 
-// cursorCol is the leftmost column: the accent cursor glyph on the focused selection, the
-// accent mirror bullet on its mirror in the other lens, else blank. The focused glyph carries
-// the row's RowHL background so the gutter and the highlighted row read as one continuous bar
-// (the section-bar gutter does the same over SessionBg). The mirror has no row fill, so its
-// gutter stays background-less to match its plain row.
+// cursorCol is the leftmost column of a row: the accent cursor glyph on the focused selection,
+// the accent mirror bullet on its mirror in the other lens, else blank. The focused glyph
+// carries the row's RowHL background so the gutter and the highlighted row read as one
+// continuous bar. The mirror has no row fill, so its gutter stays background-less to match its
+// plain row. A section header's gutter is drawn separately (see sectionGutter), without a fill.
 func (m model) cursorCol(hl hlState) string {
 	switch hl {
 	case hlCursor:
@@ -2170,23 +2204,26 @@ func (m model) cursorCol(hl hlState) string {
 	}
 }
 
-// sessionBar renders a session header as an edge-to-edge section bar (see sectionBar),
-// left-aligned to the start of the list. A managed repo carries the worktree-source
-// indicator. The right-pinned annotation is a summary of the section's content - the urgency
-// badge and worktree count - so it is shown only when the section is FOLDED, where the rows
-// are hidden and the summary is the only window into them. When expanded the rows speak for
-// themselves, so the bar drops the summary and keeps only an incidental section's reason
-// (which the rows do not otherwise convey). The cursor/mirror glyph sits in the gutter.
-func (m model) sessionBar(it renderItem, hl hlState) string {
+// sessionBar renders a session header as a titled rule (see titledRule), the same header
+// language the Agents bands use. A managed repo carries the worktree-source indicator. The
+// right-docked annotation is a summary of the section's content - the urgency badge and
+// worktree count - so it is shown only when the section is FOLDED, where the rows are hidden
+// and the summary is the only window into them. When expanded the rows speak for themselves,
+// so the header drops the summary and keeps only an incidental section's reason (which the
+// rows do not otherwise convey). The header holding the focused selection takes the accent; the
+// cursor/mirror glyph sits in the gutter.
+func (m model) sessionBar(it renderItem, current bool, hl hlState) string {
 	name := it.label
 	if it.managed {
 		name = managedGlyph + " " + it.label
 	}
-	w := m.rowContentWidth()
-	if m.folded[it.sessionKey] {
-		return m.sectionBar("▸ "+name, m.sessionBarRight(it), w, hl, false)
+	fullW := cursorColWidth + m.rowContentWidth()
+	folded := m.folded[it.sessionKey]
+	right := it.note
+	if folded {
+		right = m.sessionBarRight(it)
 	}
-	return m.sectionBar("▾ "+name, it.note, w, hl, false)
+	return titledRule(m.sectionLabel(name, folded, current, hl), right, fullW)
 }
 
 // sessionBarRight builds the bar's right-pinned annotation: the most-urgent-status badge

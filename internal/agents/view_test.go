@@ -1162,6 +1162,41 @@ func TestAgentBandFoldCollapsesAndUnfolds(t *testing.T) {
 	}
 }
 
+// TestBandHeaderStyling: a populated band renders as a titled rule (uppercase name, a
+// hairline, its count) while an empty band recedes to a dim lowercase word. The two styles
+// must stay distinct so empty lanes read as "all clear", not as identical section bars.
+func TestBandHeaderStyling(t *testing.T) {
+	in := []Agent{
+		{SessionID: "w", Title: "busy", Status: StatusWorking, TmuxSession: "w"},
+	}
+	m, err := nm(&fakeSource{list: in}, nil, DefaultKeymap())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.focus = lensAgents
+	m.width, m.height = 80, 30
+
+	v := stripANSI(m.renderAgents())
+	// The one populated band: uppercase name with the fold caret, and a hairline rule.
+	if !strings.Contains(v, "▾ WORKING") {
+		t.Fatalf("populated band should show its uppercase name with the fold caret:\n%s", v)
+	}
+	if !strings.Contains(v, "─") {
+		t.Fatalf("populated band header should draw a hairline rule to the edge:\n%s", v)
+	}
+	// The three empty bands recede to lowercase words, never the uppercase (loud) label.
+	for _, empty := range []string{"needs you", "idle", "muted"} {
+		if !strings.Contains(v, empty) {
+			t.Fatalf("empty band %q should render as a dim lowercase word:\n%s", empty, v)
+		}
+	}
+	for _, loud := range []string{"NEEDS YOU", "IDLE", "MUTED"} {
+		if strings.Contains(v, loud) {
+			t.Fatalf("empty band should not render its uppercase label %q:\n%s", loud, v)
+		}
+	}
+}
+
 // TestSidebarStacksBothLensesShortFallback: a tall terminal stacks both lens panels in the
 // sidebar; a terminal too short to stack shows only the focused lens, still switchable with the
 // focus keys (ctrl+k up to agents, ctrl+j down to workspaces).

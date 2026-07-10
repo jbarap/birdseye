@@ -33,11 +33,9 @@ var (
 	Border = Color{"#3a3a3a", 240} // borders, info chrome
 	Red    = Color{"#ff6b6b", 203} // needs-attention / errors
 
-	Text      = Color{"#e6e6e6", 254} // primary row text (agent name)
-	Accent    = Color{"#c792ea", 176} // tool-wide selection + brand accent (cursor, title, picker chrome); configurable
-	SessionBg = Color{"#1d2b3f", 235} // agents view: session section-bar background
-	SessionFg = Color{"#9cc7ff", 153} // agents view: session section-bar text
-	RowHL     = Color{"#2c2c34", 236} // agents view: selected-row highlight background
+	Text   = Color{"#e6e6e6", 254} // primary row text (agent name)
+	Accent = Color{"#c792ea", 176} // tool-wide selection + brand accent (cursor, title, picker chrome); configurable
+	RowHL  = Color{"#2c2c34", 236} // agents view: selected-row highlight background
 )
 
 // CursorGlyph is the tool-wide selection pointer: the agents-view cursor and the

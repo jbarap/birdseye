@@ -32,10 +32,9 @@ Defined in `internal/theme`. Each color carries a 24-bit hex and a 256-color fal
 | `Green` | `#4ec98a` | repo / success; the picker "create" mark |
 | `Red` | `#ff6b6b` | agents **needs-attention**; errors |
 | `Gray` | `#8a8a8a` | dim / unlisted; agents **done** and **unknown** |
-| `Border` | `#3a3a3a` | borders and info chrome |
-| `Text` | `#e6e6e6` | primary row text (agent name) |
+| `Border` | `#3a3a3a` | borders and info chrome; section-header hairlines |
+| `Text` | `#e6e6e6` | primary row text (agent name); section-header labels |
 | `Attach` | `#38bdf8` | picker "attach" mark (`→`) |
-| `SessionFg` / `SessionBg` | `#9cc7ff` / `#1d2b3f` | agents session section bars |
 | `RowHL` | `#2c2c34` | agents selected-row highlight background |
 
 The same hue can mean different things in different contexts (`Blue` is a session type in the
@@ -97,7 +96,7 @@ structural **markers** (not statuses — they mark the absence/role of an agent)
 | base | `⌂ base` | the repo's primary worktree (git's main worktree; no agent) |
 | slot | `◌ slot` | a worktree with no agent — a spawn target (windowed or windowless) |
 
-A managed repo's section bar additionally carries a source-control indicator (`󱘎`), its
+A managed repo's section header additionally carries a source-control indicator (`󱘎`), its
 worktree count, and a most-urgent-status badge (a status glyph + count), so recognition and
 urgency both read from a glyph and a word, never color. Within the repo the base pins first
 and slots sort last, with live worktrees ordered by **name** in between - section and row
@@ -108,15 +107,21 @@ agent changes state.
 
 The dash is two always-visible lenses over the same agents, plus the preview:
 
-- **Agents** (top of the sidebar): a flat triage list in four fixed bands - `NEEDS YOU`, `WORKING`,
-  `IDLE`, `DONE` - always rendered in that order, each band drawn as a full-width section
-  bar (the same distinct-background bar the Projects lens uses for repositories): a
-  populated band is bold and carries its count, an empty band keeps the bar but goes faint
-  (so an empty `NEEDS YOU` still reads as a section, just a quiet "all clear"). Agents are
-  ordered newest-changed first within each band. Here urgency *does* move: a status change
-  re-bands an agent, but never reorders its band peers.
+Both lenses draw a section header the same way: a **titled rule** - the name in bold `Text`, a
+`Border` hairline running to the right edge, and a subordinate right-docked annotation (a band's
+count, a repo's badge and worktree summary). The cursor/mirror glyph sits in the gutter with no
+fill, and a selected header takes the `Accent` on its name. So a repository header and a status
+band read as the same kind of thing.
+
+- **Agents** (top of the sidebar): a flat triage list in four fixed bands - `NEEDS YOU`, `IDLE`,
+  `WORKING`, `MUTED` - always rendered in that order. A populated band shows the bold uppercase
+  name, the hairline, and its count; an empty band is a plain lowercase `Gray` word - no caret,
+  count, or hairline (a `Border` rule would read as a stray panel border) - so an empty
+  `NEEDS YOU` still reads as a band, just a quiet "all clear". Agents are ordered newest-changed
+  first within each band. Here urgency *does* move: a status change re-bands an agent, but never
+  reorders its band peers.
 - **Projects** (below it): the repository→worktree→slot tree, ordered by name and held stable.
-  Status is a per-row indicator and a section-bar badge, never a position. The incidental
+  Status is a per-row indicator and a section-header badge, never a position. The incidental
   `(no-repo)` bucket states why it offers no worktrees (e.g. `not a git repo`).
 
 Exactly one lens holds focus; `ctrl+k`/`ctrl+j` switch between them and the focused lens's title
@@ -219,7 +224,7 @@ row: two agents in one worktree are **two rows** (the worktree label repeating),
 no agent is a row even with no open window — the repo's base (its primary worktree) or an empty slot,
 enumerated from the git worktree set. The view stays a two-level tree (repository → row) with the
 [pinned status gutter](#layout-philosophy) intact; co-located agents add no third indent level. A
-recognized repository's section bar carries a recognition indicator (glyph + worktree count, never
+recognized repository's section header carries a recognition indicator (glyph + worktree count, never
 color alone); the base and slot rows each take their own pinned-gutter token (glyph + word), defined
 in `theme` exactly like every other status — so the view never relies on color to convey "empty slot"
 or "base."
@@ -294,7 +299,7 @@ guessed.
 ## Degradation
 
 - Never rely on color alone: pair it with a glyph, word, or shape (status words, the selection
-  glyph, section bars).
+  glyph, section headers).
 - Truecolor when the terminal advertises it (`COLORTERM`), otherwise the 256-color fallback; lipgloss
   and the picker each downgrade through `theme`.
 - Nerd-font glyphs (cursor, icons) can render as tofu or double-width on some fonts. Judge glyph
