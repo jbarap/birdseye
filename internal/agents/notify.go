@@ -95,14 +95,51 @@ func (autoNotifier) Notify(n Notification) error {
 	case "darwin":
 		if path, err := exec.LookPath("osascript"); err == nil {
 			script := fmt.Sprintf("display notification %q with title %q", n.Message, notifyTitle)
-			return exec.Command(path, "-e", script).Run()
+			if exec.Command(path, "-e", script).Run() == nil {
+				return nil
+			}
 		}
 	default:
 		if path, err := exec.LookPath("notify-send"); err == nil {
-			return exec.Command(path, notifyTitle, n.Message).Run()
+			cmd := exec.Command(path, notifyTitle, n.Message)
+			cmd.Env = notifyEnv()
+			if cmd.Run() == nil {
+				return nil
+			}
 		}
 	}
+	// The platform notifier was absent, or present but failed to deliver (a stripped hook env
+	// with no reachable session bus is the common cause). Ring the bell rather than dropping the
+	// alert silently.
 	return bellFallback()
+}
+
+// notifyEnv is the environment for notify-send, restoring DBUS_SESSION_BUS_ADDRESS when the hook's
+// environment lacks it. Claude Code runs hooks detached with a minimal env, so the session-bus
+// address notify-send needs to reach the desktop's notification daemon is often absent - and
+// without it notify-send fails outright ("Cannot autolaunch D-Bus without X11 $DISPLAY"). The
+// systemd user bus lives at a well-known per-uid socket; point notify-send there when it exists so
+// delivery survives the stripped env. A box with neither the env var nor that socket is left as-is
+// and falls back to the bell.
+func notifyEnv() []string {
+	env := os.Environ()
+	if os.Getenv("DBUS_SESSION_BUS_ADDRESS") != "" {
+		return env
+	}
+	bus := fmt.Sprintf("/run/user/%d/bus", os.Getuid())
+	if _, err := os.Stat(bus); err != nil {
+		return env
+	}
+	// Drop any empty-valued placeholder first: glibc getenv reads the first occurrence, so a
+	// leading "DBUS_SESSION_BUS_ADDRESS=" would otherwise shadow the value we append.
+	const key = "DBUS_SESSION_BUS_ADDRESS="
+	out := env[:0:0]
+	for _, e := range env {
+		if !strings.HasPrefix(e, key) {
+			out = append(out, e)
+		}
+	}
+	return append(out, key+"unix:path="+bus)
 }
 
 // bellFallback rings the controlling terminal's bell by writing to /dev/tty directly, never to
