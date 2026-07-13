@@ -38,7 +38,8 @@ repo  = "󰘬"
 # dir = "/custom/tmuxp/config/dir"    # defaults to tmuxp's own config dir
 
 [dir]
-use_zoxide = true                     # include zoxide's known dirs when available
+use_zoxide   = true                   # include zoxide's known dirs when available
+zoxide_limit = 20                     # cap zoxide dirs at the N most-used (frecency); 0 = no cap
 # roots = ["~/projects", "~/work"]    # dirs whose immediate children become candidates
 
 [repo]
