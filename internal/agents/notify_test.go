@@ -3,6 +3,7 @@ package agents
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -403,6 +404,38 @@ func TestNotifierForSelection(t *testing.T) {
 	}
 	if _, ok := notifierFor("notify-send x").(commandNotifier); !ok {
 		t.Error("a set command should select the command notifier")
+	}
+}
+
+// TestNotifyEnvRestoresBus pins that notifyEnv injects the well-known systemd user bus when the
+// hook env lacks DBUS_SESSION_BUS_ADDRESS but the socket exists, and leaves an already-set address
+// untouched. Without this, notify-send fails outright in Claude Code's stripped hook environment.
+func TestNotifyEnvRestoresBus(t *testing.T) {
+	busVar := func(env []string) (string, bool) {
+		for _, e := range env {
+			if v, ok := strings.CutPrefix(e, "DBUS_SESSION_BUS_ADDRESS="); ok {
+				return v, true
+			}
+		}
+		return "", false
+	}
+
+	// An existing address is left verbatim.
+	t.Setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/custom/bus")
+	if v, ok := busVar(notifyEnv()); !ok || v != "unix:path=/custom/bus" {
+		t.Fatalf("an existing bus address must be preserved, got %q (present=%v)", v, ok)
+	}
+
+	// Absent address: restored to the per-uid socket only when it actually exists.
+	t.Setenv("DBUS_SESSION_BUS_ADDRESS", "")
+	got, ok := busVar(notifyEnv())
+	wantBus := fmt.Sprintf("/run/user/%d/bus", os.Getuid())
+	if _, err := os.Stat(wantBus); err == nil {
+		if !ok || got != "unix:path="+wantBus {
+			t.Fatalf("a missing bus address should be restored to %q, got %q (present=%v)", wantBus, got, ok)
+		}
+	} else if ok {
+		t.Fatalf("no user bus socket present; notifyEnv must not invent one, got %q", got)
 	}
 }
 
