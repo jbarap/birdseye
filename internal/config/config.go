@@ -98,6 +98,9 @@ type Tmuxp struct {
 type Dir struct {
 	// UseZoxide includes zoxide's known directories when zoxide is available.
 	UseZoxide bool `toml:"use_zoxide"`
+	// ZoxideLimit caps how many of zoxide's directories are offered, keeping its
+	// most-used first (zoxide sorts by frecency). 0 means no cap - list them all.
+	ZoxideLimit int `toml:"zoxide_limit"`
 	// Roots are directories whose immediate children become candidates.
 	Roots []string `toml:"roots"`
 }
@@ -241,7 +244,7 @@ func Default() Config {
 			"dir":   "", // cod-folder
 			"repo":  "󰘬", // md-source_branch
 		},
-		Dir:        Dir{UseZoxide: true},
+		Dir:        Dir{UseZoxide: true, ZoxideLimit: 20},
 		Agents:     Agents{Notify: Notify{NeedsAttention: true, Finished: true}},
 		Workspaces: WorkspaceSettings{Enabled: true},
 	}

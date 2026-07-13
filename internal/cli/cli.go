@@ -108,7 +108,7 @@ func buildRegistry(cfg config.Config, set tools.Set, lister tmuxsess.Lister) *pr
 		r.Register(tmuxsess.New(lister))
 	}
 	r.Register(tmuxp.New(cfg.Tmuxp.Dir, set.Tmuxp, lister))
-	r.Register(dir.New(cfg.Dir.UseZoxide && set.Zoxide, cfg.Dir.Roots))
+	r.Register(dir.New(cfg.Dir.UseZoxide && set.Zoxide, cfg.Dir.ZoxideLimit, cfg.Dir.Roots))
 	r.Register(worktree.NewProvider(cfg.Repo.Roots))
 	r.SetEnabled(cfg.Providers)
 	return r

@@ -20,16 +20,20 @@ const Type = "dir"
 // Provider lists directories as create candidates.
 type Provider struct {
 	useZoxide bool
+	limit     int
 	roots     []string
 	// zoxideDirs returns directories known to zoxide (most-used first).
 	zoxideDirs func() ([]string, error)
 }
 
 // New returns a Provider. useZoxide enables zoxide as a source when available;
-// roots are directories whose immediate children become candidates.
-func New(useZoxide bool, roots []string) *Provider {
+// limit caps how many of zoxide's directories are offered, keeping its most-used
+// first (zoxide sorts by frecency), with 0 meaning no cap; roots are directories
+// whose immediate children become candidates.
+func New(useZoxide bool, limit int, roots []string) *Provider {
 	return &Provider{
 		useZoxide:  useZoxide,
+		limit:      limit,
 		roots:      roots,
 		zoxideDirs: queryZoxide,
 	}
@@ -76,6 +80,10 @@ func (p *Provider) Candidates() ([]provider.Candidate, error) {
 	if p.useZoxide {
 		dirs, err := p.zoxideDirs()
 		if err == nil {
+			// zoxide lists most-used first, so the head of the list is the popular set.
+			if p.limit > 0 && len(dirs) > p.limit {
+				dirs = dirs[:p.limit]
+			}
 			for _, d := range dirs {
 				add(d)
 			}
