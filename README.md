@@ -8,6 +8,8 @@
 a fuzzy picker for attaching to or creating sessions, and a live triage view of what
 each agent is doing. Built on tmux, driven by `fzf`.
 
+![birdseye dash](https://github.com/user-attachments/assets/9fe46f6b-7e68-402b-abed-8a945898805d)
+
 ## Install
 
 ```sh
