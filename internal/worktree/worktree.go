@@ -316,11 +316,33 @@ func IsDirty(dir string) (bool, error) {
 	return strings.TrimSpace(out) != "", nil
 }
 
+// RemoveRefusedError reports that the `git worktree remove` command itself declined,
+// carrying git's own reason verbatim so a caller can quote it. It is distinct from the
+// pre-flight guards callers apply (a primary worktree, a co-tenant agent), which never
+// reach git.
+//
+// Every reason git declines an unforced remove for is resolved by --force, including ones
+// no dirtiness probe predicts: a worktree containing submodules is refused outright
+// ("working trees containing submodules cannot be moved or removed") even when perfectly
+// clean. So a refusal with Forced=false is an invitation to retry with force, not a dead
+// end. Forced=true is the terminal case.
+type RemoveRefusedError struct {
+	Dir    string
+	Forced bool   // whether --force was already passed on the attempt that failed
+	Reason string // git's message, stripped of its "fatal: " prefix
+}
+
+func (e *RemoveRefusedError) Error() string {
+	return fmt.Sprintf("git worktree remove %s: %s", e.Dir, e.Reason)
+}
+
 // Remove removes the worktree at dir via `git worktree remove`. With force=false git
-// declines a worktree that has uncommitted changes; force=true passes --force. The
-// command runs from the repository's primary worktree (filepath.Dir(gitDir)) so removing a
-// linked worktree — even the caller's own — succeeds. git itself refuses to remove a primary
-// worktree, which is what keeps a repo's anchor non-deletable.
+// declines a worktree that has uncommitted changes (and some it will never remove unforced
+// — see RemoveRefusedError); force=true passes --force. A declined removal returns a
+// *RemoveRefusedError. The command runs from the repository's primary worktree
+// (filepath.Dir(gitDir)) so removing a linked worktree — even the caller's own — succeeds.
+// git itself refuses to remove a primary worktree, which is what keeps a repo's anchor
+// non-deletable.
 //
 // The primary is derived from gitDir (the repository's common git dir, which the caller has
 // already resolved) rather than by running git inside dir, so Remove still works when dir has
@@ -335,7 +357,27 @@ func Remove(dir, gitDir string, force bool) error {
 	if force {
 		args = append(args, "--force")
 	}
-	return run(primary, "git", args...)
+	stderr, err := runStderr(primary, "git", args...)
+	if err != nil {
+		return &RemoveRefusedError{Dir: dir, Forced: force, Reason: gitReason(stderr, err)}
+	}
+	return nil
+}
+
+// gitReason condenses a failed git command's stderr into one human line: the last non-empty
+// line (git prints its fatal last, after any warnings) with the "fatal: "/"error: " prefix
+// stripped, falling back to the exec error when git printed nothing.
+func gitReason(stderr string, err error) string {
+	var reason string
+	for _, line := range strings.Split(stderr, "\n") {
+		if s := strings.TrimSpace(line); s != "" {
+			reason = s
+		}
+	}
+	if reason == "" {
+		return err.Error()
+	}
+	return strings.TrimPrefix(strings.TrimPrefix(reason, "fatal: "), "error: ")
 }
 
 // Info describes the managed-repo context of a directory (git-derived).
@@ -414,18 +456,26 @@ func isGitWorktree(path string) bool {
 }
 
 func run(dir, name string, args ...string) error {
-	cmd := exec.Command(name, args...)
-	cmd.Dir = dir
-	var errBuf strings.Builder
-	cmd.Stderr = &errBuf
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(errBuf.String())
+	stderr, err := runStderr(dir, name, args...)
+	if err != nil {
+		msg := strings.TrimSpace(stderr)
 		if msg == "" {
 			msg = err.Error()
 		}
 		return fmt.Errorf("%s %s: %s", name, strings.Join(args, " "), msg)
 	}
 	return nil
+}
+
+// runStderr runs a command in dir and returns its raw stderr alongside the exec error, for
+// callers that classify a failure by what the command said rather than just reporting it.
+func runStderr(dir, name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	var errBuf strings.Builder
+	cmd.Stderr = &errBuf
+	err := cmd.Run()
+	return errBuf.String(), err
 }
 
 // output runs a command in dir and returns its trimmed stdout, wrapping stderr in the

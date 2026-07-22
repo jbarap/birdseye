@@ -12,6 +12,22 @@ import (
 // worktree has uncommitted changes, so the view can prompt for force/cancel.
 var ErrWorktreeDirty = errors.New("worktree has uncommitted changes")
 
+// ErrRemoveRefused wraps a `git worktree remove` refusal that a forced retry can resolve —
+// git declining an unforced removal for a reason no dirtiness probe predicts. The common one
+// is a worktree containing submodules, which git refuses outright however clean it is. The
+// view escalates to a confirmation quoting git's own reason (wrapped in this error's text)
+// instead of dead-ending on a notice, so the delete stays completable from the dash.
+var ErrRemoveRefused = errors.New("git declined to remove the worktree")
+
+// RefusalReason recovers git's own message from an error wrapping ErrRemoveRefused, so both
+// faces quote what git said rather than birdseye's sentinel prefix.
+func RefusalReason(err error) string {
+	if _, rest, ok := strings.Cut(err.Error(), ErrRemoveRefused.Error()+": "); ok {
+		return rest
+	}
+	return err.Error()
+}
+
 // Orchestrator performs the create/delete side effects for managed repos. It is
 // optional: when nil, the agents view is read-only (today's behavior).
 type Orchestrator interface {
@@ -35,7 +51,8 @@ type Orchestrator interface {
 	Close(r Row) error
 	// Remove tears down a row: it kills the row's tmux window and, when the row is a
 	// managed worktree, removes the git worktree. With force=false it returns
-	// ErrWorktreeDirty rather than removing a dirty worktree.
+	// ErrWorktreeDirty rather than removing a dirty worktree, and ErrRemoveRefused when
+	// git declines the removal for some other reason a forced retry would resolve.
 	Remove(r Row, force bool) error
 	// NewSession runs the session picker and materializes the chosen session *without*
 	// attaching, returning its tmux session name (empty when cancelled). It takes over
@@ -359,9 +376,9 @@ func (m model) handleConfirmKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// handleConfirmForceKey resolves the dirty-worktree escalation, sharing the confirm
-// modal's selectable buttons. y/⏎-on-confirm forces removal (discarding changes); n/esc
-// cancel (the default).
+// handleConfirmForceKey resolves either forced-removal escalation — the dirty worktree and
+// git's own refusal — since both retry the same way, sharing the confirm modal's selectable
+// buttons. y/⏎-on-confirm retries with --force; n/esc cancel (the default).
 func (m model) handleConfirmForceKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch key.String() {
 	case "left", "right", "h", "l", "tab":
@@ -374,6 +391,7 @@ func (m model) handleConfirmForceKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		fallthrough
 	case "y", "Y":
 		m.mode = modeNormal
+		m.refusal = ""
 		if err := m.orch.Remove(m.target, true); err != nil {
 			m.setError("delete: " + err.Error())
 		} else {
@@ -387,13 +405,22 @@ func (m model) handleConfirmForceKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// runDelete probes an unforced remove of the target; a dirty worktree escalates to the
-// force confirmation (resetting the button selection to its safe default) instead of
-// discarding changes. force is reserved for the escalated path in handleConfirmForceKey.
+// runDelete probes an unforced remove of the target. Both ways an unforced remove can be
+// declined escalate to a force confirmation (resetting the button selection to its safe
+// default) rather than acting or dead-ending: a dirty worktree birdseye detected itself, and
+// a refusal git raised — which is the only signal for the cases no dirtiness probe predicts,
+// such as a clean worktree containing submodules. force is reserved for those escalated
+// paths in handleConfirmForceKey.
 func (m model) runDelete(force bool) (tea.Model, tea.Cmd) {
 	err := m.orch.Remove(m.target, force)
-	if errors.Is(err, ErrWorktreeDirty) {
+	switch {
+	case errors.Is(err, ErrWorktreeDirty):
 		m.mode = modeConfirmForce
+		m.confirmChoice = 0
+		return m, nil
+	case errors.Is(err, ErrRemoveRefused) && !force:
+		m.mode = modeConfirmRefused
+		m.refusal = RefusalReason(err)
 		m.confirmChoice = 0
 		return m, nil
 	}
@@ -429,9 +456,10 @@ func (m model) toggleMute() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// cancelConfirm dismisses either confirm modal without acting, reporting the cancel.
+// cancelConfirm dismisses any confirm modal without acting, reporting the cancel.
 func (m model) cancelConfirm() (tea.Model, tea.Cmd) {
 	m.mode = modeNormal
+	m.refusal = ""
 	m.setInfo("delete cancelled")
 	return m, nil
 }

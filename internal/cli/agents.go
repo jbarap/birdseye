@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -207,13 +208,16 @@ func newAgentsDeleteCmd() *cobra.Command {
 				return err
 			}
 			err = f.Delete(t, force)
-			if err == agents.ErrWorktreeDirty {
+			switch {
+			case errors.Is(err, agents.ErrWorktreeDirty):
 				return fmt.Errorf("%s has uncommitted changes; pass --force to remove it anyway", t.Handle)
+			case errors.Is(err, agents.ErrRemoveRefused):
+				return fmt.Errorf("git refused to remove %s (%s); pass --force to remove it anyway", t.Handle, agents.RefusalReason(err))
 			}
 			return err
 		},
 	}
-	cmd.Flags().BoolVar(&force, "force", false, "force-remove a dirty worktree")
+	cmd.Flags().BoolVar(&force, "force", false, "force-remove a worktree git declines to remove unforced (dirty, or containing submodules)")
 	return cmd
 }
 

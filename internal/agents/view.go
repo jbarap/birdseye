@@ -321,14 +321,15 @@ var actionLabel = map[Action]string{
 type tickMsg time.Time
 
 // mode is the model's interaction mode: normal navigation, the new-agent form, the
-// delete confirmation, or the dirty-worktree force escalation.
+// delete confirmation, or one of the two force escalations.
 type mode int
 
 const (
 	modeNormal mode = iota
 	modeNewAgent
-	modeConfirmDelete // confirm any delete before it happens
-	modeConfirmForce  // a worktree was dirty: confirm a forced (changes-discarding) remove
+	modeConfirmDelete  // confirm any delete before it happens
+	modeConfirmForce   // a worktree was dirty: confirm a forced (changes-discarding) remove
+	modeConfirmRefused // git declined the remove: confirm a forced retry, quoting git's reason
 )
 
 // formField identifies a field in the new-agent form. Tab cycles between them.
@@ -403,6 +404,7 @@ type model struct {
 	focusField     formField   // which new-agent field has focus (fieldBranch / fieldWorktree)
 	target         Row         // the row the active modal acts on (new-agent repo / delete confirm)
 	confirmChoice  int         // selected button in a confirm modal: 0 cancel (safe default), 1 confirm
+	refusal        string      // git's own reason for declining a remove, quoted by modeConfirmRefused
 	notice         string      // transient status line (feedback from actions)
 	noticeLevel    noticeLevel // how to style the notice (error vs neutral info)
 	noticeGen      int         // bumped each time a notice is set, so a stale auto-dismiss no-ops
@@ -990,7 +992,7 @@ func (m model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleNewAgentKey(key)
 	case modeConfirmDelete:
 		return m.handleConfirmKey(key)
-	case modeConfirmForce:
+	case modeConfirmForce, modeConfirmRefused:
 		return m.handleConfirmForceKey(key)
 	}
 
@@ -1464,7 +1466,8 @@ func (m model) View() string {
 	if m.mode == modeNewAgent {
 		body = overlayCenter(body, m.newAgentModal())
 	}
-	if m.mode == modeConfirmDelete || m.mode == modeConfirmForce {
+	switch m.mode {
+	case modeConfirmDelete, modeConfirmForce, modeConfirmRefused:
 		body = overlayCenter(body, m.confirmModal())
 	}
 
@@ -1530,9 +1533,9 @@ func (m model) newAgentModal() string {
 
 // confirmModal renders a destructive-action confirmation as a centered popup (DESIGN.md's
 // single modal style). The frame is tinted a warning hue so it reads as a caution before
-// any color is parsed: Gold for a plain delete, the more severe Red for the dirty-worktree
-// force escalation. The prompt wraps to the modal width (it is a popup, not the
-// single-row status line, so a long worktree name no longer gets sheared off), and the
+// any color is parsed: Gold for a plain delete, the more severe Red for either force
+// escalation. The prompt wraps to the modal width (it is a popup, not the single-row status
+// line, so neither a long worktree name nor git's own refusal gets sheared off), and the
 // y/n choices render as selectable buttons defaulting to cancel.
 func (m model) confirmModal() string {
 	width := clamp(m.width/2, 32, 52)
@@ -1552,6 +1555,11 @@ func (m model) confirmModal() string {
 		prompt = wrap.Foreground(warn).Render(
 			fmt.Sprintf("worktree %q has uncommitted changes. Force-remove and discard them?", m.target.Worktree))
 		confirmLabel = "discard & remove"
+	case modeConfirmRefused:
+		title, warn = "force delete", lipColor(theme.Red)
+		prompt = wrap.Foreground(warn).Render(
+			fmt.Sprintf("git refused to remove worktree %q:\n\n%s\n\nRetry with --force?", m.target.Worktree, m.refusal))
+		confirmLabel = "force remove"
 	default:
 		title, warn = "delete", lipColor(theme.Gold) // Gold is the warning hue here (context-scoped, like its dir/working uses)
 		prompt = text.Render(m.deletePrompt())
