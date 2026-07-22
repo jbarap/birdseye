@@ -10,7 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/jbarap/birdseye/internal/providers/dir"
+	"github.com/jbarap/birdseye/internal/sessname"
 	"github.com/jbarap/birdseye/internal/theme"
 )
 
@@ -138,6 +138,8 @@ const (
 	anchorWord   = "base"
 	slotGlyph    = "◌" // a managed worktree with no agent (a spawn target)
 	slotWord     = "slot"
+	dirGlyph     = "\U000f024b" // 󰉋 an open non-git directory session (jump-only)
+	dirWord      = "dir"
 	managedGlyph = "\U000f160e" // 󱘎 the managed-repo indicator
 	branchGlyph  = ""          //  the git-branch mark prefixing a divergent-branch detail
 	errGlyph     = "✗"          // a rejected/failed action (notice, red)
@@ -1949,15 +1951,19 @@ func locatorHint(r Row) string {
 	if r.GitDir == "" || r.TmuxSession == "" {
 		return ""
 	}
-	if r.TmuxSession == dir.HomeSession(r.GitDir) {
+	if r.TmuxSession == sessname.Home(r.GitDir) {
 		return ""
 	}
 	return "[in: " + r.TmuxSession + "]"
 }
 
-// rowLabel is the identity label for a leaf row: the worktree name when the row is
-// a managed worktree (or anchor), else the tmux window label.
+// rowLabel is the identity label for a leaf row: the directory name for a non-git dir row
+// (the directory is its identity), the worktree name when the row is a managed worktree (or
+// anchor), else the tmux window label.
 func rowLabel(r Row) string {
+	if r.Kind == RowDir {
+		return r.Title
+	}
 	if r.Worktree != "" {
 		return r.Worktree
 	}
@@ -2413,6 +2419,8 @@ func gutterFor(r Row) (string, lipgloss.Style) {
 		return " " + anchorGlyph + " " + padRight(anchorWord, 4) + "  ", markerStyle
 	case RowSlot:
 		return " " + slotGlyph + " " + padRight(slotWord, 4) + "  ", markerStyle
+	case RowDir:
+		return " " + dirGlyph + " " + padRight(dirWord, 4) + "  ", markerStyle
 	default:
 		return " " + statusGlyph[r.Status] + " " + padRight(statusWord[r.Status], 4) + "  ", statusStyle[r.Status]
 	}

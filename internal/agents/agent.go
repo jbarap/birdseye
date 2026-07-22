@@ -78,14 +78,17 @@ type Source interface {
 }
 
 // RowKind distinguishes the leaf rows the agents view renders. A row may carry a
-// live agent, mark a managed repo's primary-worktree anchor, or mark an empty worktree
-// slot (a worktree with no agent — a spawn target, whether or not it has a window).
+// live agent, mark a managed repo's primary-worktree anchor, mark an empty worktree
+// slot (a worktree with no agent — a spawn target, whether or not it has a window),
+// or mark an open non-git directory session (a jump-only location with no repository
+// and no agent, so it offers no worktree/spawn actions).
 type RowKind int
 
 const (
 	RowAgent  RowKind = iota // a live agent (status from its hook record)
 	RowAnchor                // a managed repo's primary worktree (no agent)
 	RowSlot                  // a managed worktree with no agent (spawn target)
+	RowDir                   // an open non-git directory session (jump-only; no repo, no agent)
 )
 
 // Row is one leaf the agents view renders. It is the view's unit — a tmux location

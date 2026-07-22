@@ -3,46 +3,32 @@ package dir
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
-func TestSessionNameSanitizes(t *testing.T) {
-	cases := map[string]string{
-		"my.project": "my_project",
-		"a:b":        "a_b",
-		"with space": "with_space",
-		"plain":      "plain",
-	}
-	for in, want := range cases {
-		if got := SessionName(in); got != want {
-			t.Errorf("SessionName(%q) = %q, want %q", in, got, want)
+// TestCandidatesDistinctForSharedBasename pins that two directories sharing a basename but
+// living at different paths produce distinct candidate names, so the registry (which dedups
+// by name) keeps both rather than dropping the second.
+func TestCandidatesDistinctForSharedBasename(t *testing.T) {
+	base := t.TempDir()
+	a := filepath.Join(base, "a", "v3")
+	b := filepath.Join(base, "b", "v3")
+	for _, d := range []string{a, b} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
 		}
 	}
-}
-
-// TestHomeSessionDeterministicAndCollisionSafe pins the two load-bearing properties of the
-// home name: it is a deterministic function of the git-common-dir (the same repository
-// always resolves to the same name, so spawning is idempotent), and two repositories that
-// share a basename receive distinct names (so they never collide onto one home).
-func TestHomeSessionDeterministicAndCollisionSafe(t *testing.T) {
-	const a, b = "/work/proj/.git", "/other/proj/.git"
-
-	// Deterministic: ensuring the same repository twice yields the same name.
-	if HomeSession(a) != HomeSession(a) {
-		t.Fatalf("HomeSession should be deterministic for one repository")
+	p := New(true, 0, nil)
+	p.zoxideDirs = func() ([]string, error) { return []string{a, b}, nil }
+	got, err := p.Candidates()
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	na, nb := HomeSession(a), HomeSession(b)
-	// Collision-safe: two repos sharing the basename "proj" get distinct names.
-	if na == nb {
-		t.Fatalf("two repositories sharing a basename must get distinct homes, both = %q", na)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 candidates for two distinct v3 dirs, got %d", len(got))
 	}
-	// The name is the repo basename plus the disambiguating/managed-marker hash, no prefix.
-	for _, n := range []string{na, nb} {
-		if !strings.HasPrefix(n, "proj-") {
-			t.Fatalf("home %q should be the repo basename followed by its hash", n)
-		}
+	if got[0].Name == got[1].Name {
+		t.Fatalf("distinct v3 dirs collided onto one name %q", got[0].Name)
 	}
 }
 

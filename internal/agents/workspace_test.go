@@ -77,6 +77,74 @@ func rowsByKind(rows []Row) map[RowKind]int {
 	return m
 }
 
+// TestWorkspaceDirRowForNonGitSession pins that an open non-git session with no agent is
+// surfaced as exactly one jump-only RowDir, carrying its representative directory.
+func TestWorkspaceDirRowForNonGitSession(t *testing.T) {
+	src := &fakeSource{}
+	panes := fakePanes{list: []PaneInfo{
+		{Session: "data", WindowIndex: "0", PaneID: "%1", WindowName: "shell", StartPath: "/media/ssd/datasets/court/v3"},
+		{Session: "data", WindowIndex: "1", PaneID: "%2", StartPath: "/media/ssd/datasets/court/v3/sub"},
+	}}
+	repos := &fakeRepos{m: map[string]RepoInfo{}} // nothing resolves to a repo
+
+	rows, err := NewWorkspace(src, panes, repos).Rows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := rowsByKind(rows)
+	if counts[RowDir] != 1 {
+		t.Fatalf("want exactly 1 dir row, got %+v rows=%+v", counts, rows)
+	}
+	var r Row
+	for _, row := range rows {
+		if row.Kind == RowDir {
+			r = row
+		}
+	}
+	if r.TmuxSession != "data" || r.SessionID != "dir:data" {
+		t.Fatalf("dir row identity wrong: %+v", r)
+	}
+	if r.Dir != "/media/ssd/datasets/court/v3" || r.TmuxPane != "%1" {
+		t.Fatalf("dir row should carry the lowest-window pane, got Dir=%q Pane=%q", r.Dir, r.TmuxPane)
+	}
+	if r.Title != "v3" {
+		t.Fatalf("dir row title should be the directory basename, got %q", r.Title)
+	}
+	if r.Worktree != "" || r.GitDir != "" || r.isManagedWorktree() {
+		t.Fatalf("dir row must carry no worktree/git identity, got %+v", r)
+	}
+}
+
+// TestWorkspaceNoDirRowWhenRepresented pins the subordinate-fallback gate: a session earns a
+// dir row only when it has no repo pane and hosts no agent, so it never double-surfaces a
+// session already shown as a repo section or an agent row.
+func TestWorkspaceNoDirRowWhenRepresented(t *testing.T) {
+	const gd = "/code/proj/.git"
+	src := &fakeSource{list: []Agent{
+		// An incidental (non-git) agent occupies the "work" session.
+		{SessionID: "a1", TmuxSession: "work", TmuxWindow: "0", TmuxPane: "%9", Title: "scratch", Status: StatusIdle},
+	}}
+	panes := fakePanes{list: []PaneInfo{
+		// "mix": one repo pane + one non-git pane → represented by the repo section.
+		{Session: "mix", WindowIndex: "0", PaneID: "%1", StartPath: "/code/proj"},
+		{Session: "mix", WindowIndex: "1", PaneID: "%2", StartPath: "/tmp/scratch"},
+		// "work": non-git pane hosting an agent → represented by the agent row.
+		{Session: "work", WindowIndex: "0", PaneID: "%9", StartPath: "/home/u/notes"},
+	}}
+	repos := &fakeRepos{
+		m:   map[string]RepoInfo{"/code/proj": repoAt(gd, "proj", "/code/proj", "proj", true)},
+		wts: map[string][]WorktreeInfo{gd: {{Path: "/code/proj", Name: "proj", IsPrimary: true}}},
+	}
+
+	rows, err := NewWorkspace(src, panes, repos).Rows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := rowsByKind(rows)[RowDir]; n != 0 {
+		t.Fatalf("no session should earn a dir row here, got %d: rows=%+v", n, rows)
+	}
+}
+
 func TestWorkspaceRecognizesRepo(t *testing.T) {
 	// proj: primary clone (no agent → anchor), feat worktree (agent), spike worktree
 	// (window, no agent → slot). Every pane is a worktree of the one repo, so the
@@ -263,8 +331,16 @@ func TestWorkspaceNoLivePresenceNotShown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 0 {
-		t.Fatalf("a repository with no live presence should produce no rows, got %+v", rows)
+	// No repository is materialized: no anchor/slot rows and no row carries a git identity.
+	// The stray open session surfaces as a jump-only dir row - a separate, intended behavior.
+	counts := rowsByKind(rows)
+	if counts[RowAnchor] != 0 || counts[RowSlot] != 0 {
+		t.Fatalf("a repository with no live presence should produce no repo rows, got %+v", rows)
+	}
+	for _, r := range rows {
+		if r.GitDir != "" {
+			t.Fatalf("no row should carry a git identity, got %+v", r)
+		}
 	}
 }
 

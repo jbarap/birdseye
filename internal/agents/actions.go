@@ -86,6 +86,10 @@ func (m model) startNewAgent() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	r, ok := m.currentRow()
+	if ok && r.Kind == RowDir {
+		m.setError("not a git repository — no worktrees here")
+		return m, nil
+	}
 	if !ok || r.GitDir == "" || r.Dir == "" {
 		m.setError("new agent: place the cursor inside a recognized repo")
 		return m, nil
