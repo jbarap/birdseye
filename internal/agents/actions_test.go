@@ -2,6 +2,7 @@ package agents
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -25,6 +26,7 @@ type fakeOrch struct {
 	openErr     error  // when set, Open/OpenShell returns it
 	onOpen      func() // optional: simulate the worktree gaining a window after Open/OpenShell
 	dirty       bool   // when true, Remove(force=false) reports ErrWorktreeDirty
+	refuse      string // when set, Remove(force=false) reports ErrRemoveRefused wrapping this git reason
 	newSessions int    // count of NewSession calls
 	newSession  string // session name NewSession returns
 }
@@ -65,6 +67,9 @@ func (f *fakeOrch) Remove(r Row, force bool) error {
 	f.removes = append(f.removes, removeCall{r, force})
 	if f.dirty && !force {
 		return ErrWorktreeDirty
+	}
+	if f.refuse != "" && !force {
+		return fmt.Errorf("%w: %s", ErrRemoveRefused, f.refuse)
 	}
 	return nil
 }
@@ -590,6 +595,51 @@ func TestDeleteDirtyWorktreeEscalatesToForce(t *testing.T) {
 	}
 	last := orch.removes[len(orch.removes)-1]
 	if !last.force {
+		t.Fatalf("force confirm should call Remove(force=true), got %+v", orch.removes)
+	}
+}
+
+// TestDeleteRefusedByGitEscalatesToForce covers the removals no dirtiness probe predicts:
+// git declines a perfectly clean worktree (one containing submodules is refused outright),
+// and only --force gets past it. The dash must escalate to the same force confirmation
+// rather than dead-ending on an error notice, and must quote git's own reason so the modal
+// says why.
+func TestDeleteRefusedByGitEscalatesToForce(t *testing.T) {
+	const reason = "working trees containing submodules cannot be moved or removed"
+	orch := &fakeOrch{refuse: reason}
+	m := modelWith(t, orch, []Row{{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", TmuxPane: "%1", Worktree: "feat", Dir: "/d"}})
+
+	nm, _ := m.startDelete()
+	m = nm.(model)
+	nm, _ = m.handleConfirmKey(key("y"))
+	m = nm.(model)
+	if m.mode != modeConfirmRefused {
+		t.Fatalf("a git refusal should escalate to the force confirm, mode=%v notice=%q", m.mode, m.notice)
+	}
+	if m.refusal != reason {
+		t.Fatalf("the modal should quote git's reason, got %q", m.refusal)
+	}
+	if len(orch.removes) != 1 || orch.removes[0].force {
+		t.Fatalf("the escalation should come from a single unforced probe, got %+v", orch.removes)
+	}
+	if !strings.Contains(m.confirmModal(), "submodules") {
+		t.Fatalf("the confirm modal should render git's reason, got:\n%s", m.confirmModal())
+	}
+
+	// Cancelling leaves the worktree intact and drops the stale reason.
+	cancel, _ := m.handleConfirmForceKey(key("n"))
+	mc := cancel.(model)
+	if mc.mode != modeNormal || len(orch.removes) != 1 || mc.refusal != "" {
+		t.Fatalf("cancel should not force-remove, mode=%v removes=%v refusal=%q", mc.mode, orch.removes, mc.refusal)
+	}
+
+	// Confirming retries with --force, which is what actually gets past git.
+	confirm, _ := m.handleConfirmForceKey(key("y"))
+	mf := confirm.(model)
+	if mf.mode != modeNormal || mf.refusal != "" {
+		t.Fatalf("force confirm should return to normal, mode=%v refusal=%q", mf.mode, mf.refusal)
+	}
+	if last := orch.removes[len(orch.removes)-1]; !last.force {
 		t.Fatalf("force confirm should call Remove(force=true), got %+v", orch.removes)
 	}
 }

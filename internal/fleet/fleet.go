@@ -8,6 +8,7 @@
 package fleet
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -343,10 +344,14 @@ func (f *Fleet) Close(t Target) error {
 	return nil
 }
 
-// Delete closes the window and removes the git worktree (≡ the dash delete
-// action). A primary worktree is refused (git will not remove it). A dirty
-// worktree without force returns agents.ErrWorktreeDirty, before anything is
-// killed, so a cancel is non-destructive. An incidental agent (no worktree) is
+// Delete removes the git worktree and closes the window (≡ the dash delete action). A
+// primary worktree is refused (git will not remove it). A dirty worktree without force
+// returns agents.ErrWorktreeDirty, and a removal git itself declines returns
+// agents.ErrRemoveRefused wrapping git's reason — both before anything is killed, so a
+// cancel is non-destructive and a forced retry starts from an intact row. That ordering is
+// why the worktree goes first: git declines some removals only when asked (a worktree
+// containing submodules is refused however clean it is), so killing the window up front
+// would strand the caller with a half-deleted row. An incidental agent (no worktree) is
 // only closed.
 func (f *Fleet) Delete(t Target, force bool) error {
 	if t.IsPrimary {
@@ -366,10 +371,16 @@ func (f *Fleet) Delete(t Target, force bool) error {
 			return agents.ErrWorktreeDirty
 		}
 	}
-	f.closeWindow(t)
 	if isWorktree {
-		return worktree.Remove(t.Dir, t.GitDir, force)
+		if err := worktree.Remove(t.Dir, t.GitDir, force); err != nil {
+			var refused *worktree.RemoveRefusedError
+			if errors.As(err, &refused) && !refused.Forced {
+				return fmt.Errorf("%w: %s", agents.ErrRemoveRefused, refused.Reason)
+			}
+			return err
+		}
 	}
+	f.closeWindow(t)
 	return nil
 }
 

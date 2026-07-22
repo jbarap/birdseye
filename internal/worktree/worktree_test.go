@@ -1,9 +1,11 @@
 package worktree
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jbarap/birdseye/internal/sessname"
@@ -274,6 +276,62 @@ func mustMkdir(t *testing.T, p string) {
 	t.Helper()
 	if err := os.MkdirAll(p, 0o755); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestRemoveWorktreeWithSubmodules pins the refusal a dirtiness probe cannot predict: git
+// declines to remove a worktree containing submodules however clean it is, and only --force
+// gets past it. The refusal must surface as a *RemoveRefusedError carrying git's own reason,
+// since that is what both faces quote when offering the forced retry.
+func TestRemoveWorktreeWithSubmodules(t *testing.T) {
+	requireGitBinary(t)
+	root := t.TempDir()
+
+	sub := filepath.Join(root, "sub")
+	gitInit(t, sub, "main")
+	gitCommit(t, sub)
+
+	src := filepath.Join(root, "src")
+	gitInit(t, src, "main")
+	gitCommit(t, src)
+	// file:// submodule sources are refused by default (CVE-2022-39253); allow them locally.
+	mustGit(t, src, "-c", "protocol.file.allow=always", "submodule", "add", sub, "ext/sub")
+	mustGit(t, src, "commit", "-m", "add submodule")
+
+	info, ok := Resolve(src)
+	if !ok {
+		t.Fatal("src should resolve as a git worktree")
+	}
+	dir, _, err := Add(src, "feat", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, dir, "-c", "protocol.file.allow=always", "submodule", "update", "--init")
+
+	if dirty, _ := IsDirty(dir); dirty {
+		t.Fatal("a freshly initialized submodule worktree should read as clean")
+	}
+
+	err = Remove(dir, info.GitDir, false)
+	var refused *RemoveRefusedError
+	if !errors.As(err, &refused) {
+		t.Fatalf("an unforced remove should return *RemoveRefusedError, got %T: %v", err, err)
+	}
+	if refused.Forced {
+		t.Fatal("the unforced attempt should report Forced=false")
+	}
+	if !strings.Contains(refused.Reason, "submodules") {
+		t.Fatalf("the refusal should carry git's reason, got %q", refused.Reason)
+	}
+	if strings.Contains(refused.Reason, "fatal: ") {
+		t.Fatalf("git's %q prefix should be stripped from the reason, got %q", "fatal: ", refused.Reason)
+	}
+
+	if err := Remove(dir, info.GitDir, true); err != nil {
+		t.Fatalf("force-remove a submodule worktree: %v", err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("worktree dir should be gone after force, stat err=%v", err)
 	}
 }
 
