@@ -22,7 +22,12 @@
 - [x] 4.2 Render `RowDir` in the Projects lens as a one-row entry: directory basename with the path in the detail column; support Enter (jump) and preview.
 - [x] 4.3 Gate verbs: spawn (`n`) on a `RowDir` reports "not a git repository" (no worktree created); decide and wire `dd` (close-session-with-confirm vs disabled) per the design's open question.
 
-## 5. Verify and document
+## 5. Workspace (namespace) membership for dir rows
+
+- [x] 5a.1 Add `rowTabKey` (git-common-dir for repos, the dir row's id for directory sessions, "" otherwise) and extend `assignRepoTabs` to assign directory sessions by their own path (configured-root match, else auto parent-derived), leaving incidental agents All-only.
+- [x] 5a.2 Switch `filteredRows` to filter by `rowTabKey` so directory rows flow into their assigned tab; unit-test that a dir under a workspace root appears in it, an unmatched dir forms an auto tab, and incidental agents stay All-only.
+
+## 6. Verify and document
 
 - [x] 5.1 Run the repo quality checks (`just` / test suite, theme guard, vet).
 - [x] 5.2 Drive the TUI with the use-tty skill: open a non-git directory via `be sessions`, confirm it appears in `be dash` as a jump-only row, Enter jumps, preview renders, spawn is rejected, and the glyph renders correctly in a raw terminal.

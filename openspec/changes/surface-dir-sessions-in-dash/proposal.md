@@ -20,6 +20,10 @@ registry dedups by name and drops the second candidate from the picker entirely.
   agent as a single jump-only row (a new `RowDir` kind). It carries the session's directory,
   supports Enter (jump) and preview, and offers no worktree/spawn actions (it is not a git
   repository). Dormant (closed) directories are not surfaced - they remain the picker's job.
+- Directory rows participate in the dash's workspace (namespace) tabs judged by their own path,
+  the same path-derived rule repositories use: a directory opened under a configured workspace
+  root files under that workspace, an unmatched one forms an automatic parent-derived tab, and
+  only incidental agents (no directory identity) stay confined to All.
 - **Follow-up (noted, not in this change):** the directory and worktree providers overlap - a
   zoxide entry that is itself a git repo is offered by both under different names, so opening
   the directory-flavored candidate mints a second, non-home session for the repo. Resolving the
@@ -38,6 +42,9 @@ registry dedups by name and drops the second candidate from the picker entirely.
 - `agent-view`: the managed-repo reconciler additionally surfaces an open tmux session that
   resolves to no repository and hosts no agent as a jump-only directory row, rather than
   dropping it.
+- `dash-namespaces`: non-git directory sessions participate in namespace membership by their
+  own path (matched to a configured root, else an automatic parent-derived workspace), so they
+  are no longer confined to the All tab.
 
 ## Impact
 
