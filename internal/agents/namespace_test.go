@@ -120,6 +120,44 @@ func TestIncidentalAgentsOnlyUnderAll(t *testing.T) {
 	}
 }
 
+// TestDirRowFilesUnderWorkspaceByPath checks that a non-git directory session under a configured
+// workspace root appears in that workspace (not only under All), while one under no root forms an
+// automatic parent-derived tab rather than being confined to All.
+func TestDirRowFilesUnderWorkspaceByPath(t *testing.T) {
+	dirRow := func(id, dir string) Row {
+		return Row{Kind: RowDir, SessionID: "dir:" + id, Title: id, TmuxSession: id, Dir: dir}
+	}
+	rows := []Row{
+		nsRow("w1", "api", "g2", "/home/u/work/api", true, StatusWorking),
+		dirRow("data", "/home/u/work/datasets"),     // under the work root
+		dirRow("scratch", "/tmp/scratch/experiment"), // under no configured root
+	}
+
+	work := nsModel(t, "work", rows)
+	if !containsID(work.rows, "dir:data") {
+		t.Fatalf("a dir under the work root should appear in the work workspace, got %v", sessionIDs(work.rows))
+	}
+	if containsID(work.rows, "dir:scratch") {
+		t.Fatalf("the unmatched dir should not appear in work, got %v", sessionIDs(work.rows))
+	}
+
+	// The unmatched dir forms an automatic tab (keyed by its parent), so it is reachable off All.
+	m := nsModel(t, "", rows)
+	var autoKey string
+	for _, tab := range m.tabList() {
+		if tab.label == "scratch" {
+			autoKey = tab.key
+		}
+	}
+	if autoKey == "" {
+		t.Fatalf("the unmatched dir should form an automatic 'scratch' tab, tabs=%+v", m.tabList())
+	}
+	auto := nsModel(t, autoKey, rows)
+	if !containsID(auto.rows, "dir:scratch") {
+		t.Fatalf("the automatic tab should hold the unmatched dir, got %v", sessionIDs(auto.rows))
+	}
+}
+
 // TestAutoWorkspaceGroupsUnmatchedRepos checks that a repository under no configured root forms a
 // parent-derived workspace tab (labelled by its parent dir), that siblings share it, and that
 // filtering to it keeps only its repos.

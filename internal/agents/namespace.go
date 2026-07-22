@@ -64,25 +64,44 @@ func namespaceMembership(rows []Row, nss []Namespace) map[string]string {
 	return out
 }
 
-// assignRepoTabs resolves every recognized repository to the tab it lives under. A repository
-// whose path is under a configured namespace's root takes that namespace (longest match wins); an
-// unmatched repository falls back to an automatic workspace keyed by its parent directory and
-// labelled with that directory's base name, so unconfigured repositories are grouped rather than
-// confined to All. Returns nil when the feature is disabled (inert), so no tabs form; when enabled
-// it always assigns tabs, forming automatic workspaces even with no namespace configured.
+// rowTabKey is the identity a row is assigned a tab under: a repository's git-common-dir, a
+// non-git directory session's own id (keyed by its path via assignRepoTabs), or "" for a row
+// that belongs to no workspace (an incidental agent), which therefore appears only under All.
+func rowTabKey(r Row) string {
+	if r.Kind == RowDir {
+		return r.SessionID
+	}
+	return r.GitDir
+}
+
+// assignRepoTabs resolves every recognized repository and every open non-git directory session to
+// the tab it lives under. A path under a configured namespace's root takes that namespace (longest
+// match wins); an unmatched one falls back to an automatic workspace keyed by its parent directory
+// and labelled with that directory's base name, so unconfigured locations are grouped rather than
+// confined to All. A repository is judged by its representative worktree path, a directory session
+// by its own path - so a non-git directory opened under a workspace root files under that workspace
+// alongside its repositories. Returns nil when the feature is disabled (inert), so no tabs form;
+// when enabled it always assigns tabs, forming automatic workspaces even with no namespace configured.
 func assignRepoTabs(rows []Row, nss []Namespace, enabled bool) map[string]repoTab {
 	if !enabled {
 		return nil
 	}
-	rep := representativePaths(rows)
-	out := make(map[string]repoTab, len(rep))
-	for gd, p := range rep {
-		if name := matchNamespace(p, nss); name != "" {
-			out[gd] = repoTab{key: name, label: name}
-			continue
+	out := map[string]repoTab{}
+	assign := func(key, path string) {
+		if name := matchNamespace(path, nss); name != "" {
+			out[key] = repoTab{key: name, label: name}
+			return
 		}
-		parent := filepath.Dir(filepath.Clean(p))
-		out[gd] = repoTab{key: autoPrefix + parent, label: filepath.Base(parent), auto: true}
+		parent := filepath.Dir(filepath.Clean(path))
+		out[key] = repoTab{key: autoPrefix + parent, label: filepath.Base(parent), auto: true}
+	}
+	for gd, p := range representativePaths(rows) {
+		assign(gd, p)
+	}
+	for _, r := range rows {
+		if r.Kind == RowDir && r.Dir != "" {
+			assign(rowTabKey(r), r.Dir)
+		}
 	}
 	return out
 }

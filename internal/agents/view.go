@@ -453,18 +453,20 @@ func (m *model) setRows(list []Row) {
 
 // filteredRows narrows the reconciled rows to the active tab, feeding both lens projections the
 // same set so they stay consistent. The "All" tab (activeTab "") passes every row through; any
-// other tab keeps only rows whose repository maps to it (incidental agents, mapping to no
-// repository, appear only under All).
+// other tab keeps only rows whose workspace identity maps to it - a repository or a non-git
+// directory session (see rowTabKey). A row with no workspace identity (an incidental agent)
+// appears only under All.
 func (m model) filteredRows(list []Row) []Row {
 	if m.activeTab == "" || !m.wsEnabled {
 		return list
 	}
 	out := make([]Row, 0, len(list))
 	for _, r := range list {
-		if r.GitDir == "" {
+		key := rowTabKey(r)
+		if key == "" {
 			continue
 		}
-		if a, ok := m.tabAssign[r.GitDir]; ok && a.key == m.activeTab {
+		if a, ok := m.tabAssign[key]; ok && a.key == m.activeTab {
 			out = append(out, r)
 		}
 	}
