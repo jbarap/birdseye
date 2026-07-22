@@ -15,7 +15,7 @@ import (
 
 	"github.com/jbarap/birdseye/internal/agents"
 	"github.com/jbarap/birdseye/internal/config"
-	"github.com/jbarap/birdseye/internal/providers/dir"
+	"github.com/jbarap/birdseye/internal/sessname"
 	"github.com/jbarap/birdseye/internal/tmux"
 	"github.com/jbarap/birdseye/internal/worktree"
 )
@@ -246,7 +246,7 @@ func FromRow(r agents.Row) Target { return targetFromRow(r) }
 // (reuses) the repository's deterministic home session, adds a sibling worktree
 // for branch, opens a window rooted there, and starts the agent command - seeding
 // prompt when non-empty. It returns the new worktree's `repo/worktree` handle. The home
-// is a pure function of the repository's identity (dir.HomeSession), so spawn always
+// is a pure function of the repository's identity (sessname.Home), so spawn always
 // routes into be's write domain and never injects a window into a user-made session,
 // even when the repository's only existing presence is in one.
 func (f *Fleet) Spawn(repoDir, branch, name, prompt string) (string, error) {
@@ -255,7 +255,7 @@ func (f *Fleet) Spawn(repoDir, branch, name, prompt string) (string, error) {
 		return "", fmt.Errorf("not a git repository: %s", repoDir)
 	}
 	primary := filepath.Dir(info.GitDir)
-	session := dir.HomeSession(info.GitDir)
+	session := sessname.Home(info.GitDir)
 	if err := f.client.Ensure(session, primary, info.Repo); err != nil {
 		return "", err
 	}
@@ -307,7 +307,7 @@ func (f *Fleet) OpenShell(t Target) (string, error) {
 // When agent is true the window starts the repository's effective agent command (honoring its
 // .birdseye/config.toml override); when false it leaves a plain shell. The directory must
 // already exist; it adds no worktree (re-waking a slot or base does not re-provision). Like
-// Spawn it routes into be's write domain (dir.HomeSession), so it never injects a window into a
+// Spawn it routes into be's write domain (sessname.Home), so it never injects a window into a
 // user-made session.
 func (f *Fleet) openWindow(t Target, agent bool) (string, error) {
 	if t.Dir == "" {
@@ -325,7 +325,7 @@ func (f *Fleet) openWindow(t Target, agent bool) (string, error) {
 		}
 		command = eff.Agents.AgentCommand()
 	}
-	session := dir.HomeSession(info.GitDir)
+	session := sessname.Home(info.GitDir)
 	if err := f.client.Ensure(session, filepath.Dir(info.GitDir), info.Repo); err != nil {
 		return "", err
 	}

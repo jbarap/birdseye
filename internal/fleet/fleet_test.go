@@ -10,7 +10,7 @@ import (
 
 	"github.com/jbarap/birdseye/internal/agents"
 	"github.com/jbarap/birdseye/internal/config"
-	"github.com/jbarap/birdseye/internal/providers/dir"
+	"github.com/jbarap/birdseye/internal/sessname"
 	"github.com/jbarap/birdseye/internal/tmux"
 )
 
@@ -286,7 +286,7 @@ func TestOpenRoutesToHome(t *testing.T) {
 	if _, err := f.Open(Target{Handle: "proj/spike", Dir: "/code/proj.worktrees/spike", Session: "my-user-session"}); err != nil {
 		t.Fatal(err)
 	}
-	home := dir.HomeSession(gd)
+	home := sessname.Home(gd)
 	routed := false
 	for _, c := range calls {
 		if strings.HasPrefix(c, "new-window") && strings.Contains(c, "-t "+home+":") {

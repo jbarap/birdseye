@@ -492,8 +492,8 @@ non-git pane, or panes spanning multiple repositories within one tmux session, S
 repository's section; each repository is recognized independently from its own anchoring presence. A
 repository's **anchor** SHALL be its git **primary worktree** (the worktree git refuses to remove),
 independent of which branch is checked out there. A tmux session SHALL NOT itself be a unit of
-recognition; it is a location a row resolves to. The per-tick path classification SHALL be cheap (a
-cache lookup); git SHALL be consulted only on a cache miss or when performing an action.
+**repository** recognition; it is a location a row resolves to. The per-tick path classification SHALL
+be cheap (a cache lookup); git SHALL be consulted only on a cache miss or when performing an action.
 
 #### Scenario: A repo is recognized from any anchoring pane
 
@@ -858,4 +858,45 @@ between working and idle SHALL NOT clear the mute.
 - **WHEN** a muted agent transitions between working and idle
 - **THEN** it stays muted, because those transitions are the ordinary work the user chose to
   silence
+
+### Requirement: Non-git directory session rows
+
+The agents view SHALL surface an **open** tmux session that resolves to no repository and hosts no
+agent as a single jump-only **directory row**. This recognition is a fallback subordinate to
+repository and agent recognition: it SHALL apply only to a session none of whose panes resolve to any
+repository and none of whose panes host an active agent, so it never competes with or duplicates a
+repository section or an agent row. The directory row SHALL carry the session's representative
+directory - the start path of its lowest-indexed window's first pane, chosen deterministically - and
+SHALL be rendered only while the session is live; a directory with no open session SHALL NOT be
+surfaced (dormant directories remain the picker's domain, unlike repositories which render even
+without a live window).
+
+A directory row SHALL support jumping to its session and previewing it, and SHALL NOT offer
+worktree or agent-spawn actions, because the directory is not a git repository. Attempting a spawn
+action on a directory row SHALL report that the location is not a git repository rather than silently
+doing nothing.
+
+#### Scenario: An open non-git directory session appears as a jump-only row
+
+- **WHEN** a tmux session is rooted at a directory that resolves to no git repository and hosts no
+  active agent
+- **THEN** the view renders a single directory row for that session, carrying the directory, with
+  jump and preview available and no worktree/spawn actions
+
+#### Scenario: A directory session with a repo pane is not double-surfaced
+
+- **WHEN** a tmux session has at least one pane resolving to a repository (or hosts an active agent)
+- **THEN** the session is represented by its repository section (or agent row) and no separate
+  directory row is emitted for it
+
+#### Scenario: A closed directory is not surfaced
+
+- **WHEN** a directory has no open tmux session
+- **THEN** the view shows no directory row for it, because directory recognition is gated on a live
+  session rather than a filesystem scan
+
+#### Scenario: Spawn is rejected on a directory row
+
+- **WHEN** the user invokes the spawn action on a directory row
+- **THEN** the view reports that the location is not a git repository and creates no worktree
 

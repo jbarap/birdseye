@@ -2,7 +2,7 @@ package worktree
 
 import (
 	"github.com/jbarap/birdseye/internal/provider"
-	"github.com/jbarap/birdseye/internal/providers/dir"
+	"github.com/jbarap/birdseye/internal/sessname"
 )
 
 // Type is the provider's source tag.
@@ -35,7 +35,7 @@ func (p *Provider) Candidates() ([]provider.Candidate, error) {
 		// Name the session by the repository's home (the same <repo>-<hash> the dash's
 		// `n` and `be agents spawn` use) so opening a repo here and spawning into it land
 		// in one session rather than two differently-named ones.
-		name := dir.HomeSession(m.GitDir)
+		name := sessname.Home(m.GitDir)
 		path := m.Path
 		out = append(out, provider.Candidate{
 			Name:  name,

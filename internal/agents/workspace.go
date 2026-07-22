@@ -1,6 +1,11 @@
 package agents
 
-import "github.com/jbarap/birdseye/internal/providers/dir"
+import (
+	"path/filepath"
+	"strconv"
+
+	"github.com/jbarap/birdseye/internal/sessname"
+)
 
 // PaneInfo is one tmux pane the reconciler classifies. It mirrors the tmux backend's
 // pane enumeration without this package importing tmux (cli adapts the two).
@@ -189,7 +194,75 @@ func (w *Workspace) Rows() ([]Row, error) {
 			rows = append(rows, agentRow(a))
 		}
 	}
+
+	rows = append(rows, w.dirRows(agentList, panes)...)
 	return rows, nil
+}
+
+// dirRows surfaces open non-git directory sessions as jump-only rows. It is a fallback
+// subordinate to repository and agent recognition: a session earns a row only when none of
+// its panes resolve to a repository and it hosts no agent, so it never duplicates a
+// repository section or an agent row. The row carries the session's representative directory
+// - the start path of its lowest-indexed window's first pane - and only live sessions (those
+// with panes) are surfaced; a directory with no open session is the picker's domain.
+func (w *Workspace) dirRows(agentList []Agent, panes []PaneInfo) []Row {
+	hasRepoPane := map[string]bool{} // session -> a pane resolves to a repository
+	rep := map[string]PaneInfo{}     // session -> representative (lowest-window) pane
+	var order []string               // sessions in first-seen order, for stable output
+	for _, p := range panes {
+		if w.lookup(p.StartPath) != nil {
+			hasRepoPane[p.Session] = true
+		}
+		if cur, ok := rep[p.Session]; !ok {
+			rep[p.Session] = p
+			order = append(order, p.Session)
+		} else if windowIndexLess(p.WindowIndex, cur.WindowIndex) {
+			rep[p.Session] = p
+		}
+	}
+
+	hasAgent := map[string]bool{} // session -> hosts a live agent
+	for _, a := range agentList {
+		if a.TmuxSession != "" {
+			hasAgent[a.TmuxSession] = true
+		}
+	}
+
+	var out []Row
+	for _, sess := range order {
+		if hasRepoPane[sess] || hasAgent[sess] {
+			continue
+		}
+		p := rep[sess]
+		out = append(out, Row{
+			Kind:           RowDir,
+			SessionID:      "dir:" + sess,
+			TmuxSession:    sess,
+			TmuxWindow:     p.WindowIndex,
+			TmuxWindowName: p.WindowName,
+			TmuxPane:       p.PaneID,
+			Dir:            p.StartPath,
+			Title:          filepath.Base(p.StartPath),
+		})
+	}
+	return out
+}
+
+// windowIndexLess reports whether tmux window index a sorts before b, comparing numerically
+// so "2" precedes "10". A non-numeric index (unexpected) sorts last, preserving determinism.
+func windowIndexLess(a, b string) bool {
+	ai, aerr := strconv.Atoi(a)
+	bi, berr := strconv.Atoi(b)
+	switch {
+	case aerr == nil && berr == nil:
+		return ai < bi
+	case aerr == nil:
+		return true
+	case berr == nil:
+		return false
+	default:
+		return a < b
+	}
 }
 
 // agentWorktree resolves the worktree an agent occupies: its recorded working directory
@@ -212,7 +285,7 @@ func (w *Workspace) agentWorktree(a Agent, paneStart map[string]string) *RepoInf
 // label repeating) plus one row per agentless worktree — the `⌂ base` primary or an
 // `◌ slot` spawn target. Agents adopted as worktree rows are recorded in claimed.
 func (w *Workspace) repoRows(repo RepoInfo, agentList []Agent, panes []PaneInfo, byPane map[string]Agent, paneStart map[string]string, claimed map[string]bool) []Row {
-	home := dir.HomeSession(repo.GitDir)
+	home := sessname.Home(repo.GitDir)
 
 	// Agents belonging to this repository, bucketed by the worktree they occupy.
 	agentsByWt := map[string][]Agent{}

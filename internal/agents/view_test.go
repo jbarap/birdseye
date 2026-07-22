@@ -12,7 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/jbarap/birdseye/internal/providers/dir"
+	"github.com/jbarap/birdseye/internal/sessname"
 	"github.com/jbarap/birdseye/internal/theme"
 )
 
@@ -1357,7 +1357,7 @@ func TestFoldStateSurvivesRefresh(t *testing.T) {
 // row in the home, a windowless row, and an ungrouped incidental agent carry none.
 func TestLocatorHint(t *testing.T) {
 	const gd = "/code/proj/.git"
-	home := dir.HomeSession(gd)
+	home := sessname.Home(gd)
 
 	// In the home session: no hint.
 	if h := locatorHint(Row{GitDir: gd, TmuxSession: home}); h != "" {

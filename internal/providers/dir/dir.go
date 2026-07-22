@@ -4,14 +4,13 @@
 package dir
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/jbarap/birdseye/internal/provider"
+	"github.com/jbarap/birdseye/internal/sessname"
 )
 
 // Type is the provider's source tag.
@@ -59,7 +58,10 @@ func (p *Provider) Candidates() ([]provider.Candidate, error) {
 		}
 		seen[path] = true
 		base := filepath.Base(path)
-		name := SessionName(base)
+		// The session name hashes the cleaned path (not the bare base) so two directories
+		// sharing a basename stay distinct rather than colliding onto one candidate the
+		// registry would dedup away.
+		name := sessname.For(base, path)
 		dir := path
 		out = append(out, provider.Candidate{
 			Name:  name,
@@ -101,28 +103,6 @@ func (p *Provider) Candidates() ([]provider.Candidate, error) {
 		}
 	}
 	return out, nil
-}
-
-// SessionName sanitizes a directory base name into a valid tmux session name.
-// tmux forbids '.' and ':' in session names, so they are replaced with '_'.
-func SessionName(base string) string {
-	r := strings.NewReplacer(".", "_", ":", "_", " ", "_")
-	return r.Replace(base)
-}
-
-// HomeSession is the deterministic tmux session name be uses as a repository's
-// agent home - its write domain. It is a pure function of the repository's identity
-// (its git-common-dir): the repository basename is the friendly part, and a short hash
-// of the git-common-dir is always appended. The hash does double duty - it disambiguates
-// two repositories that share a basename, and it marks the session as be-derived without a
-// noisy prefix. Determinism is load-bearing - a repository's home always resolves to the
-// same name regardless of what else is running - so the disambiguator is derived from the
-// git-common-dir alone, never from the live session set.
-func HomeSession(gitCommonDir string) string {
-	clean := filepath.Clean(gitCommonDir)
-	base := SessionName(filepath.Base(filepath.Dir(clean)))
-	sum := sha256.Sum256([]byte(clean))
-	return base + "-" + hex.EncodeToString(sum[:])[:6]
 }
 
 func queryZoxide() ([]string, error) {

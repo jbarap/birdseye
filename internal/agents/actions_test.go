@@ -118,6 +118,31 @@ func TestNewAgentGatedToManagedRepo(t *testing.T) {
 	}
 }
 
+func TestNewAgentRejectedOnDirRow(t *testing.T) {
+	orch := &fakeOrch{}
+	// A non-git directory row: spawn must be refused with a git-repository message, and no
+	// prompt opens (a directory has no worktrees to create).
+	m := modelWith(t, orch, []Row{{Kind: RowDir, SessionID: "dir:data", TmuxSession: "data", TmuxPane: "%1", Dir: "/media/ssd/v3", Title: "v3"}})
+	nm, _ := m.startNewAgent()
+	m = nm.(model)
+	if m.mode != modeNormal {
+		t.Fatalf("new-agent should not open on a dir row, mode=%v", m.mode)
+	}
+	if len(orch.spawns) != 0 {
+		t.Fatalf("no spawn should occur on a dir row")
+	}
+	if m.noticeLevel != noticeError || !strings.Contains(m.notice, "not a git repository") {
+		t.Fatalf("dir-row spawn should report a git-repository error, got level=%v notice=%q", m.noticeLevel, m.notice)
+	}
+}
+
+func TestDirRowGutterMarker(t *testing.T) {
+	g, _ := gutterFor(Row{Kind: RowDir})
+	if !strings.Contains(g, dirGlyph) || !strings.Contains(g, dirWord) {
+		t.Fatalf("dir row gutter should carry the dir glyph and word, got %q", g)
+	}
+}
+
 func TestNewAgentPromptAndSpawn(t *testing.T) {
 	orch := &fakeOrch{}
 	repo := Row{Kind: RowAgent, SessionID: "feat", TmuxSession: "proj", Title: "feat", Dir: "/code/proj/feat", Worktree: "feat", GitDir: "/code/proj/.git"}
