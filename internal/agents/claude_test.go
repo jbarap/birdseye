@@ -4,6 +4,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -12,14 +14,14 @@ import (
 // stubNoTmuxRecovery neutralizes the owning-process tmux recovery so a test that sets
 // TMUX="" to simulate "not in tmux" is hermetic: without it, resolveTmux would read the real
 // /proc environment of whatever process runs the suite and pick up a live pane when the tests
-// are run from inside tmux. It also stubs paneTitles to an empty map so the notify path never
-// shells out to a real tmux server; a test needing synthetic titles overrides it afterward.
+// are run from inside tmux. It also stubs paneContents to an empty map so the notify path never
+// shells out to a real tmux server; a test needing synthetic screens overrides it afterward.
 func stubNoTmuxRecovery(t *testing.T) {
 	t.Helper()
-	prevTmux, prevTitles := procTmux, paneTitles
+	prevTmux, prevScreens := procTmux, paneContents
 	procTmux = func(int) (string, string) { return "", "" }
-	paneTitles = func() map[string]string { return map[string]string{} }
-	t.Cleanup(func() { procTmux, paneTitles = prevTmux, prevTitles })
+	paneContents = func([]string) (map[string]string, error) { return map[string]string{}, nil }
+	t.Cleanup(func() { procTmux, paneContents = prevTmux, prevScreens })
 }
 
 // TestParseTmuxEnv pins recovery of a Claude daemon's tmux location from its NUL-separated
@@ -86,35 +88,72 @@ func TestStatusForNotificationMessage(t *testing.T) {
 // alwaysAlive is a liveness stub that keeps every record (treats all pids live).
 func alwaysAlive(int) bool { return true }
 
-// TestClaudeTitleLevel pins the title glyph -> level map: any Braille frame is working
-// (the spinner animates across the class), the sparkle is idle, and anything else yields
-// no signal so the caller falls back to the hook status.
-func TestClaudeTitleLevel(t *testing.T) {
+// TestQuiescenceDetector pins the one-directional level signal: a pane whose screen has been
+// still for longer than the window disproves "working", and every other case yields no signal at
+// all. The detector must never be able to report working - that asymmetry is what keeps terminal
+// noise (a user scrolling or typing) from manufacturing a status.
+func TestQuiescenceDetector(t *testing.T) {
+	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	d := quiescenceDetector{window: 12 * time.Second}
+	obs := map[string]paneObservation{
+		"%1": {Hash: "a", Since: now.Add(-30 * time.Second), Seen: now},          // long still
+		"%2": {Hash: "a", Since: now.Add(-2 * time.Second), Seen: now},           // just changed
+		"%3": {Hash: "a", Since: now.Add(-time.Hour), Seen: now.Add(-time.Hour)}, // still, but unwatched
+	}
 	cases := []struct {
-		title     string
+		name      string
+		pane      string
 		want      Status
 		haveLevel bool
 	}{
-		{"⠂ Working on the thing", StatusWorking, true},  // U+2802
-		{"⠐ another spinner frame", StatusWorking, true}, // U+2810, a different frame
-		{"⣿ full braille", StatusWorking, true},          // U+28FF, top of range
-		{"✳ Idle at the prompt", StatusIdle, true},       // U+2733
-		{"  ✳ leading space trimmed", StatusIdle, true},
-		{"grotto", "", false}, // a plain shell title
-		{"", "", false},
-		{"~/projects/birdseye", "", false},
+		{"still past the window is idle", "%1", StatusIdle, true},
+		{"recent change is no signal", "%2", "", false},
+		{"stale sample is no signal", "%3", "", false},
+		{"unsampled pane is no signal", "%4", "", false},
+		{"pane-less agent is no signal", "", "", false},
 	}
 	for _, c := range cases {
-		got, ok := claudeTitleLevel(c.title)
+		got, ok := d.Level(c.pane, obs, now)
 		if got != c.want || ok != c.haveLevel {
-			t.Errorf("claudeTitleLevel(%q) = (%q,%v), want (%q,%v)", c.title, got, ok, c.want, c.haveLevel)
+			t.Errorf("%s: Level(%q) = (%q,%v), want (%q,%v)", c.name, c.pane, got, ok, c.want, c.haveLevel)
 		}
 	}
 }
 
-// TestReconcilePrecedence walks the status precedence table: needs-attention is a latch
-// cleared only by a working level, and otherwise the live level overrides working/idle with
-// a fallback to the hook status when there is no signal.
+// TestUpdateObservations pins the stillness clock: an unchanged screen keeps its original Since
+// so stillness accrues across polls, any change restarts it, and a first sighting starts now so a
+// newly seen pane is never instantly called still.
+func TestUpdateObservations(t *testing.T) {
+	t0 := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	t1 := t0.Add(10 * time.Second)
+
+	first := updateObservations(map[string]paneObservation{}, map[string]string{"%1": "screen", "%2": "screen"}, t0)
+	if !first["%1"].Since.Equal(t0) {
+		t.Fatalf("a first sighting starts the clock at now, got %v", first["%1"].Since)
+	}
+
+	second := updateObservations(first, map[string]string{"%1": "screen", "%2": "changed"}, t1)
+	if !second["%1"].Since.Equal(t0) {
+		t.Errorf("an unchanged screen keeps its Since (stillness accrues), got %v want %v", second["%1"].Since, t0)
+	}
+	if !second["%2"].Since.Equal(t1) {
+		t.Errorf("a changed screen restarts the clock, got %v want %v", second["%2"].Since, t1)
+	}
+	if !second["%1"].Seen.Equal(t1) {
+		t.Errorf("every sample refreshes Seen, got %v want %v", second["%1"].Seen, t1)
+	}
+
+	// A pane absent from a round keeps its entry, so dropping out of the sampled set does not
+	// lose its accrued stillness.
+	third := updateObservations(second, map[string]string{"%1": "screen"}, t1.Add(time.Second))
+	if _, ok := third["%2"]; !ok {
+		t.Error("an unsampled pane should keep its entry until retention expires")
+	}
+}
+
+// TestReconcilePrecedence walks the status precedence table. The hook status is authoritative;
+// stillness may only demote a "working" record. Notably needs-attention is never cleared here -
+// only a real hook event overwrites it - and no observation can ever promote anything.
 func TestReconcilePrecedence(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -123,14 +162,12 @@ func TestReconcilePrecedence(t *testing.T) {
 		haveLevel bool
 		want      Status
 	}{
-		{"attention cleared by working level", StatusNeedsAttention, StatusWorking, true, StatusWorking},
-		{"attention held by idle level", StatusNeedsAttention, StatusIdle, true, StatusNeedsAttention},
-		{"attention held with no level", StatusNeedsAttention, "", false, StatusNeedsAttention},
 		{"stale working corrected to idle", StatusWorking, StatusIdle, true, StatusIdle},
-		{"working stays working", StatusWorking, StatusWorking, true, StatusWorking},
-		{"idle promoted by working level", StatusIdle, StatusWorking, true, StatusWorking},
 		{"working with no level falls back", StatusWorking, "", false, StatusWorking},
-		{"unknown resolved by level", StatusUnknown, StatusWorking, true, StatusWorking},
+		{"attention is never cleared by stillness", StatusNeedsAttention, StatusIdle, true, StatusNeedsAttention},
+		{"attention held with no level", StatusNeedsAttention, "", false, StatusNeedsAttention},
+		{"idle is never promoted", StatusIdle, StatusIdle, true, StatusIdle},
+		{"unknown is never promoted", StatusUnknown, StatusIdle, true, StatusUnknown},
 		{"unknown with no level stays unknown", StatusUnknown, "", false, StatusUnknown},
 	}
 	for _, c := range cases {
@@ -140,62 +177,74 @@ func TestReconcilePrecedence(t *testing.T) {
 	}
 }
 
-// TestAgentsCorrectsLevelFromTitle exercises the end-to-end read path: a stale hook status
-// is corrected by the live pane title, the attention latch is held or cleared by the
-// title, a pane with no title keeps its hook status, and the title source is read once per
-// refresh (batched), not once per agent.
-func TestAgentsCorrectsLevelFromTitle(t *testing.T) {
+// TestAgentsCorrectsStaleWorking exercises the end-to-end read path across two refreshes: a
+// working record whose pane never changes is demoted once its stillness passes the window, one
+// whose pane keeps animating is left alone, needs-attention survives a still pane, and only
+// working records are ever captured.
+func TestAgentsCorrectsStaleWorking(t *testing.T) {
 	dir := t.TempDir()
-	now := time.Now()
+	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	for _, r := range []record{
-		{SessionID: "stale-work", PID: 1, TmuxSession: "s", TmuxPane: "%1", Title: "a", Status: StatusWorking, Updated: now},
-		{SessionID: "still-work", PID: 1, TmuxSession: "s", TmuxPane: "%2", Title: "b", Status: StatusWorking, Updated: now},
-		{SessionID: "attn-moved", PID: 1, TmuxSession: "s", TmuxPane: "%3", Title: "c", Status: StatusNeedsAttention, Updated: now},
-		{SessionID: "attn-held", PID: 1, TmuxSession: "s", TmuxPane: "%4", Title: "d", Status: StatusNeedsAttention, Updated: now},
-		{SessionID: "no-title", PID: 1, TmuxSession: "s", TmuxPane: "%9", Title: "e", Status: StatusWorking, Updated: now},
+		{SessionID: "stale-work", PID: 1, TmuxSession: "s", TmuxWindow: "1", TmuxPane: "%1", Title: "a", Status: StatusWorking, Updated: now},
+		{SessionID: "still-work", PID: 1, TmuxSession: "s", TmuxWindow: "2", TmuxPane: "%2", Title: "b", Status: StatusWorking, Updated: now},
+		{SessionID: "attn", PID: 1, TmuxSession: "s", TmuxWindow: "3", TmuxPane: "%3", Title: "c", Status: StatusNeedsAttention, Updated: now},
+		{SessionID: "no-pane", PID: 1, TmuxSession: "s", TmuxWindow: "4", Title: "e", Status: StatusWorking, Updated: now},
 	} {
 		if err := writeRecord(dir, r); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	calls := 0
-	titles := map[string]string{
-		"%1": "✳ done now",        // working record, idle title -> idle
-		"%2": "⠂ still going",     // working record, spinner title -> working
-		"%3": "⠂ resumed",         // attention record, spinner title -> working (latch cleared)
-		"%4": "✳ awaiting answer", // attention record, idle title -> needs-attention (held)
-		// %9 has no entry -> no signal -> keep hook status
-	}
+	frame := 0
+	var asked [][]string
 	s := &ClaudeSource{
 		dir:      dir,
 		recDir:   dir,
 		alive:    alwaysAlive,
-		detector: titleLevelDetector{},
-		titles:   func() (map[string]string, error) { calls++; return titles, nil },
+		detector: quiescenceDetector{window: quiescenceWindow},
+		now:      func() time.Time { return now },
+		screens: func(ids []string) (map[string]string, error) {
+			sort.Strings(ids)
+			asked = append(asked, ids)
+			frame++
+			// %1 is frozen; %2 redraws every capture, as a working agent's animation does.
+			return map[string]string{"%1": "frozen", "%2": "frame " + strconv.Itoa(frame)}, nil
+		},
 	}
 
-	got, err := s.Agents()
-	if err != nil {
-		t.Fatal(err)
+	statuses := func() map[string]Status {
+		got, err := s.Agents()
+		if err != nil {
+			t.Fatal(err)
+		}
+		byID := map[string]Status{}
+		for _, a := range got {
+			byID[a.SessionID] = a.Status
+		}
+		return byID
 	}
-	if calls != 1 {
-		t.Fatalf("title source should be read once per refresh, got %d calls", calls)
+
+	// First refresh: nothing has been still for any measurable time yet, so no record moves.
+	if got := statuses(); got["stale-work"] != StatusWorking {
+		t.Errorf("a first sighting must not demote anything, got %q", got["stale-work"])
 	}
-	byID := map[string]Status{}
-	for _, a := range got {
-		byID[a.SessionID] = a.Status
+	// Only panes claiming to work are sampled; needs-attention and pane-less records are not.
+	if len(asked) != 1 || strings.Join(asked[0], ",") != "%1,%2" {
+		t.Errorf("captured panes = %v, want only the working ones (%%1,%%2)", asked)
 	}
+
+	// Second refresh, past the window: %1 has not changed a byte and is demoted; %2 kept moving.
+	now = now.Add(quiescenceWindow + time.Second)
+	got := statuses()
 	want := map[string]Status{
 		"stale-work": StatusIdle,
 		"still-work": StatusWorking,
-		"attn-moved": StatusWorking,
-		"attn-held":  StatusNeedsAttention,
-		"no-title":   StatusWorking,
+		"attn":       StatusNeedsAttention,
+		"no-pane":    StatusWorking,
 	}
 	for id, w := range want {
-		if byID[id] != w {
-			t.Errorf("%s: status = %q, want %q", id, byID[id], w)
+		if got[id] != w {
+			t.Errorf("%s: status = %q, want %q", id, got[id], w)
 		}
 	}
 }

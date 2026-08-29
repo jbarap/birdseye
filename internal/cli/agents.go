@@ -61,7 +61,7 @@ func buildFleet() (*fleet.Fleet, error) {
 	if err != nil {
 		return nil, err
 	}
-	src.SetTitleSource(client.PaneTitles)
+	src.SetScreenSource(client.PaneContents)
 	return fleet.New(client, cfg, src, paneLister{client}, repoResolver{}), nil
 }
 
@@ -331,7 +331,7 @@ func runDash() error {
 	var orch agents.Orchestrator
 	client, clientErr := tmux.New()
 	if clientErr == nil {
-		src.SetTitleSource(client.PaneTitles)
+		src.SetScreenSource(client.PaneContents)
 		prev = agents.NewTmuxPreviewer(client, 200)
 		rowSrc = agents.NewWorkspace(src, paneLister{client}, repoResolver{})
 		f := fleet.New(client, cfg, src, paneLister{client}, repoResolver{})

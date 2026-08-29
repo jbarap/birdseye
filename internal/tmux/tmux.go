@@ -201,30 +201,25 @@ func (c *Client) ListPanes() ([]Pane, error) {
 	return panes, nil
 }
 
-// PaneTitles returns every pane's current OSC title keyed by pane id, via a single
-// list-panes query. The title is the out-of-band channel an agent uses to broadcast
-// state (e.g. Claude's spinner glyph while working, a sparkle when idle); reading it
-// lets the status layer correct a stale hook-written working/idle level. A missing
-// server, or any query failure, yields an empty map (not an error), so a refresh
-// degrades to hook-only status rather than failing.
-func (c *Client) PaneTitles() (map[string]string, error) {
-	const format = "#{pane_id}\t#{pane_title}"
-	out, err := c.run("list-panes", "-a", "-F", format)
-	if err != nil {
-		return map[string]string{}, nil
-	}
-	titles := map[string]string{}
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		if line == "" {
+// PaneContents captures the current screen of each named pane, keyed by pane id. Screen
+// stillness across successive captures is what disproves a stale "working" status: a working
+// agent animates (Claude draws a spinner and a 1Hz elapsed counter), so a pane that has not
+// changed a byte is not working. This reads the pane's screen, not its scrollback, so it
+// reflects what the agent is drawing right now.
+//
+// Callers pass only the panes they need judged, so this stays a handful of captures per refresh
+// rather than one per pane on the server. A failed capture omits that pane (not an error), so a
+// refresh degrades to hook-only status rather than failing.
+func (c *Client) PaneContents(ids []string) (map[string]string, error) {
+	out := make(map[string]string, len(ids))
+	for _, id := range ids {
+		screen, err := c.run("capture-pane", "-p", "-t", id)
+		if err != nil {
 			continue
 		}
-		id, title, _ := strings.Cut(line, "\t")
-		if id == "" {
-			continue
-		}
-		titles[id] = title
+		out[id] = screen
 	}
-	return titles, nil
+	return out, nil
 }
 
 // NewWindow creates a detached window in session rooted at dir and returns its window
