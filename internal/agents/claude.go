@@ -13,7 +13,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-	"unicode/utf8"
 
 	"github.com/jbarap/birdseye/internal/config"
 )
@@ -24,18 +23,20 @@ import (
 // no time-based retention and no stale heuristic — process liveness is the single
 // signal for whether an agent is still there.
 type ClaudeSource struct {
-	dir       string                            // state root: mutes.json (dash view state)
-	recDir    string                            // agents subdir: per-session hook records
-	alive     func(pid int) bool                // process-liveness check; overridable in tests
-	startTime func(pid int) string              // anchor pid start time, for pid-reuse detection; overridable in tests
-	titles    func() (map[string]string, error) // pane id -> OSC title; overridable in tests
-	detector  levelDetector                     // derives the live working/idle level
+	dir       string                                        // state root: mutes.json (dash view state)
+	recDir    string                                        // agents subdir: per-session hook records
+	alive     func(pid int) bool                            // process-liveness check; overridable in tests
+	startTime func(pid int) string                          // anchor pid start time, for pid-reuse detection; overridable in tests
+	screens   func(ids []string) (map[string]string, error) // pane id -> captured screen; overridable in tests
+	now       func() time.Time                              // clock for quiescence; overridable in tests
+	detector  levelDetector                                 // disproves a stale working status
 }
 
 // NewClaudeSource returns a source reading from the default state dir, using real
-// process liveness to decide which tracked agents are still present. The live
-// working/idle level is read from pane titles; the CLI wires a tmux-backed title
-// source via SetTitleSource, and absent that the source degrades to hook-only status.
+// process liveness to decide which tracked agents are still present. A stale "working"
+// record is disproved by sampling the agent's pane for quiescence; the CLI wires a
+// tmux-backed capture via SetScreenSource, and absent that the source degrades to
+// hook-only status.
 func NewClaudeSource() (*ClaudeSource, error) {
 	root, err := StateDir()
 	if err != nil {
@@ -50,17 +51,18 @@ func NewClaudeSource() (*ClaudeSource, error) {
 		recDir:    recDir,
 		alive:     processAlive,
 		startTime: procStartTime,
-		titles:    func() (map[string]string, error) { return map[string]string{}, nil },
-		detector:  titleLevelDetector{},
+		screens:   paneContents,
+		now:       time.Now,
+		detector:  quiescenceDetector{window: quiescenceWindow},
 	}, nil
 }
 
-// SetTitleSource installs the provider that yields pane id -> OSC title, used to correct
-// the live working/idle level. The CLI wires this to tmux (Client.PaneTitles). Left
-// unset, the source falls back to hook-written status, so behavior is never worse than
-// hook-only.
-func (s *ClaudeSource) SetTitleSource(f func() (map[string]string, error)) {
-	s.titles = f
+// SetScreenSource installs the provider that captures the current screen of the given panes,
+// whose stillness over time disproves a stale "working" record. The CLI wires this to tmux
+// (Client.PaneContents). Left unset, the source falls back to hook-written status, so behavior
+// is never worse than hook-only.
+func (s *ClaudeSource) SetScreenSource(f func(ids []string) (map[string]string, error)) {
+	s.screens = f
 }
 
 // processAlive reports whether a process with the given pid is currently running.
@@ -258,37 +260,39 @@ func (s *ClaudeSource) Agents() ([]Agent, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Read every pane's current title once per refresh (batched, see PaneTitles); the
-	// detector resolves each agent's live working/idle level from it. Best-effort: a
-	// failure leaves an empty map, so status falls back to the hook record.
-	titles := map[string]string{}
-	if s.titles != nil {
-		if t, err := s.titles(); err == nil && t != nil {
-			titles = t
-		}
-	}
-	out := make([]Agent, 0, len(recs))
-	at := map[string]int{} // dedup key -> index in out
+	// Liveness GC first: an agent exists only while the process that reported it is running.
+	// A dead (or unidentifiable) process, or a pid the process recycled, means the session is
+	// gone, so delete its state — even if its tmux pane (a leftover shell) still lingers.
+	// Sampling is scoped to what survives, so a reclaimed session costs no capture.
+	live := make([]record, 0, len(recs))
 	for _, r := range recs {
-		// Liveness GC: an agent exists only while the process that reported it is
-		// running. A dead (or unidentifiable) process, or a pid the process recycled,
-		// means the session is gone, so delete its state — even if its tmux pane (a
-		// leftover shell) still lingers.
 		if !s.recordAlive(r) {
 			_ = os.Remove(filepath.Join(s.recDir, sanitize(r.SessionID)+".json"))
 			continue
 		}
+		live = append(live, r)
+	}
+	// Sample the panes of records claiming to work and fold the samples into the shared
+	// observation store; the detector reads stillness back out of it. Best-effort: a capture
+	// failure leaves those panes without a level, so status falls back to the hook record.
+	now := time.Now()
+	if s.now != nil {
+		now = s.now()
+	}
+	obs := observePanes(s.dir, workingPaneIDs(live), s.screens, now)
+	out := make([]Agent, 0, len(live))
+	at := map[string]int{} // dedup key -> index in out
+	for _, r := range live {
 		status := r.Status
 		if status == "" {
 			status = StatusUnknown
 		}
-		// Correct working/idle from the agent's current terminal state: the hook status
-		// is edge-triggered and goes stale (e.g. "working" after an Esc interrupt with no
-		// Stop hook), while the live level reflects the pane now. reconcile encodes the
-		// precedence (the needs-attention latch, the title overriding working/idle, the
-		// no-signal fallback).
+		// The hook status is edge-triggered and goes stale (e.g. "working" after an Esc
+		// interrupt with no Stop hook). A pane that has sat perfectly still cannot be working,
+		// so that observation is allowed to demote it — and nothing else. reconcile holds that
+		// precedence.
 		if s.detector != nil {
-			level, ok := s.detector.Level(r.TmuxPane, titles)
+			level, ok := s.detector.Level(r.TmuxPane, obs, now)
 			status = reconcile(status, level, ok)
 		}
 		a := Agent{
@@ -432,65 +436,48 @@ func dropSupersededByPane(in []Agent) []Agent {
 	return out
 }
 
-// claudeTitleLevel maps a pane's current OSC title to a live working/idle level for
-// Claude, or ("", false) when the title carries no recognized state glyph. Claude
-// broadcasts its state in the title it sets: a Braille spinner frame while working, a
-// sparkle when idle. We match the Braille *class* (U+2800-U+28FF), not a specific frame,
-// because the spinner animates across that range (~1 Hz observed) while working - a
-// single-frame match would flicker working -> no-signal every tick. These glyphs are a
-// Claude-version detail; together with idleNotification this is the one spot to update if
-// Claude changes them.
-func claudeTitleLevel(title string) (Status, bool) {
-	r, _ := utf8.DecodeRuneInString(strings.TrimSpace(title))
-	switch {
-	case r >= 0x2800 && r <= 0x28FF: // Braille pattern: a spinner frame
-		return StatusWorking, true
-	case r == 0x2733: // ✳ sparkle: idle at the prompt
-		return StatusIdle, true
-	default:
-		return "", false
-	}
-}
-
-// levelDetector reports an agent's live working/idle level from its current terminal
-// state, independent of hook events. ok=false means "no signal" - the caller falls back
-// to the hook-written status. The seam keeps status reconciliation agnostic to how a
-// level was derived, so title-less agents can later be served by other detectors
-// (terminal-activity diffing, buffer matching) without touching the reconciler or view.
+// levelDetector reports what an agent's terminal betrays about its status, independent of hook
+// events. It is deliberately one-directional: its only possible outputs are StatusIdle - meaning
+// the terminal disproves a "working" claim - and no signal at all. It can never assert that an
+// agent *is* working, so noise on the terminal (a user scrolling or typing) can only ever cost us
+// a correction, never manufacture one. The seam keeps reconciliation agnostic to how stillness
+// was measured, so pane-less agents can later be served by other detectors without touching the
+// reconciler or the view.
 type levelDetector interface {
-	Level(paneID string, titles map[string]string) (Status, bool)
+	Level(paneID string, obs map[string]paneObservation, now time.Time) (Status, bool)
 }
 
-// titleLevelDetector reads the level from a pane's OSC title via claudeTitleLevel. It is
-// the only detector today; it needs no signal for an agent with no pane.
-type titleLevelDetector struct{}
+// quiescenceDetector calls a pane idle once its screen has been byte-identical for window. It
+// matches no glyph and no wording: it rests only on a working agent animating something, which
+// survives the UI redesigns that a glyph matcher does not. A pane we have not sampled recently
+// yields no signal - stillness nobody was watching is not evidence.
+type quiescenceDetector struct{ window time.Duration }
 
-func (titleLevelDetector) Level(paneID string, titles map[string]string) (Status, bool) {
+func (d quiescenceDetector) Level(paneID string, obs map[string]paneObservation, now time.Time) (Status, bool) {
 	if paneID == "" {
 		return "", false
 	}
-	return claudeTitleLevel(titles[paneID])
+	o, ok := obs[paneID]
+	if !ok || now.Sub(o.Seen) > observeFreshness {
+		return "", false
+	}
+	if now.Sub(o.Since) < d.window {
+		return "", false
+	}
+	return StatusIdle, true
 }
 
-// reconcile resolves an agent's displayed status from its hook-written status and a live
-// working/idle level. needs-attention is a latch: it holds until the level shows the agent
-// working (it resumed, so the user answered) - an idle or absent level does not clear it,
-// keeping a real pending prompt visible. For every other hook status the live level
-// overrides working/idle when present, and we fall back to the hook status when no level
-// is available.
+// reconcile resolves an agent's displayed status from its hook-written status and whatever its
+// terminal betrays. The hook status is authoritative: it is a documented contract that says what
+// actually happened, where the terminal is an undocumented rendering detail. So the terminal gets
+// exactly one power - demoting a "working" record its stillness disproves - and no other status
+// is touched by it. needs-attention in particular is never cleared here: a pending prompt stays
+// visible until a real hook event (the agent resuming, or settling) overwrites the record.
 func reconcile(hookStatus, level Status, haveLevel bool) Status {
-	switch hookStatus {
-	case StatusNeedsAttention:
-		if haveLevel && level == StatusWorking {
-			return StatusWorking
-		}
-		return StatusNeedsAttention
-	default:
-		if haveLevel {
-			return level
-		}
-		return hookStatus
+	if hookStatus == StatusWorking && haveLevel && level == StatusIdle {
+		return StatusIdle
 	}
+	return hookStatus
 }
 
 // idleNotification is the lowercase substring that identifies Claude Code's
@@ -716,33 +703,35 @@ func maybeNotify(dir, recDir string, old Status, rec record, policy notifyPolicy
 		}
 		live := func(r record) bool { return recordLiveWith(r, processAlive, procStartTime) }
 		recs, _ := readRecords(recDir)
-		// Judge "still working" by the same reconciled signal the dash renders - the live pane
-		// level correcting a stale hook status - not the raw record: a session frozen at "working"
-		// whose pane shows the idle sparkle must not hold the run open forever.
-		titles := paneTitles()
+		// Judge "still working" by the same reconciled signal the dash renders - pane stillness
+		// correcting a stale hook status - not the raw record: a session frozen at "working" whose
+		// pane is inert must not hold the run open forever. Hooks fire often during a run, so
+		// sampling here also keeps the shared observation store warm for the dash.
+		now := time.Now()
+		obs := observePanes(dir, workingPaneIDs(recs), paneContents, now)
 		// Not the last to settle: the run is still active. Record the finish for the digest and
 		// stay silent - the pull surface already shows the new idle status.
-		if anyLiveWorker(recs, rec.SessionID, live, titles) {
+		if anyLiveWorker(recs, rec.SessionID, live, obs, now) {
 			_ = appendNotifyBatch(dir, rec.Title)
 			return
 		}
 		// Last live worker settled: flush one digest for the whole run.
 		finished := dedup(append(takeNotifyBatch(dir), rec.Title))
-		_ = policy.notifier.Notify(digestNotification(finished, liveBlockedTitles(recs, rec.SessionID, live, titles)))
+		_ = policy.notifier.Notify(digestNotification(finished, liveBlockedTitles(recs, rec.SessionID, live, obs, now)))
 	}
 }
 
-// siblingStatus resolves a sibling record's status the way the view does: the live pane level
-// (Claude's spinner while working, the sparkle when idle) corrects a stale hook-written status. It
-// is the single definition of "working"/"blocked" the digest shares with the dash, so a record
-// frozen at "working" whose pane is actually idle cannot wedge the run open. A record with no pane,
-// or a title carrying no recognized glyph, has no level and falls back to its raw hook status.
-func siblingStatus(r record, titles map[string]string) Status {
+// siblingStatus resolves a sibling record's status the way the view does: a pane that has sat
+// perfectly still disproves a stale "working". It is the single definition of "working"/"blocked"
+// the digest shares with the dash, so a record frozen at "working" whose pane is inert cannot
+// wedge the run open. A record with no pane, or one whose pane carries no recent sample, has no
+// level and falls back to its raw hook status.
+func siblingStatus(r record, obs map[string]paneObservation, now time.Time) Status {
 	status := r.Status
 	if status == "" {
 		status = StatusUnknown
 	}
-	level, ok := titleLevelDetector{}.Level(r.TmuxPane, titles)
+	level, ok := quiescenceDetector{window: quiescenceWindow}.Level(r.TmuxPane, obs, now)
 	return reconcile(status, level, ok)
 }
 
@@ -751,9 +740,9 @@ func siblingStatus(r record, titles map[string]string) Status {
 // filtered by liveness, and a live session frozen at "working" whose pane is actually idle is
 // filtered by the pane-title reconciliation - either alone would otherwise hold the run open and
 // suppress every future digest.
-func anyLiveWorker(recs []record, exceptID string, live func(record) bool, titles map[string]string) bool {
+func anyLiveWorker(recs []record, exceptID string, live func(record) bool, obs map[string]paneObservation, now time.Time) bool {
 	for _, r := range recs {
-		if r.SessionID == exceptID || siblingStatus(r, titles) != StatusWorking {
+		if r.SessionID == exceptID || siblingStatus(r, obs, now) != StatusWorking {
 			continue
 		}
 		if live(r) {
@@ -767,10 +756,10 @@ func anyLiveWorker(recs []record, exceptID string, live func(record) bool, title
 // needs-attention, judged by the same reconciled status the dash shows (a block the pane has since
 // resolved to working no longer counts). A blocked agent is not "working", so it does not hold the
 // run open; when the run settles the digest names these first as the anomaly worth acting on.
-func liveBlockedTitles(recs []record, exceptID string, live func(record) bool, titles map[string]string) []string {
+func liveBlockedTitles(recs []record, exceptID string, live func(record) bool, obs map[string]paneObservation, now time.Time) []string {
 	var out []string
 	for _, r := range recs {
-		if r.SessionID == exceptID || siblingStatus(r, titles) != StatusNeedsAttention {
+		if r.SessionID == exceptID || siblingStatus(r, obs, now) != StatusNeedsAttention {
 			continue
 		}
 		if live(r) {
@@ -896,45 +885,35 @@ func parseTmuxEnv(environ []byte) (tmux, pane string) {
 	return tmux, pane
 }
 
-// paneTitles returns every pane's current OSC title keyed by pane id, read from the same tmux
-// server the hook resolves against - recovering it from the session process's environment when the
-// hook's own TMUX is stripped (the daemon case, exactly as resolveTmux does), so a bg-orchestrated
-// run reconciles against the right server rather than silently degrading to raw status. The notify
-// path uses it to correct a sibling's stale hook status against the level its pane is actually
-// broadcasting. Best-effort: no server or any query failure yields an empty map, so the digest
-// falls back to raw status. A package var so tests can supply synthetic titles.
-var paneTitles = func() map[string]string {
+// paneContents captures the current screen of each named pane, keyed by pane id. It resolves the
+// tmux server the hook works against - recovering it from the session process's environment when
+// the hook's own TMUX is stripped (the daemon case, exactly as resolveTmux does), so a
+// bg-orchestrated run samples the right server rather than silently degrading to raw status.
+// Panes are captured one at a time because only records claiming to work are ever sampled, which
+// is a handful. Best-effort throughout: no server, or any capture failure, simply omits that pane,
+// leaving it without a quiescence signal. A package var so tests can supply synthetic screens.
+var paneContents = func(ids []string) (map[string]string, error) {
+	out := make(map[string]string, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
 	tmuxEnv := os.Getenv("TMUX")
 	if tmuxEnv == "" {
 		if tmuxEnv, _ = procTmux(sessionPID()); tmuxEnv == "" {
-			return map[string]string{}
+			return out, nil
 		}
 	}
-	cmd := exec.Command("tmux", "list-panes", "-a", "-F", "#{pane_id}\t#{pane_title}")
-	// Point tmux at the recovered server when the hook's own env has none, mirroring resolveTmux.
-	if os.Getenv("TMUX") == "" {
-		cmd.Env = append(os.Environ(), "TMUX="+tmuxEnv)
-	}
-	out, err := cmd.Output()
-	if err != nil {
-		return map[string]string{}
-	}
-	return parsePaneTitles(out)
-}
-
-// parsePaneTitles parses the tab-separated "pane_id\tpane_title" lines of `tmux list-panes -a`
-// into a pane-id -> title map, skipping blank or id-less lines.
-func parsePaneTitles(out []byte) map[string]string {
-	titles := map[string]string{}
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if line == "" {
+	for _, id := range ids {
+		cmd := exec.Command("tmux", "capture-pane", "-p", "-t", id)
+		// Point tmux at the recovered server when the hook's own env has none, mirroring resolveTmux.
+		if os.Getenv("TMUX") == "" {
+			cmd.Env = append(os.Environ(), "TMUX="+tmuxEnv)
+		}
+		screen, err := cmd.Output()
+		if err != nil {
 			continue
 		}
-		id, title, _ := strings.Cut(line, "\t")
-		if id == "" {
-			continue
-		}
-		titles[id] = title
+		out[id] = string(screen)
 	}
-	return titles
+	return out, nil
 }

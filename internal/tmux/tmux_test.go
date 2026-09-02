@@ -197,35 +197,41 @@ func TestListPanesNoServerIsEmpty(t *testing.T) {
 	}
 }
 
-func TestPaneTitlesParses(t *testing.T) {
+func TestPaneContentsCaptures(t *testing.T) {
 	rec := newRecorder()
-	rec.replies["list-panes -a -F #{pane_id}\t#{pane_title}"] =
-		"%1\t\xe2\xa0\x82 Working on it\n%2\t\xe2\x9c\xb3 Idle here\n%3\t\n"
+	rec.replies["capture-pane -p -t %1"] = "working frame\n"
+	rec.replies["capture-pane -p -t %2"] = "idle frame\n"
 	c := NewWithRunner(rec.run, false)
 
-	titles, err := c.PaneTitles()
+	screens, err := c.PaneContents([]string{"%1", "%2"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := titles["%1"]; got != "⠂ Working on it" {
-		t.Fatalf("title[%%1] = %q", got)
+	if got := screens["%1"]; got != "working frame\n" {
+		t.Fatalf("screen[%%1] = %q", got)
 	}
-	if got := titles["%2"]; got != "✳ Idle here" {
-		t.Fatalf("title[%%2] = %q", got)
-	}
-	// A pane with an empty title is still present, mapped to "".
-	if got, ok := titles["%3"]; !ok || got != "" {
-		t.Fatalf("title[%%3] = %q ok=%v, want empty present", got, ok)
+	if got := screens["%2"]; got != "idle frame\n" {
+		t.Fatalf("screen[%%2] = %q", got)
 	}
 }
 
-func TestPaneTitlesNoServerIsEmptyMap(t *testing.T) {
+// A pane that cannot be captured is omitted rather than failing the batch, so one dead pane
+// leaves the others judgeable and the refresh degrades to hook-only status for that pane alone.
+func TestPaneContentsSkipsFailedCapture(t *testing.T) {
 	rec := newRecorder()
-	rec.errs["list-panes -a -F #{pane_id}\t#{pane_title}"] = errors.New("no server")
+	rec.replies["capture-pane -p -t %1"] = "alive\n"
+	rec.errs["capture-pane -p -t %2"] = errors.New("no such pane")
 	c := NewWithRunner(rec.run, false)
-	titles, err := c.PaneTitles()
-	if err != nil || titles == nil || len(titles) != 0 {
-		t.Fatalf("no server should yield an empty (non-nil) map, got %+v err=%v", titles, err)
+
+	screens, err := c.PaneContents([]string{"%1", "%2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := screens["%2"]; ok {
+		t.Fatalf("a failed capture must be omitted, got %+v", screens)
+	}
+	if screens["%1"] != "alive\n" {
+		t.Fatalf("a sibling capture must still succeed, got %+v", screens)
 	}
 }
 

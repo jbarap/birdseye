@@ -113,19 +113,26 @@ func TestAnyLiveWorker(t *testing.T) {
 		{SessionID: "idle", Status: StatusIdle, PID: 1},
 		{SessionID: "deadworker", Status: StatusWorking, PID: 0}, // stuck at working but not live
 	}
-	// No titles: siblingStatus falls back to the raw record status.
-	if anyLiveWorker(recs, "self", live, nil) {
+	now := time.Now()
+	// No observations: siblingStatus falls back to the raw record status.
+	if anyLiveWorker(recs, "self", live, nil, now) {
 		t.Fatal("only a dead worker plus idle/self remain; the run should read as settled")
 	}
 	recs = append(recs, record{SessionID: "liveworker", Status: StatusWorking, PID: 2})
-	if !anyLiveWorker(recs, "self", live, nil) {
+	if !anyLiveWorker(recs, "self", live, nil, now) {
 		t.Fatal("a live working sibling should hold the run open")
 	}
-	// A live sibling frozen at "working" whose pane broadcasts idle (the sparkle) must not hold the
-	// run open: the pane-title reconciliation corrects the stale record, matching what the dash shows.
+	// A live sibling frozen at "working" whose pane has not redrawn a byte in a minute must not
+	// hold the run open: the same stillness correction the dash applies disproves the stale record.
 	recs = []record{{SessionID: "stale", Status: StatusWorking, PID: 3, TmuxPane: "%9"}}
-	if anyLiveWorker(recs, "self", live, map[string]string{"%9": "✳ idle at prompt"}) {
-		t.Fatal("a stale working record whose pane shows idle must not hold the run open")
+	still := map[string]paneObservation{"%9": {Hash: "h", Since: now.Add(-time.Minute), Seen: now}}
+	if anyLiveWorker(recs, "self", live, still, now) {
+		t.Fatal("a stale working record whose pane is inert must not hold the run open")
+	}
+	// The same record while its pane is still animating does hold the run open.
+	moving := map[string]paneObservation{"%9": {Hash: "h", Since: now.Add(-time.Second), Seen: now}}
+	if !anyLiveWorker(recs, "self", live, moving, now) {
+		t.Fatal("a working record whose pane is still redrawing must hold the run open")
 	}
 }
 
@@ -200,15 +207,28 @@ func TestHandleHookDigestOnSettle(t *testing.T) {
 }
 
 // TestHandleHookStaleWorkerReconciledIdleDoesNotHoldRun pins the core fix: a live sibling frozen at
-// "working" (no Stop hook fired) whose pane broadcasts idle must not suppress the digest. The notify
-// path reconciles the stale record against the live pane title, exactly as the dash does.
+// "working" (no Stop hook fired) whose pane has gone inert must not suppress the digest. The notify
+// path applies the same stillness correction the dash does, reading the shared observation store
+// that earlier hooks and dash refreshes keep warm.
 func TestHandleHookStaleWorkerReconciledIdleDoesNotHoldRun(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", dir)
 	t.Setenv("TMUX", "")
 	stubNoTmuxRecovery(t)
-	// A live (own pid) sibling recorded working, but its pane shows the idle sparkle.
-	paneTitles = func() map[string]string { return map[string]string{"%9": "✳ waiting"} }
+	// A live (own pid) sibling recorded working, but its pane has been frozen on the same screen
+	// since well before the quiescence window - as an earlier sample in the shared store attests.
+	const frozen = "an inert screen"
+	paneContents = func([]string) (map[string]string, error) { return map[string]string{"%9": frozen}, nil }
+	root := filepath.Join(dir, "birdseye")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	seen := time.Now()
+	if err := writeObservations(root, map[string]paneObservation{
+		"%9": {Hash: hashScreen(frozen), Since: seen.Add(-time.Minute), Seen: seen},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	f := &fakeNotifier{}
 	p := onPolicy(f)
 
