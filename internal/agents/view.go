@@ -142,8 +142,11 @@ const (
 	dirWord      = "dir"
 	managedGlyph = "\U000f160e" // 󱘎 the managed-repo indicator
 	branchGlyph  = ""          //  the git-branch mark prefixing a divergent-branch detail
-	errGlyph     = "✗"          // a rejected/failed action (notice, red)
-	infoGlyph    = "•"          // a neutral confirmation (notice, accent)
+	// delegateGlyph prefixes the detail column's in-flight background work ("⇢ 2 subagents"),
+	// so a working agent whose pane is silent reads as delegating rather than stuck.
+	delegateGlyph = "⇢"
+	errGlyph      = "✗" // a rejected/failed action (notice, red)
+	infoGlyph     = "•" // a neutral confirmation (notice, accent)
 	// detachedGlyph marks a live agent with no tmux pane of its own — a background/daemon or
 	// headless session. It prefixes the agent's name (so it shows in both lenses without
 	// disturbing the fixed status-gutter grid) and signals that the pane-dependent verbs (jump,
@@ -1992,12 +1995,20 @@ func rowIdentity(r Row) string {
 	return label
 }
 
-// rowDetail is a leaf row's difference-only annotation: the agent's display title when it diverges
-// from the identity label, else the checked-out branch when it diverges. Empty when neither adds a
-// fact - the common case where the title slugs to the repo name and the branch matches the
-// worktree - so the column costs nothing until it carries something. Each variant is glyph-prefixed
-// ("· " for a title, the branch mark for a branch) so it reads without relying on color.
+// rowDetail is a leaf row's difference-only annotation: its in-flight background work while it
+// has any, else the agent's display title when it diverges from the identity label, else the
+// checked-out branch when it diverges. Empty when none adds a fact - the common case where the
+// title slugs to the repo name and the branch matches the worktree - so the column costs nothing
+// until it carries something. Each variant is glyph-prefixed (the delegate mark for background
+// work, "· " for a title, the branch mark for a branch) so it reads without relying on color.
+//
+// Background work outranks the identity annotations while it lasts: it is the one thing here that
+// explains the row's current status, and the title/branch it displaces are static facts the user
+// can read again a moment later. It changes only at a turn boundary, so the column is not churning.
 func rowDetail(r Row, identity string) string {
+	if w := backgroundSummary(r.Background); w != "" {
+		return delegateGlyph + " " + w
+	}
 	if t := displayTitle(r.Title, r.TmuxSession); t != "" && t != identity {
 		return "· " + t
 	}
@@ -2298,22 +2309,35 @@ func padToWidth(s string, w int) string {
 	return truncate(s, w)
 }
 
-// agentLeaf renders one agent row in the Agents lens: the status gutter (glyph + word) then
-// the title, padded to the panel width. The focused selection carries the full-row
-// highlight; the cursor/mirror glyph is drawn separately in the cursor column.
+// agentLeaf renders one agent row in the Agents lens: the status gutter (glyph + word), the
+// title, and the in-flight background work when the agent has any, padded to the panel width.
+// The focused selection carries the full-row highlight; the cursor/mirror glyph is drawn
+// separately in the cursor column.
 func (m model) agentLeaf(r Row, w int, selected bool) string {
 	gutter, st := gutterFor(r)
 	// Reserve the right-docked age column (plus a one-space gap) so the Agents lens ages line up
 	// with the Projects lens's directly below - an age in one but not its sibling reads as a bug.
 	nameW := max(w-statusColWidth-ageColWidth-1, 1)
-	title := padRight(truncate(leafTitle(r), nameW), nameW)
-	gutterSt, nameSt, ageSt := st, nameColStyle, ageColStyle
+	// The delegate note says why a working agent's pane is quiet. It rides the name column and
+	// yields to the name when the panel is too narrow for both: the name is the row's identity,
+	// the note an explanation the Projects lens carries too.
+	name, note := leafTitle(r), ""
+	if bg := backgroundSummary(r.Background); bg != "" {
+		note = " " + delegateGlyph + " " + bg
+	}
+	if lipgloss.Width(name)+lipgloss.Width(note) > nameW {
+		note = ""
+	}
+	titleW := nameW - lipgloss.Width(note)
+	title := padRight(truncate(name, titleW), titleW)
+	gutterSt, nameSt, noteSt, ageSt := st, nameColStyle, detailColStyle, ageColStyle
 	if selected {
 		hl := func(s lipgloss.Style) lipgloss.Style { return s.Background(rowHL) }
-		gutterSt, ageSt = hl(gutterSt), hl(ageSt)
+		gutterSt, noteSt, ageSt = hl(gutterSt), hl(noteSt), hl(ageSt)
 		nameSt = nameSt.Background(rowHL).Bold(true)
 	}
-	return gutterSt.Render(gutter) + nameSt.Render(title) + nameSt.Render(" ") + ageSt.Render(padLeft(rowAge(r), ageColWidth))
+	return gutterSt.Render(gutter) + nameSt.Render(title) + noteSt.Render(note) +
+		nameSt.Render(" ") + ageSt.Render(padLeft(rowAge(r), ageColWidth))
 }
 
 // cursorCol is the leftmost column of a row: the accent cursor glyph on the focused selection,

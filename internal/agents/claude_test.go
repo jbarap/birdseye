@@ -705,3 +705,160 @@ func TestHandleHookPersistsCWD(t *testing.T) {
 		t.Errorf("row should carry agent working directory, got %q", row.AgentDir)
 	}
 }
+
+// TestStatusForStopBackgroundTasks pins the distinction the in-flight set exists to draw: a Stop
+// is the end of a turn, and only a Stop with nothing in flight is the end of the work. A session
+// that dispatched a subagent will be woken by it with nothing asked of the user, so it stays
+// working; an older Claude Code that omits the field reads as nothing in flight and stays idle.
+func TestStatusForStopBackgroundTasks(t *testing.T) {
+	cases := []struct {
+		name  string
+		tasks []BackgroundTask
+		want  Status
+	}{
+		{"nothing in flight", nil, StatusIdle},
+		{"empty set (field present, reported empty)", []BackgroundTask{}, StatusIdle},
+		{"one subagent", []BackgroundTask{{Type: "subagent", AgentType: "Explore"}}, StatusWorking},
+		{"a backgrounded shell", []BackgroundTask{{Type: "shell"}}, StatusWorking},
+		{"a type we do not know", []BackgroundTask{{Type: "something-new"}}, StatusWorking},
+	}
+	for _, c := range cases {
+		if got := StatusFor("Stop", hookInput{BackgroundTasks: c.tasks}); got != c.want {
+			t.Errorf("%s: StatusFor(Stop) = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// TestHandleHookRecordsBackgroundWork pins the level-triggered lifetime of the in-flight set: a
+// turn end writes whatever it reported, and any later event overwrites it - a following turn end
+// clears it, and a foreground event clears it too, so no stale set can outlive the turn that
+// reported it and keep a finished session pinned at working.
+func TestHandleHookRecordsBackgroundWork(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", dir)
+	t.Setenv("TMUX", "")
+	stubNoTmuxRecovery(t)
+	p := notifyPolicy{}
+	recDir := recordsDir(t, dir)
+
+	read := func() record {
+		t.Helper()
+		r, err := readRecord(recDir, "s1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+
+	stop := `{"session_id":"s1","background_tasks":[{"id":"t1","type":"subagent","status":"running","agent_type":"Explore"}]}`
+	if err := handleHook("Stop", strings.NewReader(stop), p); err != nil {
+		t.Fatal(err)
+	}
+	got := read()
+	if got.Status != StatusWorking {
+		t.Errorf("a Stop with work in flight should stay working, got %q", got.Status)
+	}
+	if len(got.Background) != 1 || got.Background[0].AgentType != "Explore" {
+		t.Fatalf("background work = %+v, want the one Explore subagent", got.Background)
+	}
+
+	// A foreground event clears the set: the session is running its own turn again.
+	if err := handleHook("UserPromptSubmit", strings.NewReader(`{"session_id":"s1"}`), p); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); len(got.Background) != 0 {
+		t.Errorf("a foreground event should clear the in-flight set, got %+v", got.Background)
+	}
+
+	// The turn ends with nothing left in flight: now it is genuinely idle.
+	if err := handleHook("Stop", strings.NewReader(`{"session_id":"s1","background_tasks":[]}`), p); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); got.Status != StatusIdle || len(got.Background) != 0 {
+		t.Errorf("an empty set should settle to idle with no work, got %q %+v", got.Status, got.Background)
+	}
+}
+
+// TestAgentsKeepsBackgroundParkedWorking is the regression guard for the blind spot the in-flight
+// set closes. A session waiting on a subagent draws nothing, so its pane goes perfectly still: the
+// ordinary window would demote it to idle on the next refresh and send the user to a pane with
+// nothing to answer. It must hold at working, while its sibling with nothing in flight is demoted
+// exactly as before.
+func TestAgentsKeepsBackgroundParkedWorking(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	for _, r := range []record{
+		{SessionID: "parked", PID: 1, TmuxSession: "s", TmuxWindow: "1", TmuxPane: "%1", Title: "a", Status: StatusWorking, Updated: now,
+			Background: []BackgroundTask{{Type: "subagent", AgentType: "Explore"}}},
+		{SessionID: "plain", PID: 1, TmuxSession: "s", TmuxWindow: "2", TmuxPane: "%2", Title: "b", Status: StatusWorking, Updated: now},
+	} {
+		if err := writeRecord(dir, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := &ClaudeSource{
+		dir:        dir,
+		recDir:     dir,
+		alive:      alwaysAlive,
+		detector:   quiescenceDetector{window: quiescenceWindow},
+		bgDetector: quiescenceDetector{window: backgroundQuiescenceWindow},
+		now:        func() time.Time { return now },
+		// Both panes are frozen: neither session is drawing anything.
+		screens: func(ids []string) (map[string]string, error) {
+			return map[string]string{"%1": "frozen", "%2": "frozen"}, nil
+		},
+	}
+	statuses := func() map[string]Status {
+		t.Helper()
+		got, err := s.Agents()
+		if err != nil {
+			t.Fatal(err)
+		}
+		byID := map[string]Status{}
+		for _, a := range got {
+			byID[a.SessionID] = a.Status
+		}
+		return byID
+	}
+	statuses() // first sighting: starts both stillness clocks
+
+	// Past the ordinary window: the plain record is disproved, the parked one is not.
+	now = now.Add(quiescenceWindow + time.Second)
+	got := statuses()
+	if got["parked"] != StatusWorking {
+		t.Errorf("a session parked on a subagent must stay working, got %q", got["parked"])
+	}
+	if got["plain"] != StatusIdle {
+		t.Errorf("a plain still pane should still be demoted, got %q", got["plain"])
+	}
+
+	// Past the backstop: even the parked record gives way, so a session whose work never
+	// reports back (an interrupt firing no further turn end) cannot stay pinned forever.
+	now = now.Add(backgroundQuiescenceWindow)
+	if got := statuses(); got["parked"] != StatusIdle {
+		t.Errorf("the backstop should eventually demote a frozen parked pane, got %q", got["parked"])
+	}
+}
+
+// TestBackgroundSummary pins the row annotation: one subagent names its type, a uniform set is
+// counted by kind, a mixed set falls back to a bare count, and nothing in flight renders nothing
+// (the caller uses the empty string as the presence test).
+func TestBackgroundSummary(t *testing.T) {
+	cases := []struct {
+		name  string
+		tasks []BackgroundTask
+		want  string
+	}{
+		{"nothing", nil, ""},
+		{"one named subagent", []BackgroundTask{{Type: "subagent", AgentType: "Explore"}}, "Explore"},
+		{"one unnamed subagent", []BackgroundTask{{Type: "subagent"}}, "1 subagent"},
+		{"one untyped task", []BackgroundTask{{}}, "1 task"},
+		{"two subagents", []BackgroundTask{{Type: "subagent", AgentType: "Explore"}, {Type: "subagent"}}, "2 subagents"},
+		{"mixed kinds", []BackgroundTask{{Type: "subagent"}, {Type: "shell"}}, "2 tasks"},
+	}
+	for _, c := range cases {
+		if got := backgroundSummary(c.tasks); got != c.want {
+			t.Errorf("%s: backgroundSummary = %q, want %q", c.name, got, c.want)
+		}
+	}
+}

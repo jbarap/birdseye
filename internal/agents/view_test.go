@@ -1444,6 +1444,11 @@ func TestRowDetailDifferenceOnly(t *testing.T) {
 	if d := rowDetail(Row{Title: "ai-jobs", Branch: "main"}, "ai-jobs"); d != branchGlyph+" main" {
 		t.Errorf("a divergent branch should show, got %q", d)
 	}
+	// In-flight background work outranks both: it is what explains the row's current status.
+	bg := Row{Title: "court", Branch: "main", Background: []BackgroundTask{{Type: "subagent", AgentType: "Explore"}}}
+	if d := rowDetail(bg, "a2x"); d != delegateGlyph+" Explore" {
+		t.Errorf("background work should displace the divergent title, got %q", d)
+	}
 }
 
 // TestRowAgeOnlyForAgents pins that only a live agent row carries an age; an anchor (base) or slot
