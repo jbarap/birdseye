@@ -22,15 +22,20 @@ type record struct {
 	// background/daemon session. Empty for an ordinary interactive session. It scopes the
 	// SessionEnd-terminal GC (a bg session's anchor may be shared, so it cannot rely on pid
 	// death) and lets the view mark detached sessions.
-	Kind           string    `json:"kind,omitempty"`
-	TmuxSession    string    `json:"tmux_session"`
-	TmuxWindow     string    `json:"tmux_window"`
-	TmuxWindowName string    `json:"tmux_window_name"`
-	TmuxPane       string    `json:"tmux_pane"`
-	CWD            string    `json:"cwd"`
-	Title          string    `json:"title"`
-	Status         Status    `json:"status"`
-	Updated        time.Time `json:"updated"`
+	Kind           string `json:"kind,omitempty"`
+	TmuxSession    string `json:"tmux_session"`
+	TmuxWindow     string `json:"tmux_window"`
+	TmuxWindowName string `json:"tmux_window_name"`
+	TmuxPane       string `json:"tmux_pane"`
+	CWD            string `json:"cwd"`
+	Title          string `json:"title"`
+	Status         Status `json:"status"`
+	// Background is the in-flight background work (subagents, backgrounded shells, ...) the
+	// session reported at its last turn end. Non-empty means the session yielded its turn to
+	// work that will wake it, so it is still working; it also buys the pane a longer stillness
+	// window, since a session parked on a subagent legitimately renders nothing.
+	Background []BackgroundTask `json:"background,omitempty"`
+	Updated    time.Time        `json:"updated"`
 }
 
 // StateDir returns birdseye's state root, following the XDG state convention

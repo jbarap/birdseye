@@ -88,6 +88,13 @@ Each status is a glyph **plus** a short word in a fixed gutter, color-coded — 
 
 Needs-attention sorts first; the most-urgent group floats to the top.
 
+**Working covers delegated work.** A session that dispatched a subagent (or any other
+backgrounded task) has yielded its turn but is not waiting on you: it will be woken by that
+work. It stays `◐ work`, and its row's detail column names what it is waiting on, prefixed with
+the delegate mark `⇢` (`⇢ Explore`, `⇢ 2 subagents`). The mark is an annotation, not a status —
+the gutter, the band, and the sort order are unchanged, so a row does not move when work is
+dispatched or returns.
+
 In a [managed repo](#the-orthogonal-row-model) the same pinned gutter also carries two
 structural **markers** (not statuses — they mark the absence/role of an agent), in `Gray`:
 

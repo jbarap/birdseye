@@ -6,7 +6,10 @@
 // answer). The title is a deliberate state channel, not scraped TUI layout.
 package agents
 
-import "time"
+import (
+	"strconv"
+	"time"
+)
 
 // Status is an agent's coarse state, drawn from a small, well-defined set.
 type Status string
@@ -39,6 +42,48 @@ func (s Status) rank() int {
 	}
 }
 
+// BackgroundTask is one piece of in-flight background work a session has registered: a
+// subagent, a backgrounded shell, an MCP monitor, a workflow. Claude Code reports the whole
+// set on the turn-end hook, which is what lets birdseye tell "the session is done" apart from
+// "the session yielded its turn to work that will wake it back up".
+type BackgroundTask struct {
+	// Type is the task-type label: "subagent", "shell", "monitor", "workflow", or a raw
+	// discriminant for a type we do not know about.
+	Type string `json:"type,omitempty"`
+	// AgentType is the subagent's type name (e.g. "Explore"), reported only for subagent tasks.
+	AgentType string `json:"agent_type,omitempty"`
+}
+
+// backgroundSummary renders a set of in-flight background tasks as a short phrase for the row
+// detail column: the lone subagent's type when that is the whole story, else a count of a single
+// kind, else a bare count. Empty when nothing is in flight, so the caller can treat it as a
+// presence test.
+func backgroundSummary(tasks []BackgroundTask) string {
+	if len(tasks) == 0 {
+		return ""
+	}
+	kind := tasks[0].Type
+	for _, t := range tasks[1:] {
+		if t.Type != kind {
+			kind = ""
+			break
+		}
+	}
+	if len(tasks) == 1 {
+		switch {
+		case kind == "subagent" && tasks[0].AgentType != "":
+			return tasks[0].AgentType
+		case kind != "":
+			return "1 " + kind
+		}
+		return "1 task"
+	}
+	if kind != "" {
+		return strconv.Itoa(len(tasks)) + " " + kind + "s"
+	}
+	return strconv.Itoa(len(tasks)) + " tasks"
+}
+
 // Agent is one tracked agent session.
 type Agent struct {
 	// SessionID is the agent's own identifier (e.g. Claude session id).
@@ -62,6 +107,10 @@ type Agent struct {
 	Title string
 	// Status is the agent's current state.
 	Status Status
+	// Background is the in-flight background work the agent last reported: the reason a
+	// session that yielded its turn is still working rather than idle. Empty for an agent
+	// with nothing delegated.
+	Background []BackgroundTask
 	// Muted is the user's "leave this alone for now" intent: a flag distinct from
 	// Status that deprioritizes the agent to the bottom band without changing what it
 	// reports. It is sourced per-location (so it survives a session rotating in place),
@@ -141,6 +190,9 @@ type Row struct {
 	// Status is the agent's status for RowAgent rows; anchor/slot rows render their
 	// own marker and ignore this.
 	Status Status
+	// Background is the agent's in-flight background work, annotated on the row so a
+	// working agent whose pane sits still reads as delegating rather than stuck.
+	Background []BackgroundTask
 	// Muted is the user's mute intent for a RowAgent row: a flag orthogonal to Status
 	// that sends the agent to the MUTED band at the bottom while it keeps showing its
 	// real status. Sourced per tmux location, so it survives a session rotating in place.
@@ -231,6 +283,7 @@ func agentRow(a Agent) Row {
 		AgentDir:       a.CWD,
 		Title:          a.Title,
 		Status:         a.Status,
+		Background:     a.Background,
 		Muted:          a.Muted,
 		Updated:        a.Updated,
 	}

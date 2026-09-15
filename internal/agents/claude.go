@@ -30,6 +30,9 @@ type ClaudeSource struct {
 	screens   func(ids []string) (map[string]string, error) // pane id -> captured screen; overridable in tests
 	now       func() time.Time                              // clock for quiescence; overridable in tests
 	detector  levelDetector                                 // disproves a stale working status
+	// bgDetector is the detector for a session parked on background work, which renders a
+	// still pane by design (see detectorFor). Nil means such a session is never demoted.
+	bgDetector levelDetector
 }
 
 // NewClaudeSource returns a source reading from the default state dir, using real
@@ -47,13 +50,14 @@ func NewClaudeSource() (*ClaudeSource, error) {
 		return nil, err
 	}
 	return &ClaudeSource{
-		dir:       root,
-		recDir:    recDir,
-		alive:     processAlive,
-		startTime: procStartTime,
-		screens:   paneContents,
-		now:       time.Now,
-		detector:  quiescenceDetector{window: quiescenceWindow},
+		dir:        root,
+		recDir:     recDir,
+		alive:      processAlive,
+		startTime:  procStartTime,
+		screens:    paneContents,
+		now:        time.Now,
+		detector:   quiescenceDetector{window: quiescenceWindow},
+		bgDetector: quiescenceDetector{window: backgroundQuiescenceWindow},
 	}, nil
 }
 
@@ -291,8 +295,8 @@ func (s *ClaudeSource) Agents() ([]Agent, error) {
 		// interrupt with no Stop hook). A pane that has sat perfectly still cannot be working,
 		// so that observation is allowed to demote it — and nothing else. reconcile holds that
 		// precedence.
-		if s.detector != nil {
-			level, ok := s.detector.Level(r.TmuxPane, obs, now)
+		if det := s.detectorFor(r); det != nil {
+			level, ok := det.Level(r.TmuxPane, obs, now)
 			status = reconcile(status, level, ok)
 		}
 		a := Agent{
@@ -304,6 +308,7 @@ func (s *ClaudeSource) Agents() ([]Agent, error) {
 			CWD:            r.CWD,
 			Title:          r.Title,
 			Status:         status,
+			Background:     r.Background,
 			Updated:        r.Updated,
 		}
 		// Multiple Claude sessions can map to one tmux pane (e.g. restarting
@@ -467,6 +472,19 @@ func (d quiescenceDetector) Level(paneID string, obs map[string]paneObservation,
 	return StatusIdle, true
 }
 
+// detectorFor picks the stillness detector for a record. A session parked on background work
+// renders a still pane by design - it is waiting on a subagent, not drawing anything - so the
+// ordinary 12s window would demote it to idle on the very next refresh and reinstate the exact
+// blind spot the in-flight set exists to close. It gets the long window instead, which is a
+// backstop rather than a signal: it only bounds how long a record can stay pinned at working if
+// the work never reports back (an interrupt that fires no further turn-end event).
+func (s *ClaudeSource) detectorFor(r record) levelDetector {
+	if len(r.Background) > 0 {
+		return s.bgDetector
+	}
+	return s.detector
+}
+
 // reconcile resolves an agent's displayed status from its hook-written status and whatever its
 // terminal betrays. The hook status is authoritative: it is a documented contract that says what
 // actually happened, where the terminal is an undocumented rendering detail. So the terminal gets
@@ -494,7 +512,8 @@ const idleNotification = "waiting for your input"
 //	SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, SubagentStop -> working
 //	Notification (idle "waiting for your input" message)                  -> idle
 //	Notification (permission/approval or any unrecognized message)        -> needs-attention
-//	Stop                                                                  -> idle
+//	Stop (nothing in flight)                                              -> idle
+//	Stop (background work in flight)                                      -> working
 //
 // A SessionEnd event produces no terminal status: an ended session keeps its last status
 // until its Claude process exits, at which point the liveness GC removes it. The
@@ -509,6 +528,15 @@ func StatusFor(event string, in hookInput) Status {
 		}
 		return StatusNeedsAttention
 	case "Stop":
+		// A Stop is the end of a turn, not necessarily the end of the work: a session that
+		// dispatched a subagent (or any other backgrounded task) yields its turn and will be
+		// woken by that work with nothing asked of the user in between. Claude Code reports
+		// the in-flight set on this event precisely so a hook can tell the two apart, so a
+		// non-empty set keeps the agent at working. Scheduled wake-ups (session_crons) are
+		// deliberately not consulted: a session that will wake in an hour is idle now.
+		if len(in.BackgroundTasks) > 0 {
+			return StatusWorking
+		}
 		return StatusIdle
 	case "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "SubagentStop":
 		return StatusWorking
@@ -519,11 +547,19 @@ func StatusFor(event string, in hookInput) Status {
 
 // hookInput is the subset of the Claude Code hook payload we consume. Message is
 // the human notification text carried by Notification events, used to tell an
-// idle nudge apart from a permission prompt.
+// idle nudge apart from a permission prompt. BackgroundTasks is the turn-end events'
+// snapshot of work still in flight, which tells a finished session apart from one that
+// merely yielded its turn.
 type hookInput struct {
 	SessionID string `json:"session_id"`
 	CWD       string `json:"cwd"`
 	Message   string `json:"message"`
+	// BackgroundTasks is Claude Code's `background_tasks`: the running/pending and
+	// backgrounded work registered in the session at the moment of the event. Only the
+	// turn-end events (Stop, SubagentStop) carry it, and only in Claude Code versions that
+	// report it — an older version simply omits the field, which reads as "nothing in
+	// flight" and restores the previous behavior.
+	BackgroundTasks []BackgroundTask `json:"background_tasks"`
 }
 
 // HandleHook processes one hook invocation: it reads the hook payload from r, resolves the
@@ -578,6 +614,11 @@ func handleHook(event string, r io.Reader, policy notifyPolicy) error {
 	// Claude process exits and the liveness GC reclaims it. Every other event maps to one.
 	if event != "SessionEnd" {
 		rec.Status = StatusFor(event, in)
+		// The in-flight set is level-triggered: it is whatever the last event reported, never
+		// an accumulated count that could drift. Only the turn-end events carry it, so every
+		// other event clears it — those mean the session is running in the foreground, where a
+		// stale set would wrongly buy the pane the long stillness window.
+		rec.Background = in.BackgroundTasks
 	}
 	rec.Updated = time.Now()
 	// Record the Claude session process so `be agents` can treat that process's
@@ -722,7 +763,8 @@ func maybeNotify(dir, recDir string, old Status, rec record, policy notifyPolicy
 }
 
 // siblingStatus resolves a sibling record's status the way the view does: a pane that has sat
-// perfectly still disproves a stale "working". It is the single definition of "working"/"blocked"
+// perfectly still for its window (quiescenceWindowFor - longer while the session is parked on
+// background work, which draws nothing) disproves a stale "working". It is the single definition of "working"/"blocked"
 // the digest shares with the dash, so a record frozen at "working" whose pane is inert cannot
 // wedge the run open. A record with no pane, or one whose pane carries no recent sample, has no
 // level and falls back to its raw hook status.
@@ -731,7 +773,7 @@ func siblingStatus(r record, obs map[string]paneObservation, now time.Time) Stat
 	if status == "" {
 		status = StatusUnknown
 	}
-	level, ok := quiescenceDetector{window: quiescenceWindow}.Level(r.TmuxPane, obs, now)
+	level, ok := quiescenceDetector{window: quiescenceWindowFor(r)}.Level(r.TmuxPane, obs, now)
 	return reconcile(status, level, ok)
 }
 

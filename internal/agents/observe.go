@@ -29,6 +29,26 @@ const observeFile = "panes.json"
 // pane someone is actively driving is one they are already watching.
 const quiescenceWindow = 12 * time.Second
 
+// backgroundQuiescenceWindow is the stillness window for a session parked on background work
+// (see ClaudeSource.detectorFor). Such a session is legitimately silent: it has yielded its turn
+// to a subagent and draws nothing until that work reports back, so the ordinary window would
+// demote it within one refresh. This is a backstop, not a signal - it bounds how long a record
+// can stay pinned at "working" when the work never reports back - so it is set far above any
+// plausible repaint interval: a pane that has not changed one byte in this long has no live
+// session behind it, whatever the last hook claimed.
+const backgroundQuiescenceWindow = 10 * time.Minute
+
+// quiescenceWindowFor returns the stillness window a record's pane is judged against: the long
+// backstop while the session has background work in flight, the ordinary window otherwise. The
+// dash resolves the same choice through ClaudeSource.detectorFor, whose detectors tests can
+// replace; both read their windows from here so the two paths cannot drift.
+func quiescenceWindowFor(r record) time.Duration {
+	if len(r.Background) > 0 {
+		return backgroundQuiescenceWindow
+	}
+	return quiescenceWindow
+}
+
 // observeFreshness bounds how old a sample may be and still support a quiescence claim. Without
 // it, a pane sampled once and then ignored for an hour would look still for an hour, when in
 // truth nobody was watching. Samples are taken immediately before they are read, so this only
