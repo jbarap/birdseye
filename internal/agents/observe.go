@@ -38,17 +38,6 @@ const quiescenceWindow = 12 * time.Second
 // session behind it, whatever the last hook claimed.
 const backgroundQuiescenceWindow = 10 * time.Minute
 
-// quiescenceWindowFor returns the stillness window a record's pane is judged against: the long
-// backstop while the session has background work in flight, the ordinary window otherwise. The
-// dash resolves the same choice through ClaudeSource.detectorFor, whose detectors tests can
-// replace; both read their windows from here so the two paths cannot drift.
-func quiescenceWindowFor(r record) time.Duration {
-	if len(r.Background) > 0 {
-		return backgroundQuiescenceWindow
-	}
-	return quiescenceWindow
-}
-
 // observeFreshness bounds how old a sample may be and still support a quiescence claim. Without
 // it, a pane sampled once and then ignored for an hour would look still for an hour, when in
 // truth nobody was watching. Samples are taken immediately before they are read, so this only

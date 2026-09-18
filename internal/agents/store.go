@@ -30,17 +30,73 @@ type record struct {
 	CWD            string `json:"cwd"`
 	Title          string `json:"title"`
 	Status         Status `json:"status"`
-	// Background is the in-flight background work (subagents, backgrounded shells, ...) the
-	// session reported at its last turn end. Non-empty means the session yielded its turn to
-	// work that will wake it, so it is still working; it also buys the pane a longer stillness
-	// window, since a session parked on a subagent legitimately renders nothing.
-	Background []BackgroundTask `json:"background,omitempty"`
-	// BackgroundAt is when a turn end last asserted that set. Only turn-end events state what is
-	// in flight, so between them the set is a claim of unknown age: this timestamp is what lets a
-	// reader tell a fresh claim from one the session has since outlived. Nil when nothing is in
-	// flight - a pointer so the key is absent from such a record rather than carrying a zero time.
-	BackgroundAt *time.Time `json:"background_at,omitempty"`
-	Updated      time.Time  `json:"updated"`
+	// Background is the last turn end's statement about work in flight, or nil when the session
+	// has none. See claim: the tasks and the time they were asserted travel together, so a reader
+	// can always tell how old the statement is.
+	Background *claim    `json:"background,omitempty"`
+	Updated    time.Time `json:"updated"`
+}
+
+// claim is one turn end's statement about the background work a session has in flight
+// (subagents, backgrounded shells, monitors, ...). Only turn-end events state this, so between
+// them it is a statement of a known age rather than a fact about now - which is what lets a
+// reader decide when the session has outlived it (see effectiveTasks).
+//
+// Tasks and At are one value because neither is meaningful alone: work with no idea when it was
+// reported cannot be aged, and a timestamp with no work says nothing. Keeping them in one struct
+// is what makes those halves unconstructible.
+type claim struct {
+	At    time.Time
+	Tasks []BackgroundTask
+}
+
+// tasks returns the claimed work, tolerating a nil claim so callers need not branch.
+func (c *claim) tasks() []BackgroundTask {
+	if c == nil {
+		return nil
+	}
+	return c.Tasks
+}
+
+// MarshalJSON and UnmarshalJSON keep the claim as two sibling keys on the record - `background`
+// (the tasks) and `background_at` (when they were asserted) - while in memory it is one value.
+// The file stays the flat, readable shape it has always had, and these two methods are the only
+// place the two representations meet. The embedded alias carries every other field, so adding one
+// to record needs no change here.
+func (r record) MarshalJSON() ([]byte, error) {
+	type alias record
+	out := struct {
+		alias
+		Background   []BackgroundTask `json:"background,omitempty"`
+		BackgroundAt *time.Time       `json:"background_at,omitempty"`
+	}{alias: alias(r)}
+	if len(r.Background.tasks()) > 0 {
+		at := r.Background.At
+		out.Background, out.BackgroundAt = r.Background.Tasks, &at
+	}
+	return json.Marshal(out)
+}
+
+func (r *record) UnmarshalJSON(data []byte) error {
+	type alias record
+	in := struct {
+		*alias
+		Background   []BackgroundTask `json:"background,omitempty"`
+		BackgroundAt *time.Time       `json:"background_at,omitempty"`
+	}{alias: (*alias)(r)}
+	if err := json.Unmarshal(data, &in); err != nil {
+		return err
+	}
+	r.Background = nil
+	if len(in.Background) == 0 {
+		return nil
+	}
+	c := claim{Tasks: in.Background}
+	if in.BackgroundAt != nil {
+		c.At = *in.BackgroundAt
+	}
+	r.Background = &c
+	return nil
 }
 
 // StateDir returns birdseye's state root, following the XDG state convention

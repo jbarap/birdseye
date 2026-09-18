@@ -198,11 +198,11 @@ func TestAgentsCorrectsStaleWorking(t *testing.T) {
 	frame := 0
 	var asked [][]string
 	s := &ClaudeSource{
-		dir:      dir,
-		recDir:   dir,
-		alive:    alwaysAlive,
-		detector: quiescenceDetector{window: quiescenceWindow},
-		now:      func() time.Time { return now },
+		dir:    dir,
+		recDir: dir,
+		alive:  alwaysAlive,
+		dets:   detectors{plain: quiescenceDetector{window: quiescenceWindow}},
+		now:    func() time.Time { return now },
 		screens: func(ids []string) (map[string]string, error) {
 			sort.Strings(ids)
 			asked = append(asked, ids)
@@ -758,8 +758,8 @@ func TestHandleHookRecordsBackgroundWork(t *testing.T) {
 	if got.Status != StatusWorking {
 		t.Errorf("a Stop with work in flight should stay working, got %q", got.Status)
 	}
-	if len(got.Background) != 1 || got.Background[0].AgentType != "Explore" {
-		t.Fatalf("background work = %+v, want the one Explore subagent", got.Background)
+	if tasks := got.Background.tasks(); len(tasks) != 1 || tasks[0].AgentType != "Explore" {
+		t.Fatalf("background work = %+v, want the one Explore subagent", tasks)
 	}
 
 	// A foreground event says nothing about background work, so the set survives it: the subagent
@@ -767,16 +767,16 @@ func TestHandleHookRecordsBackgroundWork(t *testing.T) {
 	if err := handleHook("UserPromptSubmit", strings.NewReader(`{"session_id":"s1"}`), p); err != nil {
 		t.Fatal(err)
 	}
-	if got := read(); len(got.Background) != 1 || got.Background[0].AgentType != "Explore" {
-		t.Errorf("a foreground event should keep the in-flight set, got %+v", got.Background)
+	if tasks := read().Background.tasks(); len(tasks) != 1 || tasks[0].AgentType != "Explore" {
+		t.Errorf("a foreground event should keep the in-flight set, got %+v", tasks)
 	}
 
 	// The turn ends with nothing left in flight: now it is genuinely idle.
 	if err := handleHook("Stop", strings.NewReader(`{"session_id":"s1","background_tasks":[]}`), p); err != nil {
 		t.Fatal(err)
 	}
-	if got := read(); got.Status != StatusIdle || len(got.Background) != 0 {
-		t.Errorf("an empty set should settle to idle with no work, got %q %+v", got.Status, got.Background)
+	if got := read(); got.Status != StatusIdle || len(got.Background.tasks()) != 0 {
+		t.Errorf("an empty set should settle to idle with no work, got %q %+v", got.Status, got.Background.tasks())
 	}
 
 	// A permission prompt carries the set: work can run while the session waits on an answer.
@@ -786,8 +786,8 @@ func TestHandleHookRecordsBackgroundWork(t *testing.T) {
 	if err := handleHook("Notification", strings.NewReader(`{"session_id":"s1","message":"Claude needs your permission to use Bash"}`), p); err != nil {
 		t.Fatal(err)
 	}
-	if got := read(); got.Status != StatusNeedsAttention || len(got.Background) != 1 {
-		t.Errorf("a permission prompt should keep the set, got %q %+v", got.Status, got.Background)
+	if got := read(); got.Status != StatusNeedsAttention || len(got.Background.tasks()) != 1 {
+		t.Errorf("a permission prompt should keep the set, got %q %+v", got.Status, got.Background.tasks())
 	}
 
 	// The idle nudge keeps the set: a session waiting on your input can have monitors and shells
@@ -796,8 +796,8 @@ func TestHandleHookRecordsBackgroundWork(t *testing.T) {
 	if err := handleHook("Notification", strings.NewReader(`{"session_id":"s1","message":"Claude is waiting for your input"}`), p); err != nil {
 		t.Fatal(err)
 	}
-	if got := read(); got.Status != StatusIdle || len(got.Background) != 1 {
-		t.Errorf("an idle nudge should keep the set, got %q %+v", got.Status, got.Background)
+	if got := read(); got.Status != StatusIdle || len(got.Background.tasks()) != 1 {
+		t.Errorf("an idle nudge should keep the set, got %q %+v", got.Status, got.Background.tasks())
 	}
 
 	// A restart starts clean: the record outlives the process that wrote it, so a carried set
@@ -808,8 +808,8 @@ func TestHandleHookRecordsBackgroundWork(t *testing.T) {
 	if err := handleHook("SessionStart", strings.NewReader(`{"session_id":"s1"}`), p); err != nil {
 		t.Fatal(err)
 	}
-	if got := read(); len(got.Background) != 0 {
-		t.Errorf("SessionStart should clear the carried set, got %+v", got.Background)
+	if got := read(); len(got.Background.tasks()) != 0 {
+		t.Errorf("SessionStart should clear the carried set, got %+v", got.Background.tasks())
 	}
 }
 
@@ -823,7 +823,7 @@ func TestAgentsKeepsBackgroundParkedWorking(t *testing.T) {
 	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	for _, r := range []record{
 		{SessionID: "parked", PID: 1, TmuxSession: "s", TmuxWindow: "1", TmuxPane: "%1", Title: "a", Status: StatusWorking, Updated: now,
-			Background: []BackgroundTask{{Type: "subagent", AgentType: "Explore"}}},
+			Background: &claim{At: now, Tasks: []BackgroundTask{{Type: "subagent", AgentType: "Explore"}}}},
 		{SessionID: "plain", PID: 1, TmuxSession: "s", TmuxWindow: "2", TmuxPane: "%2", Title: "b", Status: StatusWorking, Updated: now},
 	} {
 		if err := writeRecord(dir, r); err != nil {
@@ -831,12 +831,11 @@ func TestAgentsKeepsBackgroundParkedWorking(t *testing.T) {
 		}
 	}
 	s := &ClaudeSource{
-		dir:        dir,
-		recDir:     dir,
-		alive:      alwaysAlive,
-		detector:   quiescenceDetector{window: quiescenceWindow},
-		bgDetector: quiescenceDetector{window: backgroundQuiescenceWindow},
-		now:        func() time.Time { return now },
+		dir:    dir,
+		recDir: dir,
+		alive:  alwaysAlive,
+		dets:   defaultDetectors(),
+		now:    func() time.Time { return now },
 		// Both panes are frozen: neither session is drawing anything.
 		screens: func(ids []string) (map[string]string, error) {
 			return map[string]string{"%1": "frozen", "%2": "frozen"}, nil
@@ -884,26 +883,24 @@ func TestAgentsExpiresIdleBackgroundClaim(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
 	bg := []BackgroundTask{{Type: "monitor"}}
-	at := func(t time.Time) *time.Time { return &t }
 	for _, r := range []record{
 		{SessionID: "fresh", PID: 1, TmuxSession: "s", TmuxWindow: "1", TmuxPane: "%1", Title: "a", Status: StatusIdle, Updated: now,
-			Background: bg, BackgroundAt: at(now.Add(-time.Minute))},
+			Background: &claim{At: now.Add(-time.Minute), Tasks: bg}},
 		{SessionID: "stale", PID: 1, TmuxSession: "s", TmuxWindow: "2", TmuxPane: "%2", Title: "b", Status: StatusIdle, Updated: now,
-			Background: bg, BackgroundAt: at(now.Add(-backgroundQuiescenceWindow - time.Minute))},
+			Background: &claim{At: now.Add(-backgroundQuiescenceWindow - time.Minute), Tasks: bg}},
 		{SessionID: "long-turn", PID: 1, TmuxSession: "s", TmuxWindow: "3", TmuxPane: "%3", Title: "c", Status: StatusWorking, Updated: now,
-			Background: bg, BackgroundAt: at(now.Add(-backgroundQuiescenceWindow - time.Hour))},
+			Background: &claim{At: now.Add(-backgroundQuiescenceWindow - time.Hour), Tasks: bg}},
 	} {
 		if err := writeRecord(dir, r); err != nil {
 			t.Fatal(err)
 		}
 	}
 	s := &ClaudeSource{
-		dir:        dir,
-		recDir:     dir,
-		alive:      alwaysAlive,
-		detector:   quiescenceDetector{window: quiescenceWindow},
-		bgDetector: quiescenceDetector{window: backgroundQuiescenceWindow},
-		now:        func() time.Time { return now },
+		dir:    dir,
+		recDir: dir,
+		alive:  alwaysAlive,
+		dets:   defaultDetectors(),
+		now:    func() time.Time { return now },
 		screens: func(ids []string) (map[string]string, error) {
 			return map[string]string{"%1": "frozen", "%2": "frozen", "%3": "frozen"}, nil
 		},

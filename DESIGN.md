@@ -93,7 +93,11 @@ backgrounded task) has yielded its turn but is not waiting on you: it will be wo
 work. It stays `◐ work`, and its row's detail column names what it is waiting on, prefixed with
 the delegate mark `⇢` (`⇢ Explore`, `⇢ 2 subagents`). A set holding more than one kind names each
 of them alphabetically (`⇢ 1 monitor, 1 subagent`) rather than collapsing to a bare count: which
-kind holds the turn open is the fact the column carries. The mark is an annotation, not a status —
+kind holds the turn open is the fact the column carries. An idle row can carry the mark too: work
+keeps running while a session waits on you, so idleness says nothing about background work. Only a
+turn end states what is in flight, so the mark leaves an idle row once that statement has aged past
+the stillness backstop, rather than naming work the session has likely outlived. The mark is an
+annotation, not a status —
 the gutter, the band, and the sort order are unchanged, so a row does not move when work is
 dispatched or returns.
 

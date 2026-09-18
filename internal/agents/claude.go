@@ -29,10 +29,9 @@ type ClaudeSource struct {
 	startTime func(pid int) string                          // anchor pid start time, for pid-reuse detection; overridable in tests
 	screens   func(ids []string) (map[string]string, error) // pane id -> captured screen; overridable in tests
 	now       func() time.Time                              // clock for quiescence; overridable in tests
-	detector  levelDetector                                 // disproves a stale working status
-	// bgDetector is the detector for a session parked on background work, which renders a
-	// still pane by design (see detectorFor). Nil means such a session is never demoted.
-	bgDetector levelDetector
+	// dets are the stillness detectors backing derivation; tests replace them to drive the
+	// windows directly.
+	dets detectors
 }
 
 // NewClaudeSource returns a source reading from the default state dir, using real
@@ -50,14 +49,13 @@ func NewClaudeSource() (*ClaudeSource, error) {
 		return nil, err
 	}
 	return &ClaudeSource{
-		dir:        root,
-		recDir:     recDir,
-		alive:      processAlive,
-		startTime:  procStartTime,
-		screens:    paneContents,
-		now:        time.Now,
-		detector:   quiescenceDetector{window: quiescenceWindow},
-		bgDetector: quiescenceDetector{window: backgroundQuiescenceWindow},
+		dir:       root,
+		recDir:    recDir,
+		alive:     processAlive,
+		startTime: procStartTime,
+		screens:   paneContents,
+		now:       time.Now,
+		dets:      defaultDetectors(),
 	}, nil
 }
 
@@ -287,18 +285,7 @@ func (s *ClaudeSource) Agents() ([]Agent, error) {
 	out := make([]Agent, 0, len(live))
 	at := map[string]int{} // dedup key -> index in out
 	for _, r := range live {
-		status := r.Status
-		if status == "" {
-			status = StatusUnknown
-		}
-		// The hook status is edge-triggered and goes stale (e.g. "working" after an Esc
-		// interrupt with no Stop hook). A pane that has sat perfectly still cannot be working,
-		// so that observation is allowed to demote it — and nothing else. reconcile holds that
-		// precedence.
-		if det := s.detectorFor(r); det != nil {
-			level, ok := det.Level(r.TmuxPane, obs, now)
-			status = reconcile(status, level, ok)
-		}
+		d := s.dets.derive(r, obs, now)
 		a := Agent{
 			SessionID:      r.SessionID,
 			TmuxSession:    r.TmuxSession,
@@ -307,8 +294,8 @@ func (s *ClaudeSource) Agents() ([]Agent, error) {
 			TmuxPane:       r.TmuxPane,
 			CWD:            r.CWD,
 			Title:          r.Title,
-			Status:         status,
-			Background:     effectiveBackground(r, status, now),
+			Status:         d.Status,
+			Background:     d.Background,
 			Updated:        r.Updated,
 		}
 		// Multiple Claude sessions can map to one tmux pane (e.g. restarting
@@ -472,21 +459,69 @@ func (d quiescenceDetector) Level(paneID string, obs map[string]paneObservation,
 	return StatusIdle, true
 }
 
-// detectorFor picks the stillness detector for a record. A session parked on background work
-// renders a still pane by design - it is waiting on a subagent, not drawing anything - so the
-// ordinary 12s window would demote it to idle on the very next refresh and reinstate the exact
-// blind spot the in-flight set exists to close. It gets the long window instead, which is a
-// backstop rather than a signal: it only bounds how long a record can stay pinned at working if
-// the work never reports back (an interrupt that fires no further turn-end event).
-//
-// The set is carried across foreground events (see backgroundFor), so it can name work that has
-// since finished, and that carried set buys the long window too. The backstop is what makes that
-// safe: a pane that really has gone quiet is still demoted, just later.
-func (s *ClaudeSource) detectorFor(r record) levelDetector {
-	if len(r.Background) > 0 {
-		return s.bgDetector
+// derived is what a record means right now: the status to show and the background work to name.
+type derived struct {
+	Status     Status
+	Background []BackgroundTask
+}
+
+// detectors are the stillness detectors a derivation judges a pane against: the ordinary window,
+// and the long backstop for a session parked on background work, which renders a still pane by
+// design. Tests substitute their own to drive the windows directly. A nil detector means that
+// case is never demoted.
+type detectors struct{ plain, background levelDetector }
+
+func defaultDetectors() detectors {
+	return detectors{
+		plain:      quiescenceDetector{window: quiescenceWindow},
+		background: quiescenceDetector{window: backgroundQuiescenceWindow},
 	}
-	return s.detector
+}
+
+// derive is the single definition of what a record means, and every reader goes through it - the
+// dash rows and the notification digest both call it, so the two cannot drift into disagreeing
+// about the same session. It decides all of it in one place: which stillness window the pane is
+// judged against, whether that stillness disproves a stale "working", and whether the session has
+// outlived its last claim about background work.
+//
+// A session parked on background work draws nothing, so the ordinary window would demote it on the
+// very next refresh, reinstating the exact blind spot the claim closes. It is judged against the
+// backstop instead, which is a bound rather than a signal: it caps how long a record can stay
+// pinned at working when the work never reports back (an interrupt firing no further turn end).
+func (d detectors) derive(r record, obs map[string]paneObservation, now time.Time) derived {
+	status := r.Status
+	if status == "" {
+		status = StatusUnknown
+	}
+	det := d.plain
+	if len(r.Background.tasks()) > 0 {
+		det = d.background
+	}
+	// The hook status is edge-triggered and goes stale (e.g. "working" after an Esc interrupt with
+	// no Stop hook). A pane that has sat perfectly still cannot be working, so that observation is
+	// allowed to demote it - and nothing else. reconcile holds that precedence.
+	if det != nil {
+		level, ok := det.Level(r.TmuxPane, obs, now)
+		status = reconcile(status, level, ok)
+	}
+	return derived{Status: status, Background: effectiveTasks(r.Background, status, now)}
+}
+
+// effectiveTasks is a claim's work as a reader should see it. Only turn-end events state what is in
+// flight, so a claim ages. While the session works it is the best truth available and is kept
+// however old - a long turn dispatches work and keeps going, and dropping it mid-turn would
+// reinstate the blind spot the claim exists to close. Once the session is idle, an aging claim is
+// more likely naming work that has since finished, and phantom work on an idle row is worse than no
+// annotation, so past the backstop window it expires. A claim with no timestamp (written before the
+// record carried one) reads as infinitely old and so expires as soon as the session is idle.
+func effectiveTasks(c *claim, status Status, now time.Time) []BackgroundTask {
+	if len(c.tasks()) == 0 || status != StatusIdle {
+		return c.tasks()
+	}
+	if now.Sub(c.At) > backgroundQuiescenceWindow {
+		return nil
+	}
+	return c.Tasks
 }
 
 // reconcile resolves an agent's displayed status from its hook-written status and whatever its
@@ -568,36 +603,17 @@ func StatusFor(event string, in hookInput) Status {
 //
 // SessionStart is the exception that clears: a session that has just started or resumed has
 // nothing in flight yet, and its record can outlive the process that wrote it, so it starts clean.
-func backgroundFor(event string, in hookInput, prev []BackgroundTask, prevAt *time.Time, now time.Time) ([]BackgroundTask, *time.Time) {
+func backgroundFor(event string, in hookInput, prev *claim, now time.Time) *claim {
 	switch event {
 	case "Stop", "SubagentStop":
 		if len(in.BackgroundTasks) == 0 {
-			return nil, nil
+			return nil
 		}
-		return in.BackgroundTasks, &now
+		return &claim{At: now, Tasks: in.BackgroundTasks}
 	case "SessionStart":
-		return nil, nil
-	}
-	return prev, prevAt
-}
-
-// effectiveBackground is the in-flight set as a reader should see it: what the last turn end
-// asserted, unless the session has since gone idle and sat there past the backstop window.
-//
-// Only turn-end events state what is in flight, so a set is a claim that ages. While the session
-// works the claim is the best truth available and is kept however old it is - a long turn dispatches
-// work and keeps going, and dropping the set mid-turn would reinstate the blind spot it closes. Once
-// the session is idle, though, an aging claim is more likely to be work that has since finished than
-// work still holding on, and an idle row annotated with phantom work is worse than no annotation. So
-// after the same window that backstops a still pane, an idle row's claim expires.
-func effectiveBackground(r record, status Status, now time.Time) []BackgroundTask {
-	if len(r.Background) == 0 || status != StatusIdle || r.BackgroundAt == nil {
-		return r.Background
-	}
-	if now.Sub(*r.BackgroundAt) > backgroundQuiescenceWindow {
 		return nil
 	}
-	return r.Background
+	return prev
 }
 
 // hookInput is the subset of the Claude Code hook payload we consume. Message is
@@ -670,7 +686,7 @@ func handleHook(event string, r io.Reader, policy notifyPolicy) error {
 	now := time.Now()
 	if event != "SessionEnd" {
 		rec.Status = StatusFor(event, in)
-		rec.Background, rec.BackgroundAt = backgroundFor(event, in, rec.Background, rec.BackgroundAt, now)
+		rec.Background = backgroundFor(event, in, rec.Background, now)
 	}
 	rec.Updated = now
 	// Record the Claude session process so `be agents` can treat that process's
@@ -814,21 +830,6 @@ func maybeNotify(dir, recDir string, old Status, rec record, policy notifyPolicy
 	}
 }
 
-// siblingStatus resolves a sibling record's status the way the view does: a pane that has sat
-// perfectly still for its window (quiescenceWindowFor - longer while the session is parked on
-// background work, which draws nothing) disproves a stale "working". It is the single definition of "working"/"blocked"
-// the digest shares with the dash, so a record frozen at "working" whose pane is inert cannot
-// wedge the run open. A record with no pane, or one whose pane carries no recent sample, has no
-// level and falls back to its raw hook status.
-func siblingStatus(r record, obs map[string]paneObservation, now time.Time) Status {
-	status := r.Status
-	if status == "" {
-		status = StatusUnknown
-	}
-	level, ok := quiescenceDetector{window: quiescenceWindowFor(r)}.Level(r.TmuxPane, obs, now)
-	return reconcile(status, level, ok)
-}
-
 // anyLiveWorker reports whether any record other than exceptID is a live, working agent. "Working"
 // is the reconciled status (siblingStatus), not the raw record: a crashed worker (pid gone) is
 // filtered by liveness, and a live session frozen at "working" whose pane is actually idle is
@@ -836,7 +837,7 @@ func siblingStatus(r record, obs map[string]paneObservation, now time.Time) Stat
 // suppress every future digest.
 func anyLiveWorker(recs []record, exceptID string, live func(record) bool, obs map[string]paneObservation, now time.Time) bool {
 	for _, r := range recs {
-		if r.SessionID == exceptID || siblingStatus(r, obs, now) != StatusWorking {
+		if r.SessionID == exceptID || defaultDetectors().derive(r, obs, now).Status != StatusWorking {
 			continue
 		}
 		if live(r) {
@@ -853,7 +854,7 @@ func anyLiveWorker(recs []record, exceptID string, live func(record) bool, obs m
 func liveBlockedTitles(recs []record, exceptID string, live func(record) bool, obs map[string]paneObservation, now time.Time) []string {
 	var out []string
 	for _, r := range recs {
-		if r.SessionID == exceptID || siblingStatus(r, obs, now) != StatusNeedsAttention {
+		if r.SessionID == exceptID || defaultDetectors().derive(r, obs, now).Status != StatusNeedsAttention {
 			continue
 		}
 		if live(r) {
