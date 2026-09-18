@@ -991,18 +991,18 @@ func TestEffectiveTasksHeldUntilStopGap(t *testing.T) {
 	// The case that kept breaking: two bash-backed monitors, still running, on a session that has
 	// been idle at its prompt for seventeen minutes.
 	aged := &claim{At: now.Add(-17 * time.Minute), Tasks: tasks}
-	if got := effectiveTasks(aged, StatusIdle, now); len(got) != 2 {
+	if got := effectiveTasks(aged, StatusIdle, "", now); len(got) != 2 {
 		t.Errorf("an idle row must keep naming work its last turn end reported, got %+v", got)
 	}
-	if got := effectiveTasks(aged, StatusWorking, now); len(got) != 2 {
+	if got := effectiveTasks(aged, StatusWorking, "", now); len(got) != 2 {
 		t.Errorf("a working session keeps its claim too, got %+v", got)
 	}
 	// Well past any plausible run, with no turn end to replace it: the bound applies.
-	if got := effectiveTasks(&claim{At: now.Add(-claimStopGap - time.Minute), Tasks: tasks}, StatusIdle, now); got != nil {
+	if got := effectiveTasks(&claim{At: now.Add(-claimStopGap - time.Minute), Tasks: tasks}, StatusIdle, "", now); got != nil {
 		t.Errorf("past the stop-gap an unreplaced claim expires, got %+v", got)
 	}
 	// A working session is never cut off by the bound: a long turn dispatches work and keeps going.
-	if got := effectiveTasks(&claim{At: now.Add(-claimStopGap - time.Hour), Tasks: tasks}, StatusWorking, now); len(got) != 2 {
+	if got := effectiveTasks(&claim{At: now.Add(-claimStopGap - time.Hour), Tasks: tasks}, StatusWorking, "", now); len(got) != 2 {
 		t.Errorf("the bound must not touch a working session, got %+v", got)
 	}
 }

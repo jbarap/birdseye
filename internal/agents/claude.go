@@ -281,11 +281,11 @@ func (s *ClaudeSource) Agents() ([]Agent, error) {
 	if s.now != nil {
 		now = s.now()
 	}
-	obs := observePanes(s.dir, workingPaneIDs(live), s.screens, now)
+	obs, screens := observePanes(s.dir, sampledPaneIDs(live), s.screens, now)
 	out := make([]Agent, 0, len(live))
 	at := map[string]int{} // dedup key -> index in out
 	for _, r := range live {
-		d := s.dets.derive(r, obs, now)
+		d := s.dets.derive(r, obs, screens, now)
 		a := Agent{
 			SessionID:      r.SessionID,
 			TmuxSession:    r.TmuxSession,
@@ -488,7 +488,7 @@ func defaultDetectors() detectors {
 // very next refresh, reinstating the exact blind spot the claim closes. It is judged against the
 // backstop instead, which is a bound rather than a signal: it caps how long a record can stay
 // pinned at working when the work never reports back (an interrupt firing no further turn end).
-func (d detectors) derive(r record, obs map[string]paneObservation, now time.Time) derived {
+func (d detectors) derive(r record, obs map[string]paneObservation, screens map[string]string, now time.Time) derived {
 	status := r.Status
 	if status == "" {
 		status = StatusUnknown
@@ -504,7 +504,7 @@ func (d detectors) derive(r record, obs map[string]paneObservation, now time.Tim
 		level, ok := det.Level(r.TmuxPane, obs, now)
 		status = reconcile(status, level, ok)
 	}
-	return derived{Status: status, Background: effectiveTasks(r.Background, status, now)}
+	return derived{Status: status, Background: effectiveTasks(r.Background, status, screens[r.TmuxPane], now)}
 }
 
 // effectiveTasks is a claim's work as a reader should see it. Only turn-end events state what is in
@@ -522,9 +522,21 @@ func (d detectors) derive(r record, obs map[string]paneObservation, now time.Tim
 // forever when the turn end that should have replaced the claim never comes. A claim with no
 // timestamp (written before the record carried one) reads as infinitely old, so it expires as soon
 // as the session is idle rather than outliving every later claim.
-func effectiveTasks(c *claim, status Status, now time.Time) []BackgroundTask {
-	if len(c.tasks()) == 0 || status != StatusIdle {
-		return c.tasks()
+//
+// The screen is what makes that bound a last resort instead of the only correction. A session's own
+// chrome names what it is running right now, so when it is legible and names nothing, the claim is
+// disproved outright, whatever its age - the evidence a timer was standing in for. It is disproof
+// only: chrome never adds work the claim did not state, and an unreadable screen says nothing, so
+// the answer is only ever narrowed by looking.
+func effectiveTasks(c *claim, status Status, screen string, now time.Time) []BackgroundTask {
+	if len(c.tasks()) == 0 {
+		return nil
+	}
+	if running, ok := chromeBackground(screen); ok && !running {
+		return nil
+	}
+	if status != StatusIdle {
+		return c.Tasks
 	}
 	if now.Sub(c.At) > claimStopGap {
 		return nil
@@ -838,16 +850,16 @@ func maybeNotify(dir, recDir string, old Status, rec record, policy notifyPolicy
 		// pane is inert must not hold the run open forever. Hooks fire often during a run, so
 		// sampling here also keeps the shared observation store warm for the dash.
 		now := time.Now()
-		obs := observePanes(dir, workingPaneIDs(recs), paneContents, now)
+		obs, screens := observePanes(dir, sampledPaneIDs(recs), paneContents, now)
 		// Not the last to settle: the run is still active. Record the finish for the digest and
 		// stay silent - the pull surface already shows the new idle status.
-		if anyLiveWorker(recs, rec.SessionID, live, obs, now) {
+		if anyLiveWorker(recs, rec.SessionID, live, obs, screens, now) {
 			_ = appendNotifyBatch(dir, rec.Title)
 			return
 		}
 		// Last live worker settled: flush one digest for the whole run.
 		finished := dedup(append(takeNotifyBatch(dir), rec.Title))
-		_ = policy.notifier.Notify(digestNotification(finished, liveBlockedTitles(recs, rec.SessionID, live, obs, now)))
+		_ = policy.notifier.Notify(digestNotification(finished, liveBlockedTitles(recs, rec.SessionID, live, obs, screens, now)))
 	}
 }
 
@@ -856,9 +868,9 @@ func maybeNotify(dir, recDir string, old Status, rec record, policy notifyPolicy
 // filtered by liveness, and a live session frozen at "working" whose pane is actually idle is
 // filtered by the pane-title reconciliation - either alone would otherwise hold the run open and
 // suppress every future digest.
-func anyLiveWorker(recs []record, exceptID string, live func(record) bool, obs map[string]paneObservation, now time.Time) bool {
+func anyLiveWorker(recs []record, exceptID string, live func(record) bool, obs map[string]paneObservation, screens map[string]string, now time.Time) bool {
 	for _, r := range recs {
-		if r.SessionID == exceptID || defaultDetectors().derive(r, obs, now).Status != StatusWorking {
+		if r.SessionID == exceptID || defaultDetectors().derive(r, obs, screens, now).Status != StatusWorking {
 			continue
 		}
 		if live(r) {
@@ -872,10 +884,10 @@ func anyLiveWorker(recs []record, exceptID string, live func(record) bool, obs m
 // needs-attention, judged by the same reconciled status the dash shows (a block the pane has since
 // resolved to working no longer counts). A blocked agent is not "working", so it does not hold the
 // run open; when the run settles the digest names these first as the anomaly worth acting on.
-func liveBlockedTitles(recs []record, exceptID string, live func(record) bool, obs map[string]paneObservation, now time.Time) []string {
+func liveBlockedTitles(recs []record, exceptID string, live func(record) bool, obs map[string]paneObservation, screens map[string]string, now time.Time) []string {
 	var out []string
 	for _, r := range recs {
-		if r.SessionID == exceptID || defaultDetectors().derive(r, obs, now).Status != StatusNeedsAttention {
+		if r.SessionID == exceptID || defaultDetectors().derive(r, obs, screens, now).Status != StatusNeedsAttention {
 			continue
 		}
 		if live(r) {

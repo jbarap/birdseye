@@ -73,10 +73,10 @@ func TestRecordClaimWireFormat(t *testing.T) {
 	if len(undated.Background.tasks()) != 1 || !undated.Background.At.IsZero() {
 		t.Errorf("undated record = %+v, want one task with a zero timestamp", undated.Background)
 	}
-	if got := effectiveTasks(undated.Background, StatusIdle, at); got != nil {
+	if got := effectiveTasks(undated.Background, StatusIdle, "", at); got != nil {
 		t.Errorf("an undated claim should expire on an idle row, got %+v", got)
 	}
-	if got := effectiveTasks(undated.Background, StatusWorking, at); len(got) != 1 {
+	if got := effectiveTasks(undated.Background, StatusWorking, "", at); len(got) != 1 {
 		t.Errorf("a working session should keep even an undated claim, got %+v", got)
 	}
 }
