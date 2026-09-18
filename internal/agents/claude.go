@@ -512,38 +512,24 @@ func (d detectors) derive(r record, obs map[string]paneObservation, now time.Tim
 // however old - a long turn dispatches work and keeps going, and dropping it mid-turn would
 // reinstate the blind spot the claim exists to close.
 //
-// Once the session is idle, no further turn end is coming until you answer, so each task is kept
-// only as long as its kind can be trusted to still be running (expiryFor). Tasks are judged one by
-// one, so a claim naming a finished monitor and a live subagent loses the monitor and keeps the
-// subagent. A claim with no timestamp (written before the record carried one) reads as infinitely
-// old and so expires as soon as the session is idle.
+// An idle session is no different: the claim stands until a turn end replaces it. Expiring it on a
+// shorter timer was tried and was wrong in both directions - a monitor or backgrounded shell ends
+// silently, with no event to say so, and those are exactly the kinds that keep running for hours,
+// so any timer short enough to retire a finished one is short enough to hide a live one. Guessing
+// at liveness with no evidence is not better than reporting what the session last stated.
+//
+// claimStopGap is therefore a bound rather than a judgement: it only stops a record naming work
+// forever when the turn end that should have replaced the claim never comes. A claim with no
+// timestamp (written before the record carried one) reads as infinitely old, so it expires as soon
+// as the session is idle rather than outliving every later claim.
 func effectiveTasks(c *claim, status Status, now time.Time) []BackgroundTask {
 	if len(c.tasks()) == 0 || status != StatusIdle {
 		return c.tasks()
 	}
-	age := now.Sub(c.At)
-	var out []BackgroundTask
-	for _, t := range c.Tasks {
-		if age <= expiryFor(t) {
-			out = append(out, t)
-		}
+	if now.Sub(c.At) > claimStopGap {
+		return nil
 	}
-	return out
-}
-
-// expiryFor is how long an idle row may keep naming one piece of background work, and it follows
-// from whether that kind of work announces its own end.
-//
-// A subagent does: SubagentStop fires when it finishes and replaces the claim outright, so the
-// annotation self-corrects and the window here is only a stop-gap for an announcement that never
-// arrives (hooks not reinstalled, a crash). Everything else - a monitor, a backgrounded shell -
-// ends silently, with nothing to say so until the session's next turn end, so it is held only for
-// the backstop window and then dropped rather than left naming work that has likely finished.
-func expiryFor(t BackgroundTask) time.Duration {
-	if t.Type == "subagent" {
-		return subagentClaimExpiry
-	}
-	return backgroundQuiescenceWindow
+	return c.Tasks
 }
 
 // reconcile resolves an agent's displayed status from its hook-written status and whatever its

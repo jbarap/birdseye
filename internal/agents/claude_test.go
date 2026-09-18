@@ -888,9 +888,9 @@ func TestAgentsExpiresIdleBackgroundClaim(t *testing.T) {
 		{SessionID: "fresh", PID: 1, TmuxSession: "s", TmuxWindow: "1", TmuxPane: "%1", Title: "a", Status: StatusIdle, Updated: now,
 			Background: &claim{At: now.Add(-time.Minute), Tasks: bg}},
 		{SessionID: "stale", PID: 1, TmuxSession: "s", TmuxWindow: "2", TmuxPane: "%2", Title: "b", Status: StatusIdle, Updated: now,
-			Background: &claim{At: now.Add(-backgroundQuiescenceWindow - time.Minute), Tasks: bg}},
+			Background: &claim{At: now.Add(-claimStopGap - time.Minute), Tasks: bg}},
 		{SessionID: "long-turn", PID: 1, TmuxSession: "s", TmuxWindow: "3", TmuxPane: "%3", Title: "c", Status: StatusWorking, Updated: now,
-			Background: &claim{At: now.Add(-backgroundQuiescenceWindow - time.Hour), Tasks: bg}},
+			Background: &claim{At: now.Add(-claimStopGap - time.Hour), Tasks: bg}},
 	} {
 		if err := writeRecord(dir, r); err != nil {
 			t.Fatal(err)
@@ -980,27 +980,30 @@ func TestSubagentStopRetiresItsClaim(t *testing.T) {
 	}
 }
 
-// TestEffectiveTasksExpiryByKind pins that how long an idle row keeps naming work follows from
-// whether that kind announces its own end. A subagent does - SubagentStop retires it - so it
-// outlives an age that drops a silent monitor. Tasks are judged one by one, so a claim naming both
-// loses only the monitor, and the stop-gap still catches an announcement that never arrives.
-func TestEffectiveTasksExpiryByKind(t *testing.T) {
-	now := time.Date(2026, 9, 18, 14, 0, 0, 0, time.UTC)
-	tasks := []BackgroundTask{{Type: "monitor"}, {Type: "subagent", AgentType: "Explore"}}
-	aged := &claim{At: now.Add(-14 * time.Minute), Tasks: tasks}
+// TestEffectiveTasksHeldUntilStopGap pins that a claim stands until a turn end replaces it, idle or
+// not. Background work that ends silently - a monitor, a backgrounded shell - is also the work that
+// runs longest, so any timer short enough to retire a finished one hides a live one; the stop-gap
+// exists only to stop a record naming work forever when no turn end ever comes.
+func TestEffectiveTasksHeldUntilStopGap(t *testing.T) {
+	now := time.Date(2026, 9, 18, 15, 0, 0, 0, time.UTC)
+	tasks := []BackgroundTask{{Type: "shell"}, {Type: "shell"}}
 
+	// The case that kept breaking: two bash-backed monitors, still running, on a session that has
+	// been idle at its prompt for seventeen minutes.
+	aged := &claim{At: now.Add(-17 * time.Minute), Tasks: tasks}
+	if got := effectiveTasks(aged, StatusIdle, now); len(got) != 2 {
+		t.Errorf("an idle row must keep naming work its last turn end reported, got %+v", got)
+	}
 	if got := effectiveTasks(aged, StatusWorking, now); len(got) != 2 {
-		t.Errorf("a working session keeps its whole claim however old, got %+v", got)
+		t.Errorf("a working session keeps its claim too, got %+v", got)
 	}
-	got := effectiveTasks(aged, StatusIdle, now)
-	if len(got) != 1 || got[0].Type != "subagent" {
-		t.Errorf("idle past the backstop should keep only the subagent, got %+v", got)
+	// Well past any plausible run, with no turn end to replace it: the bound applies.
+	if got := effectiveTasks(&claim{At: now.Add(-claimStopGap - time.Minute), Tasks: tasks}, StatusIdle, now); got != nil {
+		t.Errorf("past the stop-gap an unreplaced claim expires, got %+v", got)
 	}
-	if fresh := effectiveTasks(&claim{At: now.Add(-time.Minute), Tasks: tasks}, StatusIdle, now); len(fresh) != 2 {
-		t.Errorf("a recent claim survives intact, got %+v", fresh)
-	}
-	if old := effectiveTasks(&claim{At: now.Add(-subagentClaimExpiry - time.Minute), Tasks: tasks}, StatusIdle, now); old != nil {
-		t.Errorf("past the stop-gap even a subagent expires, got %+v", old)
+	// A working session is never cut off by the bound: a long turn dispatches work and keeps going.
+	if got := effectiveTasks(&claim{At: now.Add(-claimStopGap - time.Hour), Tasks: tasks}, StatusWorking, now); len(got) != 2 {
+		t.Errorf("the bound must not touch a working session, got %+v", got)
 	}
 }
 

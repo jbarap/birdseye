@@ -95,9 +95,10 @@ the delegate mark `⇢` (`⇢ Explore`, `⇢ 2 subagents`). A set holding more t
 of them alphabetically (`⇢ 1 monitor, 1 subagent`) rather than collapsing to a bare count: which
 kind holds the turn open is the fact the column carries. An idle row can carry the mark too: work
 keeps running while a session waits on you, so idleness says nothing about background work. Only a
-turn end states what is in flight, so the mark leaves an idle row once that statement has aged past
-the stillness backstop, rather than naming work the session has likely outlived. The mark is an
-annotation, not a status —
+turn end states what is in flight, so the mark names whatever the last one reported and stays until
+another replaces it: work that ends silently (a monitor, a backgrounded shell) is also the work that
+runs longest, so dropping the mark on a timer would hide live work to tidy up finished work. The
+mark is an annotation, not a status —
 the gutter, the band, and the sort order are unchanged, so a row does not move when work is
 dispatched or returns.
 

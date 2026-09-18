@@ -38,12 +38,14 @@ const quiescenceWindow = 12 * time.Second
 // session behind it, whatever the last hook claimed.
 const backgroundQuiescenceWindow = 10 * time.Minute
 
-// subagentClaimExpiry bounds how long an idle row keeps naming a subagent when the SubagentStop
-// that should have retired it never arrives - hooks installed by an older build, or a crash
-// between dispatch and completion. It is a stop-gap for a missing announcement rather than a
-// judgement about the work, so it sits far above how long a subagent plausibly runs; the ordinary
-// correction is the event itself, which lands the moment the subagent finishes.
-const subagentClaimExpiry = 2 * time.Hour
+// claimStopGap bounds how long an idle row keeps naming background work when the turn end that
+// should have replaced its claim never arrives - hooks installed by an older build, or a session
+// killed between dispatching work and finishing. The ordinary correction is the event itself: a
+// turn end replaces the claim outright, and SubagentStop lands the moment a subagent finishes. So
+// this sits far above how long background work plausibly runs, because a shorter window cannot
+// distinguish finished work from work that is simply long (a monitor runs for hours and announces
+// nothing), and would hide the live case to tidy up the finished one.
+const claimStopGap = 2 * time.Hour
 
 // observeFreshness bounds how old a sample may be and still support a quiescence claim. Without
 // it, a pane sampled once and then ignored for an hour would look still for an hour, when in
