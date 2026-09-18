@@ -841,8 +841,9 @@ func TestAgentsKeepsBackgroundParkedWorking(t *testing.T) {
 }
 
 // TestBackgroundSummary pins the row annotation: one subagent names its type, a uniform set is
-// counted by kind, a mixed set falls back to a bare count, and nothing in flight renders nothing
-// (the caller uses the empty string as the presence test).
+// counted by kind, a mixed set names every kind it holds (alphabetically, so the column is stable
+// across turns), and nothing in flight renders nothing (the caller uses the empty string as the
+// presence test).
 func TestBackgroundSummary(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -854,7 +855,11 @@ func TestBackgroundSummary(t *testing.T) {
 		{"one unnamed subagent", []BackgroundTask{{Type: "subagent"}}, "1 subagent"},
 		{"one untyped task", []BackgroundTask{{}}, "1 task"},
 		{"two subagents", []BackgroundTask{{Type: "subagent", AgentType: "Explore"}, {Type: "subagent"}}, "2 subagents"},
-		{"mixed kinds", []BackgroundTask{{Type: "subagent"}, {Type: "shell"}}, "2 tasks"},
+		{"mixed kinds", []BackgroundTask{{Type: "subagent"}, {Type: "shell"}}, "1 shell, 1 subagent"},
+		{"monitor and subagents", []BackgroundTask{{Type: "subagent", AgentType: "Explore"}, {Type: "monitor"}, {Type: "subagent"}}, "1 monitor, 2 subagents"},
+		{"three monitors", []BackgroundTask{{Type: "monitor"}, {Type: "monitor"}, {Type: "monitor"}}, "3 monitors"},
+		{"named subagent alongside another kind", []BackgroundTask{{Type: "subagent", AgentType: "Explore"}, {Type: "shell"}}, "1 shell, 1 subagent"},
+		{"typed and untyped", []BackgroundTask{{Type: "monitor"}, {}}, "1 monitor, 1 task"},
 	}
 	for _, c := range cases {
 		if got := backgroundSummary(c.tasks); got != c.want {

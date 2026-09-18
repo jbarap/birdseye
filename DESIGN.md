@@ -91,7 +91,9 @@ Needs-attention sorts first; the most-urgent group floats to the top.
 **Working covers delegated work.** A session that dispatched a subagent (or any other
 backgrounded task) has yielded its turn but is not waiting on you: it will be woken by that
 work. It stays `◐ work`, and its row's detail column names what it is waiting on, prefixed with
-the delegate mark `⇢` (`⇢ Explore`, `⇢ 2 subagents`). The mark is an annotation, not a status —
+the delegate mark `⇢` (`⇢ Explore`, `⇢ 2 subagents`). A set holding more than one kind names each
+of them alphabetically (`⇢ 1 monitor, 1 subagent`) rather than collapsing to a bare count: which
+kind holds the turn open is the fact the column carries. The mark is an annotation, not a status —
 the gutter, the band, and the sort order are unchanged, so a row does not move when work is
 dispatched or returns.
 
