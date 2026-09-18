@@ -35,7 +35,12 @@ type record struct {
 	// work that will wake it, so it is still working; it also buys the pane a longer stillness
 	// window, since a session parked on a subagent legitimately renders nothing.
 	Background []BackgroundTask `json:"background,omitempty"`
-	Updated    time.Time        `json:"updated"`
+	// BackgroundAt is when a turn end last asserted that set. Only turn-end events state what is
+	// in flight, so between them the set is a claim of unknown age: this timestamp is what lets a
+	// reader tell a fresh claim from one the session has since outlived. Nil when nothing is in
+	// flight - a pointer so the key is absent from such a record rather than carrying a zero time.
+	BackgroundAt *time.Time `json:"background_at,omitempty"`
+	Updated      time.Time  `json:"updated"`
 }
 
 // StateDir returns birdseye's state root, following the XDG state convention

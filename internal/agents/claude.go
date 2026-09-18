@@ -308,7 +308,7 @@ func (s *ClaudeSource) Agents() ([]Agent, error) {
 			CWD:            r.CWD,
 			Title:          r.Title,
 			Status:         status,
-			Background:     r.Background,
+			Background:     effectiveBackground(r, status, now),
 			Updated:        r.Updated,
 		}
 		// Multiple Claude sessions can map to one tmux pane (e.g. restarting
@@ -561,20 +561,43 @@ func StatusFor(event string, in hookInput) Status {
 // that finishes mid-turn stays named until the next turn end), bounded by the long stillness
 // backstop in detectorFor.
 //
-// Two events clear rather than carry. SessionStart: a session that has just started or resumed has
+// It also reports when a turn end last asserted the set, which the reader uses to expire a claim
+// the session has outlived (see effectiveBackground). Idle is deliberately not a clearing event:
+// a session waiting on your input can have monitors and shells running the whole time, so idleness
+// says nothing about background work.
+//
+// SessionStart is the exception that clears: a session that has just started or resumed has
 // nothing in flight yet, and its record can outlive the process that wrote it, so it starts clean.
-// And any event resolving to idle - the "waiting for your input" notification - is a turn boundary
-// the payload is silent about: the session is parked on the user, not on background work, so a
-// carried set would annotate an idle row with work that is holding nothing open. A needs-attention
-// notification still carries, because work can legitimately run while a permission prompt waits.
-func backgroundFor(event string, status Status, in hookInput, prev []BackgroundTask) []BackgroundTask {
-	switch {
-	case event == "Stop" || event == "SubagentStop":
-		return in.BackgroundTasks
-	case event == "SessionStart", status == StatusIdle:
+func backgroundFor(event string, in hookInput, prev []BackgroundTask, prevAt *time.Time, now time.Time) ([]BackgroundTask, *time.Time) {
+	switch event {
+	case "Stop", "SubagentStop":
+		if len(in.BackgroundTasks) == 0 {
+			return nil, nil
+		}
+		return in.BackgroundTasks, &now
+	case "SessionStart":
+		return nil, nil
+	}
+	return prev, prevAt
+}
+
+// effectiveBackground is the in-flight set as a reader should see it: what the last turn end
+// asserted, unless the session has since gone idle and sat there past the backstop window.
+//
+// Only turn-end events state what is in flight, so a set is a claim that ages. While the session
+// works the claim is the best truth available and is kept however old it is - a long turn dispatches
+// work and keeps going, and dropping the set mid-turn would reinstate the blind spot it closes. Once
+// the session is idle, though, an aging claim is more likely to be work that has since finished than
+// work still holding on, and an idle row annotated with phantom work is worse than no annotation. So
+// after the same window that backstops a still pane, an idle row's claim expires.
+func effectiveBackground(r record, status Status, now time.Time) []BackgroundTask {
+	if len(r.Background) == 0 || status != StatusIdle || r.BackgroundAt == nil {
+		return r.Background
+	}
+	if now.Sub(*r.BackgroundAt) > backgroundQuiescenceWindow {
 		return nil
 	}
-	return prev
+	return r.Background
 }
 
 // hookInput is the subset of the Claude Code hook payload we consume. Message is
@@ -644,11 +667,12 @@ func handleHook(event string, r io.Reader, policy notifyPolicy) error {
 	rec.Kind = kind
 	// SessionEnd produces no terminal status: the session keeps its last status until its
 	// Claude process exits and the liveness GC reclaims it. Every other event maps to one.
+	now := time.Now()
 	if event != "SessionEnd" {
 		rec.Status = StatusFor(event, in)
-		rec.Background = backgroundFor(event, rec.Status, in, rec.Background)
+		rec.Background, rec.BackgroundAt = backgroundFor(event, in, rec.Background, rec.BackgroundAt, now)
 	}
-	rec.Updated = time.Now()
+	rec.Updated = now
 	// Record the Claude session process so `be agents` can treat that process's
 	// liveness as the agent's liveness (a closed Claude → its entry is reclaimed).
 	// The hook runs in a short-lived shell, so we walk up to the Claude process

@@ -790,13 +790,14 @@ func TestHandleHookRecordsBackgroundWork(t *testing.T) {
 		t.Errorf("a permission prompt should keep the set, got %q %+v", got.Status, got.Background)
 	}
 
-	// The idle nudge is a turn boundary: the session is parked on the user, not on background
-	// work, so a set carried into it would annotate an idle row with work holding nothing open.
+	// The idle nudge keeps the set: a session waiting on your input can have monitors and shells
+	// running the whole time, so idleness says nothing about background work. The reader expires
+	// the claim instead (TestAgentsExpiresIdleBackgroundClaim).
 	if err := handleHook("Notification", strings.NewReader(`{"session_id":"s1","message":"Claude is waiting for your input"}`), p); err != nil {
 		t.Fatal(err)
 	}
-	if got := read(); got.Status != StatusIdle || len(got.Background) != 0 {
-		t.Errorf("an idle nudge should clear the set, got %q %+v", got.Status, got.Background)
+	if got := read(); got.Status != StatusIdle || len(got.Background) != 1 {
+		t.Errorf("an idle nudge should keep the set, got %q %+v", got.Status, got.Background)
 	}
 
 	// A restart starts clean: the record outlives the process that wrote it, so a carried set
@@ -870,6 +871,59 @@ func TestAgentsKeepsBackgroundParkedWorking(t *testing.T) {
 	now = now.Add(backgroundQuiescenceWindow)
 	if got := statuses(); got["parked"] != StatusIdle {
 		t.Errorf("the backstop should eventually demote a frozen parked pane, got %q", got["parked"])
+	}
+}
+
+// TestAgentsExpiresIdleBackgroundClaim pins how an aging claim is read. Only a turn end states what
+// is in flight, so between them the set is a claim of unknown age. A working session keeps its claim
+// however old - a long turn dispatches work and keeps going, and dropping it mid-turn would reinstate
+// the blind spot the set closes. An idle session keeps it only until the backstop window: idleness
+// says nothing about background work (monitors run while the session waits on you), but a row idle
+// that long is more likely naming work that has since finished, and phantom work is worse than none.
+func TestAgentsExpiresIdleBackgroundClaim(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	bg := []BackgroundTask{{Type: "monitor"}}
+	at := func(t time.Time) *time.Time { return &t }
+	for _, r := range []record{
+		{SessionID: "fresh", PID: 1, TmuxSession: "s", TmuxWindow: "1", TmuxPane: "%1", Title: "a", Status: StatusIdle, Updated: now,
+			Background: bg, BackgroundAt: at(now.Add(-time.Minute))},
+		{SessionID: "stale", PID: 1, TmuxSession: "s", TmuxWindow: "2", TmuxPane: "%2", Title: "b", Status: StatusIdle, Updated: now,
+			Background: bg, BackgroundAt: at(now.Add(-backgroundQuiescenceWindow - time.Minute))},
+		{SessionID: "long-turn", PID: 1, TmuxSession: "s", TmuxWindow: "3", TmuxPane: "%3", Title: "c", Status: StatusWorking, Updated: now,
+			Background: bg, BackgroundAt: at(now.Add(-backgroundQuiescenceWindow - time.Hour))},
+	} {
+		if err := writeRecord(dir, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := &ClaudeSource{
+		dir:        dir,
+		recDir:     dir,
+		alive:      alwaysAlive,
+		detector:   quiescenceDetector{window: quiescenceWindow},
+		bgDetector: quiescenceDetector{window: backgroundQuiescenceWindow},
+		now:        func() time.Time { return now },
+		screens: func(ids []string) (map[string]string, error) {
+			return map[string]string{"%1": "frozen", "%2": "frozen", "%3": "frozen"}, nil
+		},
+	}
+	got, err := s.Agents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	work := map[string][]BackgroundTask{}
+	for _, a := range got {
+		work[a.SessionID] = a.Background
+	}
+	if len(work["fresh"]) != 1 {
+		t.Errorf("an idle session whose claim is recent should still name its work, got %+v", work["fresh"])
+	}
+	if len(work["stale"]) != 0 {
+		t.Errorf("an idle session past the backstop should drop its claim, got %+v", work["stale"])
+	}
+	if len(work["long-turn"]) != 1 {
+		t.Errorf("a working session should keep its claim however old, got %+v", work["long-turn"])
 	}
 }
 
