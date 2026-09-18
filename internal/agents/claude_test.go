@@ -729,10 +729,11 @@ func TestStatusForStopBackgroundTasks(t *testing.T) {
 	}
 }
 
-// TestHandleHookRecordsBackgroundWork pins the level-triggered lifetime of the in-flight set: a
-// turn end writes whatever it reported, and any later event overwrites it - a following turn end
-// clears it, and a foreground event clears it too, so no stale set can outlive the turn that
-// reported it and keep a finished session pinned at working.
+// TestHandleHookRecordsBackgroundWork pins the lifetime of the in-flight claim. Only a turn end
+// states what is in flight, so only a turn end replaces the claim - an empty payload there being
+// the authoritative "nothing left". Events that say nothing about background work keep it: the
+// session working through its next turn, and the idle nudge, both leave dispatched work named.
+// SessionStart is the one non-turn-end event that clears, because a restarted session starts clean.
 func TestHandleHookRecordsBackgroundWork(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", dir)
@@ -921,6 +922,85 @@ func TestAgentsExpiresIdleBackgroundClaim(t *testing.T) {
 	}
 	if len(work["long-turn"]) != 1 {
 		t.Errorf("a working session should keep its claim however old, got %+v", work["long-turn"])
+	}
+}
+
+// TestSubagentStopRetiresItsClaim pins why SubagentStop is installed at all. It is the one event
+// that fires when a backgrounded subagent finishes, so it retires the claim naming that subagent
+// without waiting for the session's next turn - and it must do so without touching the status,
+// because a subagent can finish while its parent sits idle at the user's prompt.
+func TestSubagentStopRetiresItsClaim(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", dir)
+	t.Setenv("TMUX", "")
+	stubNoTmuxRecovery(t)
+	p := notifyPolicy{}
+	recDir := recordsDir(t, dir)
+	read := func() record {
+		t.Helper()
+		r, err := readRecord(recDir, "s1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+
+	// A turn ends with a subagent in flight, then the session settles at the user's prompt.
+	subagent := `{"session_id":"s1","background_tasks":[{"id":"t1","type":"subagent","status":"running","agent_type":"Explore"}]}`
+	if err := handleHook("Stop", strings.NewReader(subagent), p); err != nil {
+		t.Fatal(err)
+	}
+	if err := handleHook("Notification", strings.NewReader(`{"session_id":"s1","message":"Claude is waiting for your input"}`), p); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); got.Status != StatusIdle || len(got.Background.tasks()) != 1 {
+		t.Fatalf("setup: want idle naming one subagent, got %q %+v", got.Status, got.Background.tasks())
+	}
+
+	// The subagent finishes while the session is still idle at the prompt.
+	if err := handleHook("SubagentStop", strings.NewReader(`{"session_id":"s1","background_tasks":[]}`), p); err != nil {
+		t.Fatal(err)
+	}
+	got := read()
+	if got.Status != StatusIdle {
+		t.Errorf("a finished subagent must not flip an idle session to working, got %q", got.Status)
+	}
+	if len(got.Background.tasks()) != 0 {
+		t.Errorf("SubagentStop should retire the claim it finished, got %+v", got.Background.tasks())
+	}
+
+	// One subagent of two finishing leaves the rest of the claim standing, and still does not
+	// disturb the status.
+	two := `{"session_id":"s1","background_tasks":[{"id":"t1","type":"subagent","status":"running","agent_type":"Explore"},{"id":"t2","type":"monitor","status":"running"}]}`
+	if err := handleHook("SubagentStop", strings.NewReader(two), p); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); got.Status != StatusIdle || len(got.Background.tasks()) != 2 {
+		t.Errorf("a turn end replaces the claim with what it reports, got %q %+v", got.Status, got.Background.tasks())
+	}
+}
+
+// TestEffectiveTasksExpiryByKind pins that how long an idle row keeps naming work follows from
+// whether that kind announces its own end. A subagent does - SubagentStop retires it - so it
+// outlives an age that drops a silent monitor. Tasks are judged one by one, so a claim naming both
+// loses only the monitor, and the stop-gap still catches an announcement that never arrives.
+func TestEffectiveTasksExpiryByKind(t *testing.T) {
+	now := time.Date(2026, 9, 18, 14, 0, 0, 0, time.UTC)
+	tasks := []BackgroundTask{{Type: "monitor"}, {Type: "subagent", AgentType: "Explore"}}
+	aged := &claim{At: now.Add(-14 * time.Minute), Tasks: tasks}
+
+	if got := effectiveTasks(aged, StatusWorking, now); len(got) != 2 {
+		t.Errorf("a working session keeps its whole claim however old, got %+v", got)
+	}
+	got := effectiveTasks(aged, StatusIdle, now)
+	if len(got) != 1 || got[0].Type != "subagent" {
+		t.Errorf("idle past the backstop should keep only the subagent, got %+v", got)
+	}
+	if fresh := effectiveTasks(&claim{At: now.Add(-time.Minute), Tasks: tasks}, StatusIdle, now); len(fresh) != 2 {
+		t.Errorf("a recent claim survives intact, got %+v", fresh)
+	}
+	if old := effectiveTasks(&claim{At: now.Add(-subagentClaimExpiry - time.Minute), Tasks: tasks}, StatusIdle, now); old != nil {
+		t.Errorf("past the stop-gap even a subagent expires, got %+v", old)
 	}
 }
 

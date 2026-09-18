@@ -11,11 +11,17 @@ import (
 
 // ManagedEvents are the Claude Code hook events birdseye installs so that
 // `be agents` can show live status.
+//
+// SubagentStop is here for the in-flight claim rather than for status: it is the one event that
+// fires when a backgrounded subagent finishes, so it is what lets a record stop naming work that
+// has ended without waiting for the session's next turn. Without it the only correction available
+// is a timer, which either hides live work or shows finished work (see effectiveTasks).
 var ManagedEvents = []string{
 	"SessionStart",
 	"UserPromptSubmit",
 	"Notification",
 	"Stop",
+	"SubagentStop",
 	"SessionEnd",
 }
 

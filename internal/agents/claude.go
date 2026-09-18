@@ -510,18 +510,40 @@ func (d detectors) derive(r record, obs map[string]paneObservation, now time.Tim
 // effectiveTasks is a claim's work as a reader should see it. Only turn-end events state what is in
 // flight, so a claim ages. While the session works it is the best truth available and is kept
 // however old - a long turn dispatches work and keeps going, and dropping it mid-turn would
-// reinstate the blind spot the claim exists to close. Once the session is idle, an aging claim is
-// more likely naming work that has since finished, and phantom work on an idle row is worse than no
-// annotation, so past the backstop window it expires. A claim with no timestamp (written before the
-// record carried one) reads as infinitely old and so expires as soon as the session is idle.
+// reinstate the blind spot the claim exists to close.
+//
+// Once the session is idle, no further turn end is coming until you answer, so each task is kept
+// only as long as its kind can be trusted to still be running (expiryFor). Tasks are judged one by
+// one, so a claim naming a finished monitor and a live subagent loses the monitor and keeps the
+// subagent. A claim with no timestamp (written before the record carried one) reads as infinitely
+// old and so expires as soon as the session is idle.
 func effectiveTasks(c *claim, status Status, now time.Time) []BackgroundTask {
 	if len(c.tasks()) == 0 || status != StatusIdle {
 		return c.tasks()
 	}
-	if now.Sub(c.At) > backgroundQuiescenceWindow {
-		return nil
+	age := now.Sub(c.At)
+	var out []BackgroundTask
+	for _, t := range c.Tasks {
+		if age <= expiryFor(t) {
+			out = append(out, t)
+		}
 	}
-	return c.Tasks
+	return out
+}
+
+// expiryFor is how long an idle row may keep naming one piece of background work, and it follows
+// from whether that kind of work announces its own end.
+//
+// A subagent does: SubagentStop fires when it finishes and replaces the claim outright, so the
+// annotation self-corrects and the window here is only a stop-gap for an announcement that never
+// arrives (hooks not reinstalled, a crash). Everything else - a monitor, a backgrounded shell -
+// ends silently, with nothing to say so until the session's next turn end, so it is held only for
+// the backstop window and then dropped rather than left naming work that has likely finished.
+func expiryFor(t BackgroundTask) time.Duration {
+	if t.Type == "subagent" {
+		return subagentClaimExpiry
+	}
+	return backgroundQuiescenceWindow
 }
 
 // reconcile resolves an agent's displayed status from its hook-written status and whatever its
@@ -548,11 +570,14 @@ const idleNotification = "waiting for your input"
 // to a status. The event name is the primary signal; the payload only refines
 // the cases where the name alone is ambiguous.
 //
-//	SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, SubagentStop -> working
-//	Notification (idle "waiting for your input" message)                  -> idle
-//	Notification (permission/approval or any unrecognized message)        -> needs-attention
-//	Stop (nothing in flight)                                              -> idle
-//	Stop (background work in flight)                                      -> working
+//	SessionStart, UserPromptSubmit, PreToolUse, PostToolUse     -> working
+//	Notification (idle "waiting for your input" message)        -> idle
+//	Notification (permission/approval or any unrecognized)      -> needs-attention
+//	Stop (nothing in flight)                                    -> idle
+//	Stop (background work in flight)                            -> working
+//
+// SubagentStop is deliberately absent: it says nothing about this session's own status (see
+// statusEvent), so handleHook never asks for one.
 //
 // A SessionEnd event produces no terminal status: an ended session keeps its last status
 // until its Claude process exits, at which point the liveness GC removes it. The
@@ -577,12 +602,20 @@ func StatusFor(event string, in hookInput) Status {
 			return StatusWorking
 		}
 		return StatusIdle
-	case "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "SubagentStop":
+	case "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse":
 		return StatusWorking
 	default:
 		return StatusWorking
 	}
 }
+
+// statusEvent reports whether an event states anything about the session's own status.
+//
+// SubagentStop does not. It fires when a backgrounded subagent finishes, which can happen while
+// its parent sits idle at your prompt: treating it as a status event would flip that row to
+// working every time a subagent ended. It refreshes the in-flight claim (backgroundFor) and
+// leaves the status to the events that actually describe the session.
+func statusEvent(event string) bool { return event != "SubagentStop" }
 
 // backgroundFor resolves the in-flight set to store for an event, given what the record already
 // holds. Only the turn-end events carry `background_tasks`, and they carry the whole set, so they
@@ -685,7 +718,9 @@ func handleHook(event string, r io.Reader, policy notifyPolicy) error {
 	// Claude process exits and the liveness GC reclaims it. Every other event maps to one.
 	now := time.Now()
 	if event != "SessionEnd" {
-		rec.Status = StatusFor(event, in)
+		if statusEvent(event) {
+			rec.Status = StatusFor(event, in)
+		}
 		rec.Background = backgroundFor(event, in, rec.Background, now)
 	}
 	rec.Updated = now
