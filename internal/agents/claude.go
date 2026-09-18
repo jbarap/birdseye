@@ -561,13 +561,17 @@ func StatusFor(event string, in hookInput) Status {
 // that finishes mid-turn stays named until the next turn end), bounded by the long stillness
 // backstop in detectorFor.
 //
-// SessionStart is the exception: a session that has just started or resumed has nothing in flight
-// yet, and its record can outlive the process that wrote it, so it starts clean.
-func backgroundFor(event string, in hookInput, prev []BackgroundTask) []BackgroundTask {
-	switch event {
-	case "Stop", "SubagentStop":
+// Two events clear rather than carry. SessionStart: a session that has just started or resumed has
+// nothing in flight yet, and its record can outlive the process that wrote it, so it starts clean.
+// And any event resolving to idle - the "waiting for your input" notification - is a turn boundary
+// the payload is silent about: the session is parked on the user, not on background work, so a
+// carried set would annotate an idle row with work that is holding nothing open. A needs-attention
+// notification still carries, because work can legitimately run while a permission prompt waits.
+func backgroundFor(event string, status Status, in hookInput, prev []BackgroundTask) []BackgroundTask {
+	switch {
+	case event == "Stop" || event == "SubagentStop":
 		return in.BackgroundTasks
-	case "SessionStart":
+	case event == "SessionStart", status == StatusIdle:
 		return nil
 	}
 	return prev
@@ -642,7 +646,7 @@ func handleHook(event string, r io.Reader, policy notifyPolicy) error {
 	// Claude process exits and the liveness GC reclaims it. Every other event maps to one.
 	if event != "SessionEnd" {
 		rec.Status = StatusFor(event, in)
-		rec.Background = backgroundFor(event, in, rec.Background)
+		rec.Background = backgroundFor(event, rec.Status, in, rec.Background)
 	}
 	rec.Updated = time.Now()
 	// Record the Claude session process so `be agents` can treat that process's

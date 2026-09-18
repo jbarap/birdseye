@@ -779,6 +779,26 @@ func TestHandleHookRecordsBackgroundWork(t *testing.T) {
 		t.Errorf("an empty set should settle to idle with no work, got %q %+v", got.Status, got.Background)
 	}
 
+	// A permission prompt carries the set: work can run while the session waits on an answer.
+	if err := handleHook("Stop", strings.NewReader(stop), p); err != nil {
+		t.Fatal(err)
+	}
+	if err := handleHook("Notification", strings.NewReader(`{"session_id":"s1","message":"Claude needs your permission to use Bash"}`), p); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); got.Status != StatusNeedsAttention || len(got.Background) != 1 {
+		t.Errorf("a permission prompt should keep the set, got %q %+v", got.Status, got.Background)
+	}
+
+	// The idle nudge is a turn boundary: the session is parked on the user, not on background
+	// work, so a set carried into it would annotate an idle row with work holding nothing open.
+	if err := handleHook("Notification", strings.NewReader(`{"session_id":"s1","message":"Claude is waiting for your input"}`), p); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); got.Status != StatusIdle || len(got.Background) != 0 {
+		t.Errorf("an idle nudge should clear the set, got %q %+v", got.Status, got.Background)
+	}
+
 	// A restart starts clean: the record outlives the process that wrote it, so a carried set
 	// must not survive into the new session.
 	if err := handleHook("Stop", strings.NewReader(stop), p); err != nil {
