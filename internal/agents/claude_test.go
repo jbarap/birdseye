@@ -762,12 +762,13 @@ func TestHandleHookRecordsBackgroundWork(t *testing.T) {
 		t.Fatalf("background work = %+v, want the one Explore subagent", got.Background)
 	}
 
-	// A foreground event clears the set: the session is running its own turn again.
+	// A foreground event says nothing about background work, so the set survives it: the subagent
+	// is still running while the session works through the next turn.
 	if err := handleHook("UserPromptSubmit", strings.NewReader(`{"session_id":"s1"}`), p); err != nil {
 		t.Fatal(err)
 	}
-	if got := read(); len(got.Background) != 0 {
-		t.Errorf("a foreground event should clear the in-flight set, got %+v", got.Background)
+	if got := read(); len(got.Background) != 1 || got.Background[0].AgentType != "Explore" {
+		t.Errorf("a foreground event should keep the in-flight set, got %+v", got.Background)
 	}
 
 	// The turn ends with nothing left in flight: now it is genuinely idle.
@@ -776,6 +777,18 @@ func TestHandleHookRecordsBackgroundWork(t *testing.T) {
 	}
 	if got := read(); got.Status != StatusIdle || len(got.Background) != 0 {
 		t.Errorf("an empty set should settle to idle with no work, got %q %+v", got.Status, got.Background)
+	}
+
+	// A restart starts clean: the record outlives the process that wrote it, so a carried set
+	// must not survive into the new session.
+	if err := handleHook("Stop", strings.NewReader(stop), p); err != nil {
+		t.Fatal(err)
+	}
+	if err := handleHook("SessionStart", strings.NewReader(`{"session_id":"s1"}`), p); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); len(got.Background) != 0 {
+		t.Errorf("SessionStart should clear the carried set, got %+v", got.Background)
 	}
 }
 

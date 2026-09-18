@@ -478,6 +478,10 @@ func (d quiescenceDetector) Level(paneID string, obs map[string]paneObservation,
 // blind spot the in-flight set exists to close. It gets the long window instead, which is a
 // backstop rather than a signal: it only bounds how long a record can stay pinned at working if
 // the work never reports back (an interrupt that fires no further turn-end event).
+//
+// The set is carried across foreground events (see backgroundFor), so it can name work that has
+// since finished, and that carried set buys the long window too. The backstop is what makes that
+// safe: a pane that really has gone quiet is still demoted, just later.
 func (s *ClaudeSource) detectorFor(r record) levelDetector {
 	if len(r.Background) > 0 {
 		return s.bgDetector
@@ -543,6 +547,30 @@ func StatusFor(event string, in hookInput) Status {
 	default:
 		return StatusWorking
 	}
+}
+
+// backgroundFor resolves the in-flight set to store for an event, given what the record already
+// holds. Only the turn-end events carry `background_tasks`, and they carry the whole set, so they
+// replace it outright — an empty payload there is the authoritative "nothing left in flight".
+//
+// Every other event is silent about background work rather than evidence there is none, so it
+// keeps what the last turn end reported. Work dispatched on one turn keeps running while the
+// session works through the next one: clearing it on those events left the set alive only in the
+// gap between a turn end and the next event, so a session with three monitors running showed
+// nothing for almost its whole life. The cost is a set that can lag reality for one turn (work
+// that finishes mid-turn stays named until the next turn end), bounded by the long stillness
+// backstop in detectorFor.
+//
+// SessionStart is the exception: a session that has just started or resumed has nothing in flight
+// yet, and its record can outlive the process that wrote it, so it starts clean.
+func backgroundFor(event string, in hookInput, prev []BackgroundTask) []BackgroundTask {
+	switch event {
+	case "Stop", "SubagentStop":
+		return in.BackgroundTasks
+	case "SessionStart":
+		return nil
+	}
+	return prev
 }
 
 // hookInput is the subset of the Claude Code hook payload we consume. Message is
@@ -614,11 +642,7 @@ func handleHook(event string, r io.Reader, policy notifyPolicy) error {
 	// Claude process exits and the liveness GC reclaims it. Every other event maps to one.
 	if event != "SessionEnd" {
 		rec.Status = StatusFor(event, in)
-		// The in-flight set is level-triggered: it is whatever the last event reported, never
-		// an accumulated count that could drift. Only the turn-end events carry it, so every
-		// other event clears it — those mean the session is running in the foreground, where a
-		// stale set would wrongly buy the pane the long stillness window.
-		rec.Background = in.BackgroundTasks
+		rec.Background = backgroundFor(event, in, rec.Background)
 	}
 	rec.Updated = time.Now()
 	// Record the Claude session process so `be agents` can treat that process's
