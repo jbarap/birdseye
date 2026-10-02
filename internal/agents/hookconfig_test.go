@@ -208,3 +208,22 @@ func TestIsOurCommand(t *testing.T) {
 		}
 	}
 }
+
+func TestClaudeConfigDirHonorsEnv(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	t.Setenv("CLAUDE_CONFIG_DIR", "/tmp/claude-alt")
+	if got, _ := ClaudeConfigDir(); got != "/tmp/claude-alt" {
+		t.Errorf("with CLAUDE_CONFIG_DIR set: got %q, want /tmp/claude-alt", got)
+	}
+	if got, _ := DefaultSettingsPath(); got != "/tmp/claude-alt/settings.json" {
+		t.Errorf("settings path: got %q, want /tmp/claude-alt/settings.json", got)
+	}
+
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	want := filepath.Join(home, ".claude")
+	if got, _ := ClaudeConfigDir(); got != want {
+		t.Errorf("with CLAUDE_CONFIG_DIR empty: got %q, want %q", got, want)
+	}
+}

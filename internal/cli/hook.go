@@ -69,7 +69,7 @@ func newClaudeHookCmd() *cobra.Command {
 		},
 	}
 	install.Flags().StringVar(&settingsPath, "settings", "",
-		"path to Claude settings.json (defaults to ~/.claude/settings.json)")
+		"path to Claude settings.json (defaults to $CLAUDE_CONFIG_DIR/settings.json, else ~/.claude/settings.json)")
 	install.Flags().StringVar(&command, "command", "",
 		"hook command to install (defaults to the absolute path of this be binary)")
 
@@ -96,7 +96,7 @@ func newClaudeHookCmd() *cobra.Command {
 		},
 	}
 	uninstall.Flags().StringVar(&settingsPath, "settings", "",
-		"path to Claude settings.json (defaults to ~/.claude/settings.json)")
+		"path to Claude settings.json (defaults to $CLAUDE_CONFIG_DIR/settings.json, else ~/.claude/settings.json)")
 
 	record := &cobra.Command{
 		Use:   "record <event>",

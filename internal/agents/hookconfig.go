@@ -25,10 +25,13 @@ var ManagedEvents = []string{
 	"SessionEnd",
 }
 
-// ClaudeConfigDir returns the Claude Code config root, ~/.claude — the single place
-// the settings path and the workflow artifacts are resolved from, so a layout change is
-// a one-line fix.
+// ClaudeConfigDir returns the Claude Code config root: $CLAUDE_CONFIG_DIR when set,
+// as Claude Code itself resolves it, else ~/.claude. It is the single place the settings
+// path and the workflow artifacts are resolved from, so a layout change is a one-line fix.
 func ClaudeConfigDir() (string, error) {
+	if dir := os.Getenv("CLAUDE_CONFIG_DIR"); dir != "" {
+		return dir, nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -36,8 +39,7 @@ func ClaudeConfigDir() (string, error) {
 	return filepath.Join(home, ".claude"), nil
 }
 
-// DefaultSettingsPath returns the standard Claude Code settings path,
-// ~/.claude/settings.json.
+// DefaultSettingsPath returns settings.json under ClaudeConfigDir.
 func DefaultSettingsPath() (string, error) {
 	dir, err := ClaudeConfigDir()
 	if err != nil {
