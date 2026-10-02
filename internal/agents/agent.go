@@ -7,7 +7,9 @@
 package agents
 
 import (
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -55,33 +57,45 @@ type BackgroundTask struct {
 }
 
 // backgroundSummary renders a set of in-flight background tasks as a short phrase for the row
-// detail column: the lone subagent's type when that is the whole story, else a count of a single
-// kind, else a bare count. Empty when nothing is in flight, so the caller can treat it as a
+// detail column: the lone subagent's type when that is the whole story, else a count per kind
+// ("2 subagents", "1 monitor, 1 subagent"). A mixed set names every kind rather than collapsing to
+// a bare count, because which kind is holding the turn open is the fact the column exists to
+// carry. Kinds are listed alphabetically so the column does not reshuffle when the reported order
+// changes between turns. Empty when nothing is in flight, so the caller can treat it as a
 // presence test.
+//
+// A bash-backed monitor reaches us as "shell": Claude Code's hook payload carries the task type
+// but not the `kind` that separates a monitor from an ordinary backgrounded shell, so the two are
+// indistinguishable here.
 func backgroundSummary(tasks []BackgroundTask) string {
 	if len(tasks) == 0 {
 		return ""
 	}
-	kind := tasks[0].Type
-	for _, t := range tasks[1:] {
-		if t.Type != kind {
-			kind = ""
-			break
+	if len(tasks) == 1 && tasks[0].Type == "subagent" && tasks[0].AgentType != "" {
+		return tasks[0].AgentType
+	}
+	counts := map[string]int{}
+	for _, t := range tasks {
+		kind := t.Type
+		if kind == "" {
+			kind = "task"
 		}
+		counts[kind]++
 	}
-	if len(tasks) == 1 {
-		switch {
-		case kind == "subagent" && tasks[0].AgentType != "":
-			return tasks[0].AgentType
-		case kind != "":
-			return "1 " + kind
+	kinds := make([]string, 0, len(counts))
+	for k := range counts {
+		kinds = append(kinds, k)
+	}
+	sort.Strings(kinds)
+	parts := make([]string, 0, len(kinds))
+	for _, k := range kinds {
+		label := k
+		if counts[k] > 1 {
+			label += "s"
 		}
-		return "1 task"
+		parts = append(parts, strconv.Itoa(counts[k])+" "+label)
 	}
-	if kind != "" {
-		return strconv.Itoa(len(tasks)) + " " + kind + "s"
-	}
-	return strconv.Itoa(len(tasks)) + " tasks"
+	return strings.Join(parts, ", ")
 }
 
 // Agent is one tracked agent session.

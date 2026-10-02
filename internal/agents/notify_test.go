@@ -115,23 +115,23 @@ func TestAnyLiveWorker(t *testing.T) {
 	}
 	now := time.Now()
 	// No observations: siblingStatus falls back to the raw record status.
-	if anyLiveWorker(recs, "self", live, nil, now) {
+	if anyLiveWorker(recs, "self", live, nil, nil, now) {
 		t.Fatal("only a dead worker plus idle/self remain; the run should read as settled")
 	}
 	recs = append(recs, record{SessionID: "liveworker", Status: StatusWorking, PID: 2})
-	if !anyLiveWorker(recs, "self", live, nil, now) {
+	if !anyLiveWorker(recs, "self", live, nil, nil, now) {
 		t.Fatal("a live working sibling should hold the run open")
 	}
 	// A live sibling frozen at "working" whose pane has not redrawn a byte in a minute must not
 	// hold the run open: the same stillness correction the dash applies disproves the stale record.
 	recs = []record{{SessionID: "stale", Status: StatusWorking, PID: 3, TmuxPane: "%9"}}
 	still := map[string]paneObservation{"%9": {Hash: "h", Since: now.Add(-time.Minute), Seen: now}}
-	if anyLiveWorker(recs, "self", live, still, now) {
+	if anyLiveWorker(recs, "self", live, still, nil, now) {
 		t.Fatal("a stale working record whose pane is inert must not hold the run open")
 	}
 	// The same record while its pane is still animating does hold the run open.
 	moving := map[string]paneObservation{"%9": {Hash: "h", Since: now.Add(-time.Second), Seen: now}}
-	if !anyLiveWorker(recs, "self", live, moving, now) {
+	if !anyLiveWorker(recs, "self", live, moving, nil, now) {
 		t.Fatal("a working record whose pane is still redrawing must hold the run open")
 	}
 }

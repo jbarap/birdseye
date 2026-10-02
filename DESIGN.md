@@ -91,7 +91,17 @@ Needs-attention sorts first; the most-urgent group floats to the top.
 **Working covers delegated work.** A session that dispatched a subagent (or any other
 backgrounded task) has yielded its turn but is not waiting on you: it will be woken by that
 work. It stays `◐ work`, and its row's detail column names what it is waiting on, prefixed with
-the delegate mark `⇢` (`⇢ Explore`, `⇢ 2 subagents`). The mark is an annotation, not a status —
+the delegate mark `⇢` (`⇢ Explore`, `⇢ 2 subagents`). A set holding more than one kind names each
+of them alphabetically (`⇢ 1 monitor, 1 subagent`) rather than collapsing to a bare count: which
+kind holds the turn open is the fact the column carries. An idle row can carry the mark too: work
+keeps running while a session waits on you, so idleness says nothing about background work. Only a
+turn end states what is in flight, so the mark names whatever the last one reported. Work that ends
+silently (a monitor, a backgrounded shell) is also the work that runs longest, so no timer can
+retire the mark without hiding live work in order to tidy up finished work. The session's own chrome
+settles it instead: it names what is running right now, so when that is legible and names nothing,
+the mark goes whatever the claim's age. Reading the screen can only ever remove work - it never adds
+work the session did not report, and a pane it cannot read leaves the mark standing. The
+mark is an annotation, not a status —
 the gutter, the band, and the sort order are unchanged, so a row does not move when work is
 dispatched or returns.
 

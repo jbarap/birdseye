@@ -198,11 +198,11 @@ func TestAgentsCorrectsStaleWorking(t *testing.T) {
 	frame := 0
 	var asked [][]string
 	s := &ClaudeSource{
-		dir:      dir,
-		recDir:   dir,
-		alive:    alwaysAlive,
-		detector: quiescenceDetector{window: quiescenceWindow},
-		now:      func() time.Time { return now },
+		dir:    dir,
+		recDir: dir,
+		alive:  alwaysAlive,
+		dets:   detectors{plain: quiescenceDetector{window: quiescenceWindow}},
+		now:    func() time.Time { return now },
 		screens: func(ids []string) (map[string]string, error) {
 			sort.Strings(ids)
 			asked = append(asked, ids)
@@ -729,10 +729,11 @@ func TestStatusForStopBackgroundTasks(t *testing.T) {
 	}
 }
 
-// TestHandleHookRecordsBackgroundWork pins the level-triggered lifetime of the in-flight set: a
-// turn end writes whatever it reported, and any later event overwrites it - a following turn end
-// clears it, and a foreground event clears it too, so no stale set can outlive the turn that
-// reported it and keep a finished session pinned at working.
+// TestHandleHookRecordsBackgroundWork pins the lifetime of the in-flight claim. Only a turn end
+// states what is in flight, so only a turn end replaces the claim - an empty payload there being
+// the authoritative "nothing left". Events that say nothing about background work keep it: the
+// session working through its next turn, and the idle nudge, both leave dispatched work named.
+// SessionStart is the one non-turn-end event that clears, because a restarted session starts clean.
 func TestHandleHookRecordsBackgroundWork(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", dir)
@@ -758,24 +759,58 @@ func TestHandleHookRecordsBackgroundWork(t *testing.T) {
 	if got.Status != StatusWorking {
 		t.Errorf("a Stop with work in flight should stay working, got %q", got.Status)
 	}
-	if len(got.Background) != 1 || got.Background[0].AgentType != "Explore" {
-		t.Fatalf("background work = %+v, want the one Explore subagent", got.Background)
+	if tasks := got.Background.tasks(); len(tasks) != 1 || tasks[0].AgentType != "Explore" {
+		t.Fatalf("background work = %+v, want the one Explore subagent", tasks)
 	}
 
-	// A foreground event clears the set: the session is running its own turn again.
+	// A foreground event says nothing about background work, so the set survives it: the subagent
+	// is still running while the session works through the next turn.
 	if err := handleHook("UserPromptSubmit", strings.NewReader(`{"session_id":"s1"}`), p); err != nil {
 		t.Fatal(err)
 	}
-	if got := read(); len(got.Background) != 0 {
-		t.Errorf("a foreground event should clear the in-flight set, got %+v", got.Background)
+	if tasks := read().Background.tasks(); len(tasks) != 1 || tasks[0].AgentType != "Explore" {
+		t.Errorf("a foreground event should keep the in-flight set, got %+v", tasks)
 	}
 
 	// The turn ends with nothing left in flight: now it is genuinely idle.
 	if err := handleHook("Stop", strings.NewReader(`{"session_id":"s1","background_tasks":[]}`), p); err != nil {
 		t.Fatal(err)
 	}
-	if got := read(); got.Status != StatusIdle || len(got.Background) != 0 {
-		t.Errorf("an empty set should settle to idle with no work, got %q %+v", got.Status, got.Background)
+	if got := read(); got.Status != StatusIdle || len(got.Background.tasks()) != 0 {
+		t.Errorf("an empty set should settle to idle with no work, got %q %+v", got.Status, got.Background.tasks())
+	}
+
+	// A permission prompt carries the set: work can run while the session waits on an answer.
+	if err := handleHook("Stop", strings.NewReader(stop), p); err != nil {
+		t.Fatal(err)
+	}
+	if err := handleHook("Notification", strings.NewReader(`{"session_id":"s1","message":"Claude needs your permission to use Bash"}`), p); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); got.Status != StatusNeedsAttention || len(got.Background.tasks()) != 1 {
+		t.Errorf("a permission prompt should keep the set, got %q %+v", got.Status, got.Background.tasks())
+	}
+
+	// The idle nudge keeps the set: a session waiting on your input can have monitors and shells
+	// running the whole time, so idleness says nothing about background work. The reader expires
+	// the claim instead (TestAgentsExpiresIdleBackgroundClaim).
+	if err := handleHook("Notification", strings.NewReader(`{"session_id":"s1","message":"Claude is waiting for your input"}`), p); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); got.Status != StatusIdle || len(got.Background.tasks()) != 1 {
+		t.Errorf("an idle nudge should keep the set, got %q %+v", got.Status, got.Background.tasks())
+	}
+
+	// A restart starts clean: the record outlives the process that wrote it, so a carried set
+	// must not survive into the new session.
+	if err := handleHook("Stop", strings.NewReader(stop), p); err != nil {
+		t.Fatal(err)
+	}
+	if err := handleHook("SessionStart", strings.NewReader(`{"session_id":"s1"}`), p); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); len(got.Background.tasks()) != 0 {
+		t.Errorf("SessionStart should clear the carried set, got %+v", got.Background.tasks())
 	}
 }
 
@@ -789,7 +824,7 @@ func TestAgentsKeepsBackgroundParkedWorking(t *testing.T) {
 	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	for _, r := range []record{
 		{SessionID: "parked", PID: 1, TmuxSession: "s", TmuxWindow: "1", TmuxPane: "%1", Title: "a", Status: StatusWorking, Updated: now,
-			Background: []BackgroundTask{{Type: "subagent", AgentType: "Explore"}}},
+			Background: &claim{At: now, Tasks: []BackgroundTask{{Type: "subagent", AgentType: "Explore"}}}},
 		{SessionID: "plain", PID: 1, TmuxSession: "s", TmuxWindow: "2", TmuxPane: "%2", Title: "b", Status: StatusWorking, Updated: now},
 	} {
 		if err := writeRecord(dir, r); err != nil {
@@ -797,12 +832,11 @@ func TestAgentsKeepsBackgroundParkedWorking(t *testing.T) {
 		}
 	}
 	s := &ClaudeSource{
-		dir:        dir,
-		recDir:     dir,
-		alive:      alwaysAlive,
-		detector:   quiescenceDetector{window: quiescenceWindow},
-		bgDetector: quiescenceDetector{window: backgroundQuiescenceWindow},
-		now:        func() time.Time { return now },
+		dir:    dir,
+		recDir: dir,
+		alive:  alwaysAlive,
+		dets:   defaultDetectors(),
+		now:    func() time.Time { return now },
 		// Both panes are frozen: neither session is drawing anything.
 		screens: func(ids []string) (map[string]string, error) {
 			return map[string]string{"%1": "frozen", "%2": "frozen"}, nil
@@ -840,9 +874,143 @@ func TestAgentsKeepsBackgroundParkedWorking(t *testing.T) {
 	}
 }
 
+// TestAgentsExpiresIdleBackgroundClaim pins how an aging claim is read. Only a turn end states what
+// is in flight, so between them the set is a claim of unknown age. A working session keeps its claim
+// however old - a long turn dispatches work and keeps going, and dropping it mid-turn would reinstate
+// the blind spot the set closes. An idle session keeps it only until the backstop window: idleness
+// says nothing about background work (monitors run while the session waits on you), but a row idle
+// that long is more likely naming work that has since finished, and phantom work is worse than none.
+func TestAgentsExpiresIdleBackgroundClaim(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	bg := []BackgroundTask{{Type: "monitor"}}
+	for _, r := range []record{
+		{SessionID: "fresh", PID: 1, TmuxSession: "s", TmuxWindow: "1", TmuxPane: "%1", Title: "a", Status: StatusIdle, Updated: now,
+			Background: &claim{At: now.Add(-time.Minute), Tasks: bg}},
+		{SessionID: "stale", PID: 1, TmuxSession: "s", TmuxWindow: "2", TmuxPane: "%2", Title: "b", Status: StatusIdle, Updated: now,
+			Background: &claim{At: now.Add(-claimStopGap - time.Minute), Tasks: bg}},
+		{SessionID: "long-turn", PID: 1, TmuxSession: "s", TmuxWindow: "3", TmuxPane: "%3", Title: "c", Status: StatusWorking, Updated: now,
+			Background: &claim{At: now.Add(-claimStopGap - time.Hour), Tasks: bg}},
+	} {
+		if err := writeRecord(dir, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := &ClaudeSource{
+		dir:    dir,
+		recDir: dir,
+		alive:  alwaysAlive,
+		dets:   defaultDetectors(),
+		now:    func() time.Time { return now },
+		screens: func(ids []string) (map[string]string, error) {
+			return map[string]string{"%1": "frozen", "%2": "frozen", "%3": "frozen"}, nil
+		},
+	}
+	got, err := s.Agents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	work := map[string][]BackgroundTask{}
+	for _, a := range got {
+		work[a.SessionID] = a.Background
+	}
+	if len(work["fresh"]) != 1 {
+		t.Errorf("an idle session whose claim is recent should still name its work, got %+v", work["fresh"])
+	}
+	if len(work["stale"]) != 0 {
+		t.Errorf("an idle session past the backstop should drop its claim, got %+v", work["stale"])
+	}
+	if len(work["long-turn"]) != 1 {
+		t.Errorf("a working session should keep its claim however old, got %+v", work["long-turn"])
+	}
+}
+
+// TestSubagentStopRetiresItsClaim pins why SubagentStop is installed at all. It is the one event
+// that fires when a backgrounded subagent finishes, so it retires the claim naming that subagent
+// without waiting for the session's next turn - and it must do so without touching the status,
+// because a subagent can finish while its parent sits idle at the user's prompt.
+func TestSubagentStopRetiresItsClaim(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", dir)
+	t.Setenv("TMUX", "")
+	stubNoTmuxRecovery(t)
+	p := notifyPolicy{}
+	recDir := recordsDir(t, dir)
+	read := func() record {
+		t.Helper()
+		r, err := readRecord(recDir, "s1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+
+	// A turn ends with a subagent in flight, then the session settles at the user's prompt.
+	subagent := `{"session_id":"s1","background_tasks":[{"id":"t1","type":"subagent","status":"running","agent_type":"Explore"}]}`
+	if err := handleHook("Stop", strings.NewReader(subagent), p); err != nil {
+		t.Fatal(err)
+	}
+	if err := handleHook("Notification", strings.NewReader(`{"session_id":"s1","message":"Claude is waiting for your input"}`), p); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); got.Status != StatusIdle || len(got.Background.tasks()) != 1 {
+		t.Fatalf("setup: want idle naming one subagent, got %q %+v", got.Status, got.Background.tasks())
+	}
+
+	// The subagent finishes while the session is still idle at the prompt.
+	if err := handleHook("SubagentStop", strings.NewReader(`{"session_id":"s1","background_tasks":[]}`), p); err != nil {
+		t.Fatal(err)
+	}
+	got := read()
+	if got.Status != StatusIdle {
+		t.Errorf("a finished subagent must not flip an idle session to working, got %q", got.Status)
+	}
+	if len(got.Background.tasks()) != 0 {
+		t.Errorf("SubagentStop should retire the claim it finished, got %+v", got.Background.tasks())
+	}
+
+	// One subagent of two finishing leaves the rest of the claim standing, and still does not
+	// disturb the status.
+	two := `{"session_id":"s1","background_tasks":[{"id":"t1","type":"subagent","status":"running","agent_type":"Explore"},{"id":"t2","type":"monitor","status":"running"}]}`
+	if err := handleHook("SubagentStop", strings.NewReader(two), p); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); got.Status != StatusIdle || len(got.Background.tasks()) != 2 {
+		t.Errorf("a turn end replaces the claim with what it reports, got %q %+v", got.Status, got.Background.tasks())
+	}
+}
+
+// TestEffectiveTasksHeldUntilStopGap pins that a claim stands until a turn end replaces it, idle or
+// not. Background work that ends silently - a monitor, a backgrounded shell - is also the work that
+// runs longest, so any timer short enough to retire a finished one hides a live one; the stop-gap
+// exists only to stop a record naming work forever when no turn end ever comes.
+func TestEffectiveTasksHeldUntilStopGap(t *testing.T) {
+	now := time.Date(2026, 9, 18, 15, 0, 0, 0, time.UTC)
+	tasks := []BackgroundTask{{Type: "shell"}, {Type: "shell"}}
+
+	// The case that kept breaking: two bash-backed monitors, still running, on a session that has
+	// been idle at its prompt for seventeen minutes.
+	aged := &claim{At: now.Add(-17 * time.Minute), Tasks: tasks}
+	if got := effectiveTasks(aged, StatusIdle, "", now); len(got) != 2 {
+		t.Errorf("an idle row must keep naming work its last turn end reported, got %+v", got)
+	}
+	if got := effectiveTasks(aged, StatusWorking, "", now); len(got) != 2 {
+		t.Errorf("a working session keeps its claim too, got %+v", got)
+	}
+	// Well past any plausible run, with no turn end to replace it: the bound applies.
+	if got := effectiveTasks(&claim{At: now.Add(-claimStopGap - time.Minute), Tasks: tasks}, StatusIdle, "", now); got != nil {
+		t.Errorf("past the stop-gap an unreplaced claim expires, got %+v", got)
+	}
+	// A working session is never cut off by the bound: a long turn dispatches work and keeps going.
+	if got := effectiveTasks(&claim{At: now.Add(-claimStopGap - time.Hour), Tasks: tasks}, StatusWorking, "", now); len(got) != 2 {
+		t.Errorf("the bound must not touch a working session, got %+v", got)
+	}
+}
+
 // TestBackgroundSummary pins the row annotation: one subagent names its type, a uniform set is
-// counted by kind, a mixed set falls back to a bare count, and nothing in flight renders nothing
-// (the caller uses the empty string as the presence test).
+// counted by kind, a mixed set names every kind it holds (alphabetically, so the column is stable
+// across turns), and nothing in flight renders nothing (the caller uses the empty string as the
+// presence test).
 func TestBackgroundSummary(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -854,7 +1022,11 @@ func TestBackgroundSummary(t *testing.T) {
 		{"one unnamed subagent", []BackgroundTask{{Type: "subagent"}}, "1 subagent"},
 		{"one untyped task", []BackgroundTask{{}}, "1 task"},
 		{"two subagents", []BackgroundTask{{Type: "subagent", AgentType: "Explore"}, {Type: "subagent"}}, "2 subagents"},
-		{"mixed kinds", []BackgroundTask{{Type: "subagent"}, {Type: "shell"}}, "2 tasks"},
+		{"mixed kinds", []BackgroundTask{{Type: "subagent"}, {Type: "shell"}}, "1 shell, 1 subagent"},
+		{"monitor and subagents", []BackgroundTask{{Type: "subagent", AgentType: "Explore"}, {Type: "monitor"}, {Type: "subagent"}}, "1 monitor, 2 subagents"},
+		{"three monitors", []BackgroundTask{{Type: "monitor"}, {Type: "monitor"}, {Type: "monitor"}}, "3 monitors"},
+		{"named subagent alongside another kind", []BackgroundTask{{Type: "subagent", AgentType: "Explore"}, {Type: "shell"}}, "1 shell, 1 subagent"},
+		{"typed and untyped", []BackgroundTask{{Type: "monitor"}, {}}, "1 monitor, 1 task"},
 	}
 	for _, c := range cases {
 		if got := backgroundSummary(c.tasks); got != c.want {

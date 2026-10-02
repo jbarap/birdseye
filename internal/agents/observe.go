@@ -38,16 +38,14 @@ const quiescenceWindow = 12 * time.Second
 // session behind it, whatever the last hook claimed.
 const backgroundQuiescenceWindow = 10 * time.Minute
 
-// quiescenceWindowFor returns the stillness window a record's pane is judged against: the long
-// backstop while the session has background work in flight, the ordinary window otherwise. The
-// dash resolves the same choice through ClaudeSource.detectorFor, whose detectors tests can
-// replace; both read their windows from here so the two paths cannot drift.
-func quiescenceWindowFor(r record) time.Duration {
-	if len(r.Background) > 0 {
-		return backgroundQuiescenceWindow
-	}
-	return quiescenceWindow
-}
+// claimStopGap bounds how long an idle row keeps naming background work when the turn end that
+// should have replaced its claim never arrives - hooks installed by an older build, or a session
+// killed between dispatching work and finishing. The ordinary correction is the event itself: a
+// turn end replaces the claim outright, and SubagentStop lands the moment a subagent finishes. So
+// this sits far above how long background work plausibly runs, because a shorter window cannot
+// distinguish finished work from work that is simply long (a monitor runs for hours and announces
+// nothing), and would hide the live case to tidy up the finished one.
+const claimStopGap = 2 * time.Hour
 
 // observeFreshness bounds how old a sample may be and still support a quiescence claim. Without
 // it, a pane sampled once and then ignored for an hour would look still for an hour, when in
@@ -135,9 +133,12 @@ func updateObservations(prev map[string]paneObservation, screens map[string]stri
 }
 
 // observePanes samples the given panes, folds the result into the store under dir, and returns
-// the updated store. Sampling is best-effort throughout: a capture failure simply contributes no
-// screens, leaving the affected panes without a quiescence signal.
-func observePanes(dir string, ids []string, capture func([]string) (map[string]string, error), now time.Time) map[string]paneObservation {
+// the updated store together with the screens captured this round. The screens are returned rather
+// than discarded after hashing because the same capture answers a second question - what the
+// session's own chrome says is running (see chromeBackground) - and re-capturing to ask it would
+// double the cost and read a different instant. Sampling is best-effort throughout: a capture
+// failure simply contributes no screens, leaving the affected panes without either signal.
+func observePanes(dir string, ids []string, capture func([]string) (map[string]string, error), now time.Time) (map[string]paneObservation, map[string]string) {
 	prev := readObservations(dir)
 	screens := map[string]string{}
 	if capture != nil && len(ids) > 0 {
@@ -147,17 +148,21 @@ func observePanes(dir string, ids []string, capture func([]string) (map[string]s
 	}
 	next := updateObservations(prev, screens, now)
 	_ = writeObservations(dir, next)
-	return next
+	return next, screens
 }
 
-// workingPaneIDs returns the distinct panes worth sampling: those of records claiming to be
-// working. They are the only records a level can change, so sampling anything else would capture
-// screens no decision reads.
-func workingPaneIDs(recs []record) []string {
+// sampledPaneIDs returns the distinct panes worth sampling: those of records claiming to be
+// working, and those carrying a claim of background work. The first are the only records stillness
+// can demote; the second are the only records the chrome can retire, and they are typically idle,
+// so sampling working panes alone would never see the screen that disproves a finished claim.
+func sampledPaneIDs(recs []record) []string {
 	var ids []string
 	seen := map[string]bool{}
 	for _, r := range recs {
-		if r.Status != StatusWorking || r.TmuxPane == "" || seen[r.TmuxPane] {
+		if r.Status != StatusWorking && len(r.Background.tasks()) == 0 {
+			continue
+		}
+		if r.TmuxPane == "" || seen[r.TmuxPane] {
 			continue
 		}
 		seen[r.TmuxPane] = true
