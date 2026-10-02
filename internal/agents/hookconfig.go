@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 )
 
@@ -219,10 +220,10 @@ func saveIfChanged(path string, settings map[string]any, before []byte) (changed
 		return false, err
 	}
 	out = append(out, '\n')
-	// Compare against the existing file content (normalized to the same form
-	// would be ideal, but a byte compare avoids needless writes in the common
-	// already-applied case).
-	if before != nil && bytes.Equal(bytes.TrimRight(before, "\n"), bytes.TrimRight(out, "\n")) {
+	// Compare by content, not bytes: a file that differs only in key order or
+	// indentation is unchanged, and rewriting it would reformat the user's file
+	// and overwrite their backup for nothing.
+	if before != nil && sameJSON(before, out) {
 		return false, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -241,4 +242,14 @@ func saveIfChanged(path string, settings map[string]any, before []byte) (changed
 		return false, err
 	}
 	return true, nil
+}
+
+// sameJSON reports whether a and b decode to the same JSON value. Either one failing to
+// decode (an empty file) counts as different.
+func sameJSON(a, b []byte) bool {
+	var va, vb any
+	if json.Unmarshal(a, &va) != nil || json.Unmarshal(b, &vb) != nil {
+		return false
+	}
+	return reflect.DeepEqual(va, vb)
 }

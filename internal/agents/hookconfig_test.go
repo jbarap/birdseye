@@ -116,6 +116,38 @@ func TestInstallIdempotent(t *testing.T) {
 	}
 }
 
+func TestInstallIgnoresFormattingOnlyDifferences(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	if _, err := InstallHooks(path, "be"); err != nil {
+		t.Fatal(err)
+	}
+	// The same settings, compacted, with an unrelated key written ahead of the
+	// sorted order Marshal would produce.
+	var m map[string]any
+	if err := json.Unmarshal(must(os.ReadFile(path)), &m); err != nil {
+		t.Fatal(err)
+	}
+	compact := must(json.Marshal(m))
+	reformatted := append([]byte(`{"zz":1,`), compact[1:]...)
+	if err := os.WriteFile(path, reformatted, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := InstallHooks(path, "be")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed {
+		t.Error("an install that only differs in formatting should report no change")
+	}
+	if got := must(os.ReadFile(path)); string(got) != string(reformatted) {
+		t.Errorf("file was rewritten:\n%s", got)
+	}
+	if _, err := os.Stat(path + ".bak"); !os.IsNotExist(err) {
+		t.Errorf("no backup should be written when nothing changed (stat err: %v)", err)
+	}
+}
+
 func TestInstallRefreshesChangedCommandPath(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
 	if _, err := InstallHooks(path, "/old/be"); err != nil {
@@ -226,4 +258,11 @@ func TestClaudeConfigDirHonorsEnv(t *testing.T) {
 	if got, _ := ClaudeConfigDir(); got != want {
 		t.Errorf("with CLAUDE_CONFIG_DIR empty: got %q, want %q", got, want)
 	}
+}
+
+func must[T any](v T, err error) T {
+	if err != nil {
+		panic(err)
+	}
+	return v
 }
