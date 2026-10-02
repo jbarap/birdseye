@@ -69,7 +69,7 @@ func newAgentsInstallCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&hooks, "hooks", false, "install the status-detection hooks tier")
 	cmd.Flags().BoolVar(&workflows, "workflows", false, "install the workflow skills tier")
-	cmd.Flags().StringVar(&settingsPath, "settings", "", "path to settings.json for the hooks tier (defaults to ~/.claude/settings.json)")
+	cmd.Flags().StringVar(&settingsPath, "settings", "", "path to settings.json for the hooks tier (defaults to $CLAUDE_CONFIG_DIR/settings.json, else ~/.claude/settings.json)")
 	cmd.Flags().StringVar(&command, "command", "", "hook command to install (defaults to the absolute path of this be binary)")
 	return cmd
 }
@@ -111,7 +111,7 @@ func newAgentsUninstallCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&hooks, "hooks", false, "remove the status-detection hooks tier")
 	cmd.Flags().BoolVar(&workflows, "workflows", false, "remove the workflow skills tier")
-	cmd.Flags().StringVar(&settingsPath, "settings", "", "path to settings.json for the hooks tier (defaults to ~/.claude/settings.json)")
+	cmd.Flags().StringVar(&settingsPath, "settings", "", "path to settings.json for the hooks tier (defaults to $CLAUDE_CONFIG_DIR/settings.json, else ~/.claude/settings.json)")
 	return cmd
 }
 

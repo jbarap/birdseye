@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 )
 
@@ -25,10 +26,13 @@ var ManagedEvents = []string{
 	"SessionEnd",
 }
 
-// ClaudeConfigDir returns the Claude Code config root, ~/.claude — the single place
-// the settings path and the workflow artifacts are resolved from, so a layout change is
-// a one-line fix.
+// ClaudeConfigDir returns the Claude Code config root: $CLAUDE_CONFIG_DIR when set,
+// as Claude Code itself resolves it, else ~/.claude. It is the single place the settings
+// path and the workflow artifacts are resolved from, so a layout change is a one-line fix.
 func ClaudeConfigDir() (string, error) {
+	if dir := os.Getenv("CLAUDE_CONFIG_DIR"); dir != "" {
+		return dir, nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -36,8 +40,7 @@ func ClaudeConfigDir() (string, error) {
 	return filepath.Join(home, ".claude"), nil
 }
 
-// DefaultSettingsPath returns the standard Claude Code settings path,
-// ~/.claude/settings.json.
+// DefaultSettingsPath returns settings.json under ClaudeConfigDir.
 func DefaultSettingsPath() (string, error) {
 	dir, err := ClaudeConfigDir()
 	if err != nil {
@@ -217,10 +220,10 @@ func saveIfChanged(path string, settings map[string]any, before []byte) (changed
 		return false, err
 	}
 	out = append(out, '\n')
-	// Compare against the existing file content (normalized to the same form
-	// would be ideal, but a byte compare avoids needless writes in the common
-	// already-applied case).
-	if before != nil && bytes.Equal(bytes.TrimRight(before, "\n"), bytes.TrimRight(out, "\n")) {
+	// Compare by content, not bytes: a file that differs only in key order or
+	// indentation is unchanged, and rewriting it would reformat the user's file
+	// and overwrite their backup for nothing.
+	if before != nil && sameJSON(before, out) {
 		return false, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -239,4 +242,14 @@ func saveIfChanged(path string, settings map[string]any, before []byte) (changed
 		return false, err
 	}
 	return true, nil
+}
+
+// sameJSON reports whether a and b decode to the same JSON value. Either one failing to
+// decode (an empty file) counts as different.
+func sameJSON(a, b []byte) bool {
+	var va, vb any
+	if json.Unmarshal(a, &va) != nil || json.Unmarshal(b, &vb) != nil {
+		return false
+	}
+	return reflect.DeepEqual(va, vb)
 }
