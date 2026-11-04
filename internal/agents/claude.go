@@ -293,6 +293,7 @@ func (s *ClaudeSource) Agents() ([]Agent, error) {
 			TmuxWindowName: r.TmuxWindowName,
 			TmuxPane:       r.TmuxPane,
 			CWD:            r.CWD,
+			ProjectDir:     r.ProjectDir,
 			Title:          r.Title,
 			Status:         d.Status,
 			Background:     d.Background,
@@ -744,14 +745,20 @@ func handleHook(event string, r io.Reader, policy notifyPolicy) error {
 	if pane != "" {
 		rec.TmuxPane = pane
 	}
-	// Persist the agent's working directory: the reconciler resolves it to a
-	// repository for recognition, so it must survive on the record, not only feed
-	// the display title. The hook reports it on every event; an empty value (an
-	// unexpected payload) leaves any previously recorded directory intact.
+	// Persist the agent's working directory: the reconciler falls back to it for repository
+	// recognition when the launch directory is unknown or outside any repository. The hook
+	// reports it on every event; an empty value (an unexpected payload) leaves any previously
+	// recorded directory intact.
 	if in.CWD != "" {
 		rec.CWD = in.CWD
 	}
-	rec.Title = title(rec.TmuxSession, rec.CWD)
+	// The payload's cwd follows the Bash tool's `cd`, so an agent that reaches into another
+	// repository would misfile itself by it. Claude Code exports the session's launch
+	// directory to hooks; it is what anchors the agent to a repository.
+	if dir := os.Getenv("CLAUDE_PROJECT_DIR"); dir != "" {
+		rec.ProjectDir = dir
+	}
+	rec.Title = title(rec.TmuxSession, rec.homeDir())
 	if err := writeRecord(recDir, rec); err != nil {
 		return err
 	}
@@ -920,6 +927,15 @@ func notificationFor(rec record) Notification {
 		CWD:     rec.CWD,
 		Message: rec.Title + " needs you",
 	}
+}
+
+// homeDir is the directory that identifies the session: its launch directory when known, else
+// its last reported working directory.
+func (r record) homeDir() string {
+	if r.ProjectDir != "" {
+		return r.ProjectDir
+	}
+	return r.CWD
 }
 
 func title(session, cwd string) string {

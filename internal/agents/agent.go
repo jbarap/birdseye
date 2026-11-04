@@ -112,11 +112,15 @@ type Agent struct {
 	// session:window it pins the right pane when a window is split, so the
 	// preview captures the agent's pane rather than whichever is active.
 	TmuxPane string
-	// CWD is the agent's working directory as reported by its hook. It is the
-	// durable signal the reconciler resolves to a repository for recognition and
-	// grouping (an agent's worktree does not flicker the way a wandering shell's
-	// path would). Empty when the hook reported no directory.
+	// CWD is the agent's working directory as reported by its hook. It follows the
+	// agent's Bash `cd`s, so the reconciler uses it for recognition and grouping only
+	// when ProjectDir does not resolve into a repository. Empty when the hook reported
+	// no directory.
 	CWD string
+	// ProjectDir is the directory the session was launched from. It does not follow the
+	// agent's `cd`s, so the reconciler prefers it over CWD to anchor the agent to a repository.
+	// Empty when the hook did not report it.
+	ProjectDir string
 	// Title is a short human label.
 	Title string
 	// Status is the agent's current state.
