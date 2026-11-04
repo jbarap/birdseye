@@ -28,8 +28,11 @@ type record struct {
 	TmuxWindowName string `json:"tmux_window_name"`
 	TmuxPane       string `json:"tmux_pane"`
 	CWD            string `json:"cwd"`
-	Title          string `json:"title"`
-	Status         Status `json:"status"`
+	// ProjectDir is the directory the Claude session was launched from (CLAUDE_PROJECT_DIR).
+	// Unlike CWD it does not follow the agent's `cd`s. Empty on records predating this field.
+	ProjectDir string `json:"project_dir,omitempty"`
+	Title      string `json:"title"`
+	Status     Status `json:"status"`
 	// Background is the last turn end's statement about work in flight, or nil when the session
 	// has none. See claim: the tasks and the time they were asserted travel together, so a reader
 	// can always tell how old the statement is.

@@ -178,7 +178,7 @@ func (w *Workspace) Rows() ([]Row, error) {
 		recognize(w.lookup(p.StartPath))
 	}
 	for _, a := range agentList {
-		recognize(w.lookup(a.CWD))
+		recognize(w.agentRepo(a))
 	}
 
 	claimed := map[string]bool{} // agent SessionIDs already rendered under a repo
@@ -265,11 +265,22 @@ func windowIndexLess(a, b string) bool {
 	}
 }
 
-// agentWorktree resolves the worktree an agent occupies: its recorded working directory
-// when that is inside a git worktree (the durable signal, correct for an auto-cd
-// workflow), else its pane's start path. Returns nil when neither resolves into a repo.
+// agentRepo resolves the worktree an agent reports itself in: its launch directory when that
+// is inside a git worktree, else its working directory. The launch directory comes first
+// because the working directory follows the agent's `cd`s, and an agent reaching into a
+// neighboring repository must not move there. Returns nil when neither resolves into a repo.
+func (w *Workspace) agentRepo(a Agent) *RepoInfo {
+	if info := w.lookup(a.ProjectDir); info != nil {
+		return info
+	}
+	return w.lookup(a.CWD)
+}
+
+// agentWorktree resolves the worktree an agent occupies: the one it reports itself in (see
+// agentRepo; correct for an auto-cd workflow, where the pane is born outside the repo), else
+// its pane's start path. Returns nil when nothing resolves into a repo.
 func (w *Workspace) agentWorktree(a Agent, paneStart map[string]string) *RepoInfo {
-	if info := w.lookup(a.CWD); info != nil {
+	if info := w.agentRepo(a); info != nil {
 		return info
 	}
 	if sp := paneStart[a.TmuxPane]; sp != "" {

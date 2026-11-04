@@ -321,6 +321,66 @@ func TestWorkspaceAgentCwdAnchorsRepo(t *testing.T) {
 	}
 }
 
+func TestWorkspaceProjectDirOutranksCwd(t *testing.T) {
+	// An agent launched in one repository that has since `cd`ed into another: its launch
+	// directory places it, so it stays with the repository it was started in.
+	const homeGD, otherGD = "/code/home/.git", "/code/other/.git"
+	src := &fakeSource{list: []Agent{
+		{SessionID: "wanderer", TmuxSession: "work", TmuxWindow: "0", TmuxPane: "%1",
+			ProjectDir: "/code/home", CWD: "/code/other", Title: "home", Status: StatusWorking},
+	}}
+	panes := fakePanes{list: []PaneInfo{
+		{Session: "work", WindowIndex: "0", PaneID: "%1", StartPath: "/code/home"},
+	}}
+	repos := &fakeRepos{
+		m: map[string]RepoInfo{
+			"/code/home":  repoAt(homeGD, "home", "/code/home", "home", true),
+			"/code/other": repoAt(otherGD, "other", "/code/other", "other", true),
+		},
+		wts: map[string][]WorktreeInfo{
+			homeGD:  {{Path: "/code/home", Name: "home", IsPrimary: true}},
+			otherGD: {{Path: "/code/other", Name: "other", IsPrimary: true}},
+		},
+	}
+	rows, err := NewWorkspace(src, panes, repos).Rows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		if r.SessionID == "wanderer" && r.GitDir != homeGD {
+			t.Fatalf("the agent should stay in its launch repository, got %+v", r)
+		}
+		if r.GitDir == otherGD {
+			t.Fatalf("a repository only the agent's cwd reaches should not be recognized, got %+v", r)
+		}
+	}
+}
+
+func TestWorkspaceCwdUsedWhenProjectDirOutsideRepo(t *testing.T) {
+	// An agent launched outside any repository that then moved into one is placed by its cwd.
+	const gd = "/code/proj/.git"
+	src := &fakeSource{list: []Agent{
+		{SessionID: "mover", TmuxSession: "work", TmuxWindow: "0", TmuxPane: "%1",
+			ProjectDir: "/home/u", CWD: "/code/proj", Title: "proj", Status: StatusWorking},
+	}}
+	panes := fakePanes{list: []PaneInfo{
+		{Session: "work", WindowIndex: "0", PaneID: "%1", StartPath: "/home/u"},
+	}}
+	repos := &fakeRepos{
+		m:   map[string]RepoInfo{"/code/proj": repoAt(gd, "proj", "/code/proj", "proj", true)},
+		wts: map[string][]WorktreeInfo{gd: {{Path: "/code/proj", Name: "proj", IsPrimary: true}}},
+	}
+	rows, err := NewWorkspace(src, panes, repos).Rows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		if r.SessionID == "mover" && r.GitDir != gd {
+			t.Fatalf("the agent should be placed by its cwd, got %+v", r)
+		}
+	}
+}
+
 func TestWorkspaceNoLivePresenceNotShown(t *testing.T) {
 	// A repository with worktrees on disk but no pane and no agent resolving into it is
 	// not shown: recognition does not scan the filesystem for repositories.

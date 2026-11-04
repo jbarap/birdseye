@@ -638,7 +638,8 @@ func TestAgentsDedupsSharedLocation(t *testing.T) {
 func TestHandleHookWritesState(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", dir)
-	t.Setenv("TMUX", "") // not in tmux for the test
+	t.Setenv("TMUX", "")               // not in tmux for the test
+	t.Setenv("CLAUDE_PROJECT_DIR", "") // the title falls back to cwd
 	stubNoTmuxRecovery(t)
 
 	payload := `{"session_id":"sess-123","cwd":"/home/u/projects/foo"}`
@@ -703,6 +704,31 @@ func TestHandleHookPersistsCWD(t *testing.T) {
 	row := agentRow(Agent{SessionID: "s1", CWD: "/repo/wt"})
 	if row.AgentDir != "/repo/wt" {
 		t.Errorf("row should carry agent working directory, got %q", row.AgentDir)
+	}
+}
+
+// TestHandleHookRecordsProjectDir pins that the hook records the session's launch directory
+// alongside its cwd, and that the title names the launch directory rather than wherever the
+// agent last `cd`ed.
+func TestHandleHookRecordsProjectDir(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", dir)
+	t.Setenv("TMUX", "")
+	t.Setenv("CLAUDE_PROJECT_DIR", "/code/home")
+	stubNoTmuxRecovery(t)
+
+	if err := handleHook("Stop", strings.NewReader(`{"session_id":"s1","cwd":"/code/other"}`), notifyPolicy{}); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := readRecord(filepath.Join(dir, "birdseye", "agents"), "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.ProjectDir != "/code/home" || rec.CWD != "/code/other" {
+		t.Fatalf("record should carry both directories, got project %q cwd %q", rec.ProjectDir, rec.CWD)
+	}
+	if rec.Title != "home" {
+		t.Errorf("title should name the launch directory, got %q", rec.Title)
 	}
 }
 
