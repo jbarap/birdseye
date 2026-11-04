@@ -637,6 +637,59 @@ func TestListWindowsToCursorAndFits(t *testing.T) {
 	}
 }
 
+func TestScrollUpRevealsHeadersAboveFirstRow(t *testing.T) {
+	// Headers are never navigable, so a window that only tracks the cursor stops at the
+	// first row on the way back up and leaves the header above it scrolled off. Stepping
+	// up one row at a time (not gg) is the path that exposed it.
+	list := make([]Agent, 40)
+	for i := range list {
+		id := fmt.Sprintf("sess%02d", i)
+		list[i] = Agent{SessionID: id, Title: fmt.Sprintf("row%02d", i), Status: StatusIdle, TmuxSession: id}
+	}
+	m := mustModel(t, list, nil, DefaultKeymap())
+	m.width, m.height = 80, 16
+
+	walk := func(m model) model {
+		m = send(m, key("G"))
+		for range list {
+			m = send(m, key("k"))
+		}
+		return m
+	}
+
+	m = walk(m)
+	ws := stripANSI(m.renderRows())
+	if first, _, _ := strings.Cut(ws, "\n"); !strings.Contains(first, "(no-repo)") {
+		t.Fatalf("the first section header must be visible at the top of Projects:\n%s", ws)
+	}
+
+	m = send(m, key("ctrl+k"))
+	m = walk(m)
+	if ag := strings.ToUpper(stripANSI(m.renderAgents())); !strings.Contains(ag, "NEEDS YOU") {
+		t.Fatalf("the first band header must be visible at the top of Agents:\n%s", ag)
+	}
+}
+
+func TestWindowTopKeepsLeadIn(t *testing.T) {
+	cases := []struct {
+		name                  string
+		top, start, sel, h, n int
+		want                  int
+	}{
+		{"scrolling up reveals the header above", 5, 4, 5, 3, 20, 4},
+		{"top of list reveals every leading header", 1, 0, 1, 3, 20, 0},
+		{"lead-in taller than the window favors the selection", 9, 2, 9, 3, 20, 7},
+		{"no lead-in moves minimally", 4, 6, 6, 3, 20, 4},
+		{"scrolling down is unchanged", 0, 5, 5, 3, 20, 3},
+	}
+	for _, c := range cases {
+		if got := windowTop(c.top, c.start, c.sel, c.h, c.n); got != c.want {
+			t.Errorf("%s: windowTop(%d, %d, %d, %d, %d) = %d, want %d",
+				c.name, c.top, c.start, c.sel, c.h, c.n, got, c.want)
+		}
+	}
+}
+
 func TestNoticeIsNotable(t *testing.T) {
 	// Feedback must be impossible to miss: an error/rejection carries the ✗ glyph, a
 	// neutral confirmation the • glyph (so it reads without color, not the faint help
