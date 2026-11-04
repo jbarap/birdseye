@@ -1394,11 +1394,39 @@ func (m model) selVisiblePos(vis []int) int {
 
 // syncViewport pins the scroll offset so the selected row stays visible, scrolling the
 // minimum amount needed (selection at an edge nudges the window by one, not a jump).
+// The headers directly above the selection are kept in view too: they are never
+// navigable, so without this scrolling up would stop at a section's first row and leave
+// its header (or the top of the list) scrolled off.
 func (m *model) syncViewport() {
-	vis := m.visibleItems()
-	m.top = windowTop(m.top, m.selVisiblePos(vis), m.projectsPaneRows(), len(vis))
-	avis := m.visibleAgentItems()
-	m.agentTop = windowTop(m.agentTop, m.agentSelVisiblePos(avis), m.agentsPaneRows(), len(avis))
+	m.top = m.projectsTop(m.visibleItems())
+	m.agentTop = m.agentsTop(m.visibleAgentItems())
+}
+
+// projectsTop is the Projects lens scroll offset into vis (its visibleItems).
+func (m model) projectsTop(vis []int) int {
+	sel := m.selVisiblePos(vis)
+	return windowTop(m.top, leadIn(vis, sel, m.nav), sel, m.projectsPaneRows(), len(vis))
+}
+
+// agentsTop is the Agents lens scroll offset into vis (its visibleAgentItems).
+func (m model) agentsTop(vis []int) int {
+	sel := m.agentSelVisiblePos(vis)
+	return windowTop(m.agentTop, leadIn(vis, sel, m.agentNav), sel, m.agentsPaneRows(), len(vis))
+}
+
+// leadIn is the visible position where the selection's lead-in begins: walking up from
+// sel over items the cursor cannot land on (headers), it stops below the nearest
+// navigable item. It equals sel when the item above is navigable.
+func leadIn(vis []int, sel int, nav []int) int {
+	navigable := make(map[int]bool, len(nav))
+	for _, i := range nav {
+		navigable[i] = true
+	}
+	start := sel
+	for start > 0 && start <= len(vis) && !navigable[vis[start-1]] {
+		start--
+	}
+	return start
 }
 
 // visibleAgentItems is the agentItems indices that render, in order: every item except
@@ -1431,17 +1459,19 @@ func (m model) agentSelVisiblePos(vis []int) int {
 }
 
 // windowTop returns the first-visible index for a list of n items with a window of h
-// rows, given the previous top and the selected position: it keeps sel inside
-// [top, top+h) with minimal movement and clamps to the valid range.
-func windowTop(top, sel, h, n int) int {
+// rows, given the previous top, the selected position, and where its lead-in starts
+// (start <= sel): it keeps [start, sel] inside [top, top+h) with minimal movement,
+// giving up lead-in rows before the selection when the span is taller than the window,
+// and clamps to the valid range.
+func windowTop(top, start, sel, h, n int) int {
 	if h <= 0 || n <= h {
 		return 0
 	}
 	if top < 0 {
 		top = 0
 	}
-	if sel < top {
-		top = sel
+	if start < top {
+		top = start
 	}
 	if sel >= top+h {
 		top = sel - h + 1
@@ -2129,7 +2159,7 @@ func (m model) sidebarPanel(lens lensID, title, body string, rows int) string {
 func (m model) renderRows() string {
 	vis := m.visibleItems()
 	h := m.projectsPaneRows()
-	top := windowTop(m.top, m.selVisiblePos(vis), h, len(vis))
+	top := m.projectsTop(vis)
 	end := min(top+h, len(vis))
 
 	selItem := -1
@@ -2171,7 +2201,7 @@ func (m model) renderAgents() string {
 	cw := m.sidebarContentWidth()
 	h := m.agentsPaneRows()
 	vis := m.visibleAgentItems()
-	top := windowTop(m.agentTop, m.agentSelVisiblePos(vis), h, len(vis))
+	top := m.agentsTop(vis)
 	end := min(top+h, len(vis))
 
 	selItem := -1
